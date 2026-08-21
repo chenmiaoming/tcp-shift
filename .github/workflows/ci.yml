@@ -60,7 +60,8 @@ jobs:
 
   long-fat-benchmark:
     name: Long-fat network benchmark
-    needs: gvisor-compatibility
+    # Deliberately independent of the floating-upstream job. A gVisor master
+    # incompatibility must be visible without suppressing baseline measurements.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
