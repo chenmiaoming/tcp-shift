@@ -107,6 +107,10 @@ jobs:
           ONE_WAY_DELAY: 100ms
           LOSS: ${{ matrix.loss }}
           RECOVERY: ${{ matrix.recovery }}
+          # netem's default 1000-packet queue is only slightly above the
+          # ~833-packet one-way BDP here and unfairly drops MSS-sized Netstack
+          # bursts while GSO-compressed native traffic consumes fewer entries.
+          NETEM_LIMIT: '10000'
           DURATION: '15'
           # One trial is deliberate while this is a diagnostic matrix. Once
           # recovery behavior is understood, statistical runs can move to a
