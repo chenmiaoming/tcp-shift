@@ -1,0 +1,5 @@
+/bin/
+/.deps/
+/.bench/
+go.local.mod
+go.local.sum
