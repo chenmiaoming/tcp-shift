@@ -2,15 +2,65 @@ name: tcp-shift CI
 
 on:
   push:
-    branches: [main, feat/gvisor-bbr-poc]
+    branches:
+      - main
+      - 'feat/gvisor-*'
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Scheduled workflows run from the default branch once this lands on main.
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
+concurrency:
+  group: tcp-shift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-and-long-fat-bench:
+  gvisor-compatibility:
+    name: gVisor compatibility (${{ matrix.track }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - track: verified-baseline
+            ref: baseline
+          - track: upstream-master
+            ref: master
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Use the current stable toolchain so an upstream Go-version bump is
+          # detected by the compatibility job instead of a stale CI pin.
+          go-version: stable
+          cache: false
+
+      - name: Build against selected gVisor track
+        shell: bash
+        run: |
+          if [[ '${{ matrix.ref }}' == master ]]; then
+            GVISOR_REF=master bash ./scripts/build.sh
+          else
+            bash ./scripts/build.sh
+          fi
+
+      - name: Report embedded dependency revision
+        run: |
+          ./bin/tcp-shift --version
+          cat ./bin/gvisor-build.txt
+
+      - name: Smoke test CLI
+        run: ./bin/tcp-shift --help
+
+  long-fat-benchmark:
+    name: Long-fat network benchmark
+    needs: gvisor-compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -18,7 +68,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.3'
+          go-version: stable
           cache: false
 
       - name: Install benchmark tools
@@ -26,30 +76,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iperf3 iproute2 jq
 
-      - name: Build patched gVisor tcp-shift
+      - name: Build verified gVisor baseline
         run: bash ./scripts/build.sh
-
-      - name: Smoke test CLI
-        run: ./bin/tcp-shift --help
 
       - name: Long-fat network benchmark
         env:
-          RATE: 50mbit
-          ONE_WAY_DELAY: 50ms
+          # ~20 Mbit*second BDP: 100 Mbit/s and ~200 ms RTT.
+          RATE: 100mbit
+          ONE_WAY_DELAY: 100ms
           LOSS: 0.10%
-          DURATION: '12'
+          DURATION: '15'
           TRIALS: '2'
-          TCP_BUFFER_MIB: '4'
+          TCP_BUFFER_MIB: '8'
         run: sudo -E bash ./scripts/bench-long-fat.sh
 
       - name: Publish benchmark summary
         if: always() && hashFiles('.bench/summary.md') != ''
-        run: cat .bench/summary.md >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          printf '### Build provenance\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          cat ./bin/gvisor-build.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench/summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark artifacts
         if: always() && hashFiles('.bench/**') != ''
         uses: actions/upload-artifact@v4
         with:
           name: long-fat-benchmark
-          path: .bench/
+          path: |
+            .bench/
+            bin/gvisor-build.txt
           if-no-files-found: ignore
