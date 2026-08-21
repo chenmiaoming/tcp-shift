@@ -51,6 +51,7 @@ type config struct {
 	listen        string
 	backend       string
 	cc            string
+	recovery      string
 	tcpBufferMiB  int
 	statsInterval time.Duration
 }
@@ -63,6 +64,7 @@ func main() {
 	flag.StringVar(&cfg.listen, "listen", "10.99.0.2:5201", "gVisor TCP listen address")
 	flag.StringVar(&cfg.backend, "backend", "127.0.0.1:5202", "host-kernel TCP backend")
 	flag.StringVar(&cfg.cc, "cc", "cubic", "congestion control: reno, cubic, or bbr")
+	flag.StringVar(&cfg.recovery, "recovery", "rack", "gVisor TCP loss recovery: rack or legacy")
 	flag.IntVar(&cfg.tcpBufferMiB, "tcp-buffer-mib", 1, "gVisor TCP send/receive buffer size in MiB")
 	flag.DurationVar(&cfg.statsInterval, "stats-interval", 0, "periodically print Go/netstack memory statistics (0 disables)")
 	flag.Parse()
@@ -82,6 +84,10 @@ func main() {
 	cfg.cc = strings.ToLower(cfg.cc)
 	if cfg.cc != "reno" && cfg.cc != "cubic" && cfg.cc != "bbr" {
 		log.Fatalf("unsupported --cc=%q", cfg.cc)
+	}
+	cfg.recovery = strings.ToLower(cfg.recovery)
+	if cfg.recovery != "rack" && cfg.recovery != "legacy" {
+		log.Fatalf("unsupported --recovery=%q", cfg.recovery)
 	}
 
 	var (
@@ -110,7 +116,7 @@ func main() {
 		go logStats(ctx, s, cfg.statsInterval)
 	}
 
-	log.Printf("ready: engine=%s tun=%s listen=%s backend=%s cc=%s tcp_buffer=%dMiB gvisor=%s", cfg.engine, cfg.tunName, cfg.listen, cfg.backend, cfg.cc, cfg.tcpBufferMiB, gvisorRevision)
+	log.Printf("ready: engine=%s tun=%s listen=%s backend=%s cc=%s recovery=%s tcp_buffer=%dMiB gvisor=%s", cfg.engine, cfg.tunName, cfg.listen, cfg.backend, cfg.cc, cfg.recovery, cfg.tcpBufferMiB, gvisorRevision)
 
 	go func() {
 		<-ctx.Done()
@@ -219,6 +225,13 @@ func newStack(cfg config) (*stack.Stack, net.Listener, error) {
 	sack := tcpip.TCPSACKEnabled(true)
 	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &sack); err != nil {
 		return nil, nil, fmt.Errorf("enable SACK: %s", err)
+	}
+	recovery := tcpip.TCPRecovery(0)
+	if cfg.recovery == "rack" {
+		recovery = tcpip.TCPRACKLossDetection
+	}
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery); err != nil {
+		return nil, nil, fmt.Errorf("set TCP recovery %q: %s", cfg.recovery, err)
 	}
 	cc := tcpip.CongestionControlOption(cfg.cc)
 	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &cc); err != nil {
