@@ -1,6 +1,6 @@
 # tcp-shift
 
-`tcp-shift` is an experimental userspace TCP relay for running and evaluating congestion-control algorithms without modifying the host kernel. The first backend is gVisor netstack, chosen as a mature TCP implementation against which we can measure performance, protocol behavior, CPU cost, and memory cost before deciding whether a smaller stack is necessary.
+`tcp-shift` is an experimental userspace TCP relay for running and evaluating congestion-control algorithms without modifying the host kernel. The first backend is gVisor Netstack, chosen as a mature TCP implementation against which we can measure protocol behavior, throughput, CPU cost, and memory cost before deciding whether a smaller stack is necessary.
 
 The immediate target is restricted VPS/container environments, including OpenVZ-style deployments, where loading kernel modules, eBPF TCP `struct_ops`, or changing the host kernel is unavailable.
 
@@ -12,9 +12,9 @@ The long-term target is a production-grade relay with three properties:
 
 1. the WAN-facing TCP endpoint is fully userspace and can run selectable congestion-control algorithms;
 2. the runtime remains usable in a constrained 128 MiB, no-swap VPS;
-3. tcp-shift continuously follows gVisor upstream instead of freezing on one historical netstack snapshot.
+3. tcp-shift continuously follows gVisor upstream instead of freezing on one historical Netstack snapshot.
 
-Reproducibility and upstream tracking are handled separately: releases use a verified exact gVisor SHA, while CI continuously builds against `google/gvisor@master`. See [docs/gvisor-upstream.md](docs/gvisor-upstream.md).
+For external Go users gVisor maintains a protected synthetic `go` branch containing generated sources compatible with standard Go tooling. tcp-shift tracks that branch rather than consuming the raw Bazel `master` tree. Releases use a verified exact synthetic-Go SHA, while CI continuously builds the moving `google/gvisor@go` branch. See [docs/gvisor-upstream.md](docs/gvisor-upstream.md).
 
 ## Current architecture
 
@@ -26,7 +26,7 @@ remote TCP client
 +-------------------------------+
 | tcp-shift                     |
 |                               |
-| gVisor netstack TCP endpoint  |
+| gVisor Netstack TCP endpoint  |
 |   + Reno / CUBIC              |
 |   + experimental BBR          |
 |   + tcp-shift generic pacer   |
@@ -40,7 +40,7 @@ remote TCP client
         localhost/backend
 ```
 
-The WAN-facing connection is terminated by gVisor, so the selected netstack congestion-control algorithm actually controls that TCP sender. The backend leg deliberately remains a normal host socket.
+The WAN-facing connection is terminated by gVisor, so the selected Netstack congestion-control algorithm actually controls that TCP sender. The backend leg deliberately remains a normal host socket.
 
 ## Experimental BBR
 
@@ -59,39 +59,39 @@ The initial bandwidth sampler uses cumulatively ACKed data over ACK arrival inte
 
 ## gVisor dependency model
 
-The verified baseline is recorded in:
+The verified synthetic-Go baseline is recorded in:
 
 ```text
 .gvisor-baseline
 ```
 
-Normal builds use that SHA:
+Normal builds use that exact SHA:
 
 ```bash
 bash ./scripts/build.sh
 ./bin/tcp-shift --version
 ```
 
-To test current gVisor upstream instead:
+To test the latest gVisor external-Go projection instead:
 
 ```bash
-GVISOR_REF=master bash ./scripts/build.sh
+GVISOR_REF=go bash ./scripts/build.sh
 ./bin/tcp-shift --version
 ```
 
-Any commit or tag can be tested the same way:
+A particular commit from the synthetic `go` branch can be tested the same way:
 
 ```bash
-GVISOR_REF=<commit-or-tag> bash ./scripts/build.sh
+GVISOR_REF=<synthetic-go-commit> bash ./scripts/build.sh
 ```
 
-The build always resolves the requested ref to an exact commit, embeds that SHA in the binary, and writes provenance to `bin/gvisor-build.txt`.
+The build always resolves the requested ref to an exact commit, embeds that SHA in the binary, and writes provenance to `bin/gvisor-build.txt`. It explicitly rejects raw Bazel revisions containing unrendered `*.tmpl.*` sources.
 
 The gVisor source tree is not vendored into this repository. It is fetched into `.deps/gvisor`, patched in disposable build staging, and used through a local Go-module replacement.
 
 ## Run
 
-Example netstack frontend:
+Example Netstack frontend:
 
 ```bash
 sudo ip tuntap add dev ts0 mode tun user "$USER"
@@ -107,7 +107,7 @@ sudo ip route add 10.99.0.2/32 dev ts0
   --tcp-buffer-mib 4
 ```
 
-For a same-process lower-bound without gVisor TCP termination:
+For a same-process lower bound without gVisor TCP termination:
 
 ```bash
 ./bin/tcp-shift \
@@ -120,22 +120,17 @@ For a same-process lower-bound without gVisor TCP termination:
 
 GitHub Actions uses Linux network namespaces, a TUN device, and `tc netem` to construct a reproducible high-BDP path. The benchmark uses `iperf3 -R` intentionally: the backend/server sends the payload, so the WAN-facing tcp-shift endpoint is the sender whose congestion control is under test.
 
-The baseline benchmark currently compares:
+The benchmark compares:
 
 - native-kernel CUBIC through the same Go relay;
 - gVisor CUBIC;
 - gVisor experimental BBR.
 
-For each case CI records:
+For each case CI records throughput, process peak RSS (`VmHWM`), user+system CPU time, raw iperf3 results, and relay logs. The summary explicitly reports gVisor-vs-native CPU/RSS/throughput overhead and BBR-vs-gVisor-CUBIC throughput change.
 
-- throughput;
-- process peak RSS (`VmHWM`);
-- user+system CPU time;
-- raw client/server results and relay logs.
+The current path is approximately 100 Mbit/s with 200 ms RTT and 0.10% bidirectional loss. Each relay is placed under a cgroup-v2 `memory.max=128MiB` budget with `memory.swap.max=0`, so the test checks both measured RSS and survival under the target constraint.
 
-The current CI path is approximately 100 Mbit/s with 200 ms RTT and 0.10% bidirectional loss, giving a BDP large enough that congestion-control behavior and buffer sizing matter.
-
-Run it locally on a Linux host with network-namespace/TUN privileges:
+Run it locally on a Linux host with network-namespace/TUN/cgroup privileges:
 
 ```bash
 make build
@@ -144,13 +139,13 @@ sudo -E make bench
 
 Results are written under `.bench/`.
 
-CI also has a separate compatibility matrix that builds both the verified baseline and current `google/gvisor@master`. A floating-upstream failure does not suppress baseline benchmark results.
+CI separately builds both the verified synthetic-Go baseline and the moving `google/gvisor@go` branch. A moving-upstream failure does not suppress baseline benchmark results.
 
 ## Upstream-maintenance rule
 
-The current PoC still patches gVisor's TCP sender to add a generic pacer. That patch is intentionally treated as transitional technical debt. The production design should minimize the gVisor delta to narrow, generic hooks that are easy to rebase and ideally suitable for upstream submission.
+The original PoC replaced gVisor's `sender.sendData()` wholesale to add pacing. The current patcher preserves the upstream function and inserts only three pacing operations—initialization, send admission, and post-send accounting—plus narrow timer/state hooks.
 
-In particular, replacing large upstream functions is not an acceptable long-term maintenance strategy. The desired end state is approximately:
+This is a substantial improvement for rebasing, but it still patches private TCP internals. The production design should minimize the gVisor delta to generic hooks that are easy to rebase and ideally suitable for upstream submission:
 
 ```text
 gVisor TCP sender
@@ -164,13 +159,13 @@ gVisor TCP sender
 
 ## Development roadmap
 
-1. Keep baseline and upstream-master builds green in CI.
+1. Keep the verified baseline and moving synthetic-`go` builds green in CI.
 2. Establish native-vs-gVisor memory/CPU/throughput baselines.
 3. Validate the BBR state machine and pacer under deterministic high-BDP conditions.
 4. Replace ACK-interval bandwidth sampling with per-segment delivery-rate sampling and app-limited detection.
-5. Reduce the current large `sendData()` patch to narrow generic sender/pacing hooks.
+5. Move the remaining private-source patch toward narrow, generic, upstreamable sender/pacing hooks.
 6. Add queue occupancy, RTT inflation, loss-recovery, fairness, and repeated statistical trials.
-7. Add a strict 128 MiB/no-swap cgroup test and define an explicit memory regression budget.
+7. Enforce and tune the 128 MiB/no-swap memory regression budget.
 8. Add protocol correctness, soak, reconnect, half-close, IPv6, PMTU, SACK/RACK, and failure-injection coverage.
-9. Promote newer gVisor SHAs only after compatibility, correctness, memory, CPU, and throughput gates pass.
+9. Promote newer synthetic-Go SHAs only after compatibility, correctness, memory, CPU, and throughput gates pass.
 10. Only after the mature gVisor baseline is understood, decide whether a smaller lwIP/smoltcp backend is justified.
