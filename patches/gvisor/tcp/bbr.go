@@ -69,9 +69,18 @@ type bbrState struct {
 	cycleIndex int
 	cycleStamp tcpip.MonotonicTime
 
-	priorCwnd       int
-	probeRTTDone    tcpip.MonotonicTime
-	probeRTTStarted bool
+	probeRTTPriorCwnd int
+	probeRTTDone      tcpip.MonotonicTime
+	probeRTTStarted   bool
+
+	// Netstack's generic fast/SACK recovery assumes loss-based congestion
+	// controls reduce ssthresh before enterRecovery(), which then sets cwnd to
+	// ssthresh+3. BBR must not apply a Reno/CUBIC multiplicative decrease, but
+	// it still needs packet conservation while recovery decides what to
+	// retransmit. Save the model cwnd here, temporarily constrain recovery to
+	// the estimated in-flight pipe, and restore the model cwnd in PostRecovery.
+	inRecovery        bool
+	recoveryPriorCwnd int
 }
 
 func newBBRCC(s *sender) *bbrState {
@@ -181,7 +190,7 @@ func (b *bbrState) updateFullBandwidth(now tcpip.MonotonicTime) {
 
 func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
 	if b.minRTT != time.Duration(math.MaxInt64) && b.minRTTStamp != (tcpip.MonotonicTime{}) && b.mode != bbrProbeRTT && now.Sub(b.minRTTStamp) >= bbrMinRTTWindow {
-		b.priorCwnd = b.s.SndCwnd
+		b.probeRTTPriorCwnd = b.s.SndCwnd
 		b.mode = bbrProbeRTT
 		b.probeRTTDone = now.Add(bbrProbeRTTTime)
 		b.probeRTTStarted = true
@@ -197,8 +206,8 @@ func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
 			b.cycleIndex = 0
 			b.cycleStamp = now
 			target := b.bdpPackets(bbrCwndGain)
-			if b.priorCwnd > target {
-				target = b.priorCwnd
+			if b.probeRTTPriorCwnd > target {
+				target = b.probeRTTPriorCwnd
 			}
 			b.s.SndCwnd = max(target, 4)
 			b.probeRTTStarted = false
@@ -263,10 +272,18 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 	b.s.Ssthresh = b.s.SndCwnd
 }
 
-// HandleLossDetected keeps BBR model-driven rather than applying Reno/CUBIC's
-// multiplicative decrease. Netstack recovery still handles retransmission.
+// HandleLossDetected enters packet conservation rather than applying the
+// multiplicative decrease used by loss-based congestion controls. Netstack's
+// enterRecovery() immediately sets cwnd=ssthresh+3, so using the model cwnd as
+// ssthresh lets RFC6675 recovery send a large burst whenever SetPipe() falls
+// below that model window. Use the current pipe estimate instead and restore
+// the model window in PostRecovery.
 func (b *bbrState) HandleLossDetected() {
-	b.s.Ssthresh = max(b.s.SndCwnd, 4)
+	if !b.inRecovery {
+		b.recoveryPriorCwnd = max(b.s.SndCwnd, 4)
+		b.inRecovery = true
+	}
+	b.s.Ssthresh = max(b.s.Outstanding, 4)
 }
 
 // HandleRTOExpired restarts model acquisition after a hard timeout.
@@ -279,11 +296,23 @@ func (b *bbrState) HandleRTOExpired() {
 	b.fullBWRound = 0
 	b.lastAckTime = tcpip.MonotonicTime{}
 	b.roundStart = tcpip.MonotonicTime{}
+	b.inRecovery = false
+	b.recoveryPriorCwnd = 0
 	b.s.SndCwnd = 4
 	b.s.Ssthresh = 4
 }
 
 func (b *bbrState) PostRecovery() {
-	// Netstack restores cwnd from ssthresh when leaving recovery. Keep
-	// ssthresh synchronized with the model-driven cwnd in Update/loss paths.
+	if !b.inRecovery {
+		return
+	}
+
+	// leaveRecovery() has just assigned SndCwnd=Ssthresh. Restore the
+	// model-driven window saved on entry instead of carrying the temporary
+	// packet-conservation window into the open state.
+	restored := max(b.recoveryPriorCwnd, 4)
+	b.s.SndCwnd = restored
+	b.s.Ssthresh = restored
+	b.recoveryPriorCwnd = 0
+	b.inRecovery = false
 }
