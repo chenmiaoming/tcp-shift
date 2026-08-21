@@ -8,7 +8,7 @@ fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BIN="$ROOT/bin/tcp-shift"
-OUT="$ROOT/.bench"
+OUT=${OUT:-"$ROOT/.bench"}
 CLIENT_NS=${CLIENT_NS:-tcpshift-client}
 ROOT_IF=${ROOT_IF:-ts-veth0}
 CLIENT_IF=${CLIENT_IF:-ts-veth1}
@@ -19,6 +19,8 @@ LOSS=${LOSS:-0.10%}
 DURATION=${DURATION:-12}
 TRIALS=${TRIALS:-2}
 TCP_BUFFER_MIB=${TCP_BUFFER_MIB:-4}
+MEMORY_LIMIT_MIB=${MEMORY_LIMIT_MIB:-}
+CGROUP_PREFIX="tcpshift-ci-$$"
 
 mkdir -p "$OUT"
 rm -f "$OUT"/*
@@ -28,6 +30,18 @@ command -v iperf3 >/dev/null
 command -v tc >/dev/null
 command -v jq >/dev/null
 
+cleanup_cgroups() {
+  if [[ -d /sys/fs/cgroup ]]; then
+    local cg
+    for cg in /sys/fs/cgroup/${CGROUP_PREFIX}-*; do
+      [[ -d "$cg" ]] || continue
+      # Processes are killed before this runs. Ignore a transient busy cgroup;
+      # the runner will discard its cgroup namespace after the job.
+      rmdir "$cg" >/dev/null 2>&1 || true
+    done
+  fi
+}
+
 cleanup() {
   set +e
   pkill -f "$BIN" >/dev/null 2>&1 || true
@@ -35,9 +49,38 @@ cleanup() {
   ip netns del "$CLIENT_NS" >/dev/null 2>&1 || true
   ip link del "$ROOT_IF" >/dev/null 2>&1 || true
   ip link del "$TUN_IF" >/dev/null 2>&1 || true
+  cleanup_cgroups
 }
 trap cleanup EXIT
 cleanup
+
+setup_memory_cgroup() {
+  local pid=$1 name=$2
+  [[ -n "$MEMORY_LIMIT_MIB" ]] || return 0
+
+  if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
+    echo "MEMORY_LIMIT_MIB requires cgroup v2" >&2
+    return 1
+  fi
+  if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
+    echo "cgroup v2 memory controller is unavailable" >&2
+    return 1
+  fi
+
+  local cg="/sys/fs/cgroup/${CGROUP_PREFIX}-${name}"
+  mkdir "$cg"
+  if [[ ! -f "$cg/memory.max" ]]; then
+    echo "memory controller is not delegated to $cg" >&2
+    return 1
+  fi
+
+  echo "$((MEMORY_LIMIT_MIB * 1024 * 1024))" > "$cg/memory.max"
+  if [[ -f "$cg/memory.swap.max" ]]; then
+    echo 0 > "$cg/memory.swap.max"
+  fi
+  echo "$pid" > "$cg/cgroup.procs"
+  printf '%s\n' "$cg"
+}
 
 sysctl -q -w net.ipv4.ip_forward=1
 sysctl -q -w net.ipv4.tcp_congestion_control=cubic || true
@@ -106,6 +149,12 @@ run_case() {
     >"${prefix}-proxy.log" 2>&1 &
   local proxy_pid=$!
 
+  local cg=""
+  if [[ -n "$MEMORY_LIMIT_MIB" ]]; then
+    cg=$(setup_memory_cgroup "$proxy_pid" "${name}-${trial}")
+    printf 'memory_limit_mib=%s\ncgroup=%s\n' "$MEMORY_LIMIT_MIB" "$cg" > "${prefix}-memory-limit.txt"
+  fi
+
   wait_ready "$proxy_pid" "${prefix}-proxy.log"
   local hz start_ticks end_ticks
   hz=$(getconf CLK_TCK)
@@ -116,14 +165,29 @@ run_case() {
     -c "$target" -p 5201 -R -t "$DURATION" --json \
     >"${prefix}-client.json" 2>"${prefix}-client.err"
 
+  if ! kill -0 "$proxy_pid" 2>/dev/null; then
+    echo "tcp-shift died during ${name} trial ${trial}; possible memory-limit/OOM failure" >&2
+    [[ -n "$cg" && -f "$cg/memory.events" ]] && cat "$cg/memory.events" >&2 || true
+    cat "${prefix}-proxy.log" >&2 || true
+    return 1
+  fi
+
   end_ticks=$(proc_ticks "$proxy_pid")
   local peak_rss
   peak_rss=$(awk '/VmHWM:/ {print $2}' "/proc/$proxy_pid/status")
   peak_rss=${peak_rss:-0}
 
+  if [[ -n "$cg" ]]; then
+    [[ -f "$cg/memory.peak" ]] && cat "$cg/memory.peak" > "${prefix}-cgroup-memory-peak-bytes.txt" || true
+    [[ -f "$cg/memory.events" ]] && cat "$cg/memory.events" > "${prefix}-cgroup-memory-events.txt" || true
+  fi
+
   kill -TERM "$proxy_pid" 2>/dev/null || true
   wait "$proxy_pid" 2>/dev/null || true
   wait "$backend_pid" 2>/dev/null || true
+  if [[ -n "$cg" ]]; then
+    rmdir "$cg" >/dev/null 2>&1 || true
+  fi
 
   local bps mbps cpu
   bps=$(jq -r '.end.sum_received.bits_per_second // .end.sum.bits_per_second // 0' "${prefix}-client.json")
