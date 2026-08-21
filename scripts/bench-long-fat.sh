@@ -15,7 +15,11 @@ CLIENT_IF=${CLIENT_IF:-ts-veth1}
 TUN_IF=${TUN_IF:-ts0}
 RATE=${RATE:-50mbit}
 ONE_WAY_DELAY=${ONE_WAY_DELAY:-50ms}
+# LOSS is retained as the compatibility default. DATA_LOSS shapes packets sent
+# from tcp-shift toward the remote client; ACK_LOSS shapes the reverse path.
 LOSS=${LOSS:-0.10%}
+DATA_LOSS=${DATA_LOSS:-$LOSS}
+ACK_LOSS=${ACK_LOSS:-$LOSS}
 RECOVERY=${RECOVERY:-rack}
 # tc netem defaults to a 1000-packet queue. At 100 Mbit/s and 100 ms of
 # one-way delay, the queue must already hold roughly 833 MTU-sized packets just
@@ -114,12 +118,15 @@ wait_pid_bounded() {
 }
 
 configure_netem() {
-  # replace resets queue state and statistics so every case starts from the
-  # same empty impairment queue and post-case qdisc counters are per-case.
+  # iperf3 runs with -R: tcp-shift is the WAN-facing sender. Packets emitted
+  # by tcp-shift leave the root namespace on ROOT_IF, so ROOT_IF is the data
+  # impairment path. TCP ACKs leave the client namespace on CLIENT_IF.
+  # Keeping these controls independent is important when debugging recovery:
+  # ACK loss can trigger very different behavior from actual data loss.
   tc qdisc replace dev "$ROOT_IF" root netem \
-    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
+    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$DATA_LOSS"
   ip netns exec "$CLIENT_NS" tc qdisc replace dev "$CLIENT_IF" root netem \
-    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
+    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$ACK_LOSS"
 }
 
 dump_network_state() {
@@ -127,6 +134,8 @@ dump_network_state() {
   {
     echo "label=$label"
     date -u +'%Y-%m-%dT%H:%M:%SZ'
+    echo "data_loss=$DATA_LOSS"
+    echo "ack_loss=$ACK_LOSS"
     echo '--- root routes ---'
     ip route show table main
     echo '--- root veth ---'
@@ -189,7 +198,9 @@ dump_network_state setup
 cat >"$OUT/scenario.txt" <<EOF
 rate=$RATE
 one_way_delay=$ONE_WAY_DELAY
-loss=$LOSS
+loss_compat_default=$LOSS
+data_loss=$DATA_LOSS
+ack_loss=$ACK_LOSS
 recovery=$RECOVERY
 netem_limit_packets=$NETEM_LIMIT
 duration_seconds=$DURATION
@@ -227,7 +238,7 @@ run_case() {
   local prefix="$OUT/${name}-${trial}"
   local cg=""
 
-  echo "=== case=$name trial=$trial engine=$engine cc=$cc recovery=$RECOVERY ==="
+  echo "=== case=$name trial=$trial engine=$engine cc=$cc recovery=$RECOVERY data_loss=$DATA_LOSS ack_loss=$ACK_LOSS ==="
   configure_netem
 
   iperf3 -s -1 -B 127.0.0.1 -p 5202 --json >"${prefix}-server.json" 2>"${prefix}-server.err" &
