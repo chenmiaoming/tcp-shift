@@ -27,7 +27,7 @@ jobs:
           sudo apt-get install -y iperf3 iproute2 jq
 
       - name: Build patched gVisor tcp-shift
-        run: ./scripts/build.sh
+        run: bash ./scripts/build.sh
 
       - name: Smoke test CLI
         run: ./bin/tcp-shift --help
@@ -40,7 +40,7 @@ jobs:
           DURATION: '12'
           TRIALS: '2'
           TCP_BUFFER_MIB: '4'
-        run: sudo -E ./scripts/bench-long-fat.sh
+        run: sudo -E bash ./scripts/bench-long-fat.sh
 
       - name: Publish benchmark summary
         if: always() && hashFiles('.bench/summary.md') != ''
