@@ -60,9 +60,10 @@ jobs:
 
   long-fat-benchmark:
     name: Long-fat (${{ matrix.scenario }})
-    # Keep recovery scenarios independent. Lossy cases use repeated trials on
-    # the same runner so BBR-vs-CUBIC comparisons are not based on a single
-    # random netem sample or cross-runner noise.
+    # Separate the two directions because iperf3 runs with -R: ROOT_IF carries
+    # WAN-facing TCP data from tcp-shift to the client, while CLIENT_IF carries
+    # ACKs back to tcp-shift. Bidirectional loss is useful as a stress case but
+    # is not sufficient to diagnose congestion control or recovery behavior.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -70,18 +71,28 @@ jobs:
       matrix:
         include:
           - scenario: lossless-rack
-            loss: '0%'
+            data_loss: '0%'
+            ack_loss: '0%'
             recovery: rack
             trials: '1'
-          # Stress case: netem loss is currently applied in both directions.
-          # This is intentionally named bidir; a data-only-loss performance
-          # scenario will be added separately after recovery behavior is stable.
+          - scenario: data-loss-rack
+            data_loss: '0.10%'
+            ack_loss: '0%'
+            recovery: rack
+            trials: '3'
+          - scenario: ack-loss-rack
+            data_loss: '0%'
+            ack_loss: '0.10%'
+            recovery: rack
+            trials: '3'
           - scenario: bidir-loss-rack
-            loss: '0.10%'
+            data_loss: '0.10%'
+            ack_loss: '0.10%'
             recovery: rack
             trials: '3'
           - scenario: bidir-loss-legacy
-            loss: '0.10%'
+            data_loss: '0.10%'
+            ack_loss: '0.10%'
             recovery: legacy
             trials: '3'
     steps:
@@ -105,7 +116,10 @@ jobs:
           # ~20 Mbit*second BDP: 100 Mbit/s and ~200 ms RTT.
           RATE: 100mbit
           ONE_WAY_DELAY: 100ms
-          LOSS: ${{ matrix.loss }}
+          # LOSS is left at 0 so directional settings below are authoritative.
+          LOSS: '0%'
+          DATA_LOSS: ${{ matrix.data_loss }}
+          ACK_LOSS: ${{ matrix.ack_loss }}
           RECOVERY: ${{ matrix.recovery }}
           # netem's default 1000-packet queue is only slightly above the
           # ~833-packet one-way BDP here and unfairly drops MSS-sized Netstack
