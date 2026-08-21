@@ -32,21 +32,27 @@ else
   git -C "$GVISOR_DIR" remote set-url origin "$GVISOR_REMOTE"
 fi
 
-# GVISOR_REF may be a verified SHA, a tag, or a moving ref such as master.
-# Always resolve it to a concrete commit before patching/building so every
-# produced binary can report the exact gVisor source revision it contains.
+# tcp-shift consumes gVisor's synthetic `go` branch, which is the upstream-
+# supported (best-effort) projection for external Go/Netstack users. It contains
+# generated Go/assembly sources that are only templates in the authoritative
+# Bazel `master` tree. GVISOR_REF may be the moving `go` branch or an exact
+# commit from that branch; always resolve it to a concrete SHA for provenance.
 git -C "$GVISOR_DIR" fetch -q --depth=1 origin "$GVISOR_REF"
 GVISOR_SHA=$(git -C "$GVISOR_DIR" rev-parse FETCH_HEAD)
 git -C "$GVISOR_DIR" checkout -q --detach "$GVISOR_SHA"
 git -C "$GVISOR_DIR" reset -q --hard "$GVISOR_SHA"
 git -C "$GVISOR_DIR" clean -q -fd
 
-python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+# Fail with a useful diagnostic if somebody points GVISOR_REF at the Bazel
+# master tree instead of a synthetic-Go revision. Building raw master with the
+# standard Go toolchain would otherwise fail later on unrendered *.tmpl.* files.
+if find "$GVISOR_DIR/pkg" -type f -name '*.tmpl.*' -print -quit | grep -q .; then
+  echo "gVisor ref $GVISOR_REF contains Bazel template sources." >&2
+  echo "Use the synthetic 'go' branch (GVISOR_REF=go) or a commit from it." >&2
+  exit 1
+fi
 
-# gVisor is Bazel-first. A few _test.go files use package layouts that are
-# valid for its Bazel targets but not for an external conventional Go module.
-# This checkout is disposable build staging, so exclude tests from it only.
-find "$GVISOR_DIR" -type f -name '*_test.go' -delete
+python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
 
 gofmt -w \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
@@ -66,6 +72,7 @@ cat > "$ROOT/bin/gvisor-build.txt" <<EOF
 ref=$GVISOR_REF
 sha=$GVISOR_SHA
 remote=$GVISOR_REMOTE
+source_branch=go
 EOF
 
-printf 'built %s using gVisor ref=%s sha=%s\n' "$ROOT/bin/tcp-shift" "$GVISOR_REF" "$GVISOR_SHA"
+printf 'built %s using gVisor synthetic-go ref=%s sha=%s\n' "$ROOT/bin/tcp-shift" "$GVISOR_REF" "$GVISOR_SHA"
