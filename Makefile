@@ -4,7 +4,7 @@ build:
 	bash ./scripts/build.sh
 
 build-upstream:
-	GVISOR_REF=master bash ./scripts/build.sh
+	GVISOR_REF=go bash ./scripts/build.sh
 
 version: build
 	./bin/tcp-shift --version
