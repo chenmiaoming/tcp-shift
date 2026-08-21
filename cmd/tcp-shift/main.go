@@ -30,7 +30,14 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
-const nicID tcpip.NICID = 1
+const (
+	nicID tcpip.NICID = 1
+
+	// TCP_CONGESTION from linux/uapi/linux/tcp.h. The standard syscall package
+	// exposes SetsockoptString but does not consistently expose this Linux-only
+	// option across Go toolchain versions.
+	linuxTCP_CONGESTION = 13
+)
 
 var (
 	buildVersion   = "dev"
@@ -61,7 +68,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print tcp-shift and gVisor build revisions")
 	flag.StringVar(&cfg.engine, "engine", "netstack", "frontend engine: netstack or native")
 	flag.StringVar(&cfg.tunName, "tun", "ts0", "existing TUN interface owned by the current user")
-	flag.StringVar(&cfg.listen, "listen", "10.99.0.2:5201", "gVisor TCP listen address")
+	flag.StringVar(&cfg.listen, "listen", "10.99.0.2:5201", "WAN-facing TCP listen address")
 	flag.StringVar(&cfg.backend, "backend", "127.0.0.1:5202", "host-kernel TCP backend")
 	flag.StringVar(&cfg.cc, "cc", "cubic", "congestion control: reno, cubic, or bbr")
 	flag.StringVar(&cfg.recovery, "recovery", "rack", "gVisor TCP loss recovery: rack or legacy")
@@ -96,6 +103,9 @@ func main() {
 		err      error
 	)
 	if cfg.engine == "native" {
+		if err := validateNativeCongestionControl(cfg.cc); err != nil {
+			log.Fatalf("native congestion control %q unavailable: %v", cfg.cc, err)
+		}
 		listener, err = net.Listen("tcp", cfg.listen)
 	} else {
 		s, listener, err = newStack(cfg)
@@ -132,8 +142,44 @@ func main() {
 			log.Printf("accept: %v", err)
 			continue
 		}
+		if cfg.engine == "native" {
+			// Set the accepted WAN-facing socket explicitly. This makes the native
+			// CUBIC/BBR baseline independent of the host's global sysctl default.
+			if err := setNativeCongestionControl(front, cfg.cc); err != nil {
+				log.Printf("set native congestion control %q: %v", cfg.cc, err)
+				_ = front.Close()
+				continue
+			}
+		}
 		go relay(front, cfg.backend)
 	}
+}
+
+func validateNativeCongestionControl(cc string) error {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, syscall.IPPROTO_TCP)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	return syscall.SetsockoptString(fd, syscall.IPPROTO_TCP, linuxTCP_CONGESTION, cc)
+}
+
+func setNativeCongestionControl(conn net.Conn, cc string) error {
+	sc, ok := conn.(syscall.Conn)
+	if !ok {
+		return fmt.Errorf("connection type %T has no syscall access", conn)
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var sockErr error
+	if err := raw.Control(func(fd uintptr) {
+		sockErr = syscall.SetsockoptString(int(fd), syscall.IPPROTO_TCP, linuxTCP_CONGESTION, cc)
+	}); err != nil {
+		return err
+	}
+	return sockErr
 }
 
 func newStack(cfg config) (*stack.Stack, net.Listener, error) {
