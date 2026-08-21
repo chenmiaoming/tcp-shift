@@ -37,8 +37,10 @@ gofmt -w \
 cp "$ROOT/go.mod" "$ROOT/go.local.mod"
 rm -f "$ROOT/go.local.sum"
 go mod edit -modfile="$ROOT/go.local.mod" -replace="gvisor.dev/gvisor=$GVISOR_DIR"
-go mod tidy -modfile="$ROOT/go.local.mod"
 
-go build -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
+# Do not run `go mod tidy` here: the upstream gVisor tree contains Bazel-oriented
+# test packages that are not intended to be loaded as one conventional Go test
+# module. `go build` ignores those _test.go files and is the path we need.
+go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
 
 printf 'built %s using gVisor %s\n' "$ROOT/bin/tcp-shift" "$GVISOR_SHA"
