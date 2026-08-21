@@ -3,34 +3,49 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
-GVISOR_SHA=${GVISOR_SHA:-80336ad549d71d82c7f77a79cf91d628fa34135a}
-GVISOR_DIR="$ROOT/.deps/gvisor"
+
+BASELINE_FILE="$ROOT/.gvisor-baseline"
+GVISOR_REMOTE=${GVISOR_REMOTE:-https://github.com/google/gvisor.git}
+GVISOR_REF=${GVISOR_REF:-}
+GVISOR_DIR=${GVISOR_DIR:-"$ROOT/.deps/gvisor"}
+TCP_SHIFT_VERSION=${TCP_SHIFT_VERSION:-dev}
+
+if [[ -z "$GVISOR_REF" ]]; then
+  if [[ ! -f "$BASELINE_FILE" ]]; then
+    echo "missing $BASELINE_FILE and GVISOR_REF is not set" >&2
+    exit 1
+  fi
+  GVISOR_REF=$(awk 'NF && $1 !~ /^#/ { print $1; exit }' "$BASELINE_FILE")
+fi
+if [[ -z "$GVISOR_REF" ]]; then
+  echo "empty gVisor ref" >&2
+  exit 1
+fi
 
 mkdir -p "$ROOT/.deps" "$ROOT/bin"
 
 if [[ ! -d "$GVISOR_DIR/.git" ]]; then
   rm -rf "$GVISOR_DIR"
   git init -q "$GVISOR_DIR"
-  git -C "$GVISOR_DIR" remote add origin https://github.com/google/gvisor.git
-  git -C "$GVISOR_DIR" fetch --depth=1 origin "$GVISOR_SHA"
-  git -C "$GVISOR_DIR" checkout -q --detach FETCH_HEAD
+  git -C "$GVISOR_DIR" remote add origin "$GVISOR_REMOTE"
+else
+  git -C "$GVISOR_DIR" remote set-url origin "$GVISOR_REMOTE"
 fi
 
-actual=$(git -C "$GVISOR_DIR" rev-parse HEAD)
-if [[ "$actual" != "$GVISOR_SHA" ]]; then
-  echo "gVisor checkout mismatch: expected $GVISOR_SHA, got $actual" >&2
-  exit 1
-fi
-
-# Always reset before patching so repeated builds are deterministic.
+# GVISOR_REF may be a verified SHA, a tag, or a moving ref such as master.
+# Always resolve it to a concrete commit before patching/building so every
+# produced binary can report the exact gVisor source revision it contains.
+git -C "$GVISOR_DIR" fetch -q --depth=1 origin "$GVISOR_REF"
+GVISOR_SHA=$(git -C "$GVISOR_DIR" rev-parse FETCH_HEAD)
+git -C "$GVISOR_DIR" checkout -q --detach "$GVISOR_SHA"
 git -C "$GVISOR_DIR" reset -q --hard "$GVISOR_SHA"
 git -C "$GVISOR_DIR" clean -q -fd
+
 python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
 
-# gVisor's Bazel tree contains _test.go files whose package names are valid in
-# its Bazel targets but not in a conventional Go module directory (for example
-# pkg/tcpip/stack/bridge_test.go uses package bridge). They are irrelevant to
-# the library build, so remove tests only from this disposable staging checkout.
+# gVisor is Bazel-first. A few _test.go files use package layouts that are
+# valid for its Bazel targets but not for an external conventional Go module.
+# This checkout is disposable build staging, so exclude tests from it only.
 find "$GVISOR_DIR" -type f -name '*_test.go' -delete
 
 gofmt -w \
@@ -44,6 +59,13 @@ cp "$ROOT/go.mod" "$ROOT/go.local.mod"
 rm -f "$ROOT/go.local.sum"
 go mod edit -modfile="$ROOT/go.local.mod" -replace="gvisor.dev/gvisor=$GVISOR_DIR"
 
-go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
+LDFLAGS="-s -w -X main.buildVersion=$TCP_SHIFT_VERSION -X main.gvisorRef=$GVISOR_REF -X main.gvisorRevision=$GVISOR_SHA"
+go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags="$LDFLAGS" -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
 
-printf 'built %s using gVisor %s\n' "$ROOT/bin/tcp-shift" "$GVISOR_SHA"
+cat > "$ROOT/bin/gvisor-build.txt" <<EOF
+ref=$GVISOR_REF
+sha=$GVISOR_SHA
+remote=$GVISOR_REMOTE
+EOF
+
+printf 'built %s using gVisor ref=%s sha=%s\n' "$ROOT/bin/tcp-shift" "$GVISOR_REF" "$GVISOR_SHA"
