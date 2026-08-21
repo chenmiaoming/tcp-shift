@@ -20,6 +20,7 @@ DURATION=${DURATION:-12}
 TRIALS=${TRIALS:-2}
 TCP_BUFFER_MIB=${TCP_BUFFER_MIB:-4}
 MEMORY_LIMIT_MIB=${MEMORY_LIMIT_MIB:-}
+CASE_TIMEOUT=${CASE_TIMEOUT:-$((DURATION + 30))}
 CGROUP_PREFIX="tcpshift-ci-$$"
 
 mkdir -p "$OUT"
@@ -29,14 +30,13 @@ test -x "$BIN" || { echo "missing $BIN; run scripts/build.sh first" >&2; exit 1;
 command -v iperf3 >/dev/null
 command -v tc >/dev/null
 command -v jq >/dev/null
+command -v timeout >/dev/null
 
 cleanup_cgroups() {
   if [[ -d /sys/fs/cgroup ]]; then
     local cg
     for cg in /sys/fs/cgroup/${CGROUP_PREFIX}-*; do
       [[ -d "$cg" ]] || continue
-      # Processes are killed before this runs. Ignore a transient busy cgroup;
-      # the runner will discard its cgroup namespace after the job.
       rmdir "$cg" >/dev/null 2>&1 || true
     done
   fi
@@ -54,8 +54,8 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
-setup_memory_cgroup() {
-  local pid=$1 name=$2
+create_memory_cgroup() {
+  local name=$1
   [[ -n "$MEMORY_LIMIT_MIB" ]] || return 0
 
   if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
@@ -78,8 +78,23 @@ setup_memory_cgroup() {
   if [[ -f "$cg/memory.swap.max" ]]; then
     echo 0 > "$cg/memory.swap.max"
   fi
-  echo "$pid" > "$cg/cgroup.procs"
   printf '%s\n' "$cg"
+}
+
+wait_pid_bounded() {
+  local pid=$1 seconds=$2
+  local ticks=$((seconds * 10))
+  for _ in $(seq 1 "$ticks"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 0.1
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
 }
 
 sysctl -q -w net.ipv4.ip_forward=1
@@ -134,26 +149,42 @@ wait_ready() {
 run_case() {
   local name=$1 engine=$2 cc=$3 listen=$4 trial=$5
   local prefix="$OUT/${name}-${trial}"
+  local cg=""
+
+  echo "=== case=$name trial=$trial engine=$engine cc=$cc ==="
 
   iperf3 -s -1 -B 127.0.0.1 -p 5202 --json >"${prefix}-server.json" 2>"${prefix}-server.err" &
   local backend_pid=$!
 
-  "$BIN" \
-    --engine "$engine" \
-    --tun "$TUN_IF" \
-    --listen "$listen" \
-    --backend 127.0.0.1:5202 \
-    --cc "$cc" \
-    --tcp-buffer-mib "$TCP_BUFFER_MIB" \
-    --stats-interval 1s \
-    >"${prefix}-proxy.log" 2>&1 &
-  local proxy_pid=$!
-
-  local cg=""
   if [[ -n "$MEMORY_LIMIT_MIB" ]]; then
-    cg=$(setup_memory_cgroup "$proxy_pid" "${name}-${trial}")
+    cg=$(create_memory_cgroup "${name}-${trial}")
     printf 'memory_limit_mib=%s\ncgroup=%s\n' "$MEMORY_LIMIT_MIB" "$cg" > "${prefix}-memory-limit.txt"
+
+    # Enter the cgroup before exec so *all* relay allocations, including Go
+    # runtime startup, are charged to the 128 MiB/no-swap budget.
+    (
+      echo "$BASHPID" > "$cg/cgroup.procs"
+      exec "$BIN" \
+        --engine "$engine" \
+        --tun "$TUN_IF" \
+        --listen "$listen" \
+        --backend 127.0.0.1:5202 \
+        --cc "$cc" \
+        --tcp-buffer-mib "$TCP_BUFFER_MIB" \
+        --stats-interval 1s
+    ) >"${prefix}-proxy.log" 2>&1 &
+  else
+    "$BIN" \
+      --engine "$engine" \
+      --tun "$TUN_IF" \
+      --listen "$listen" \
+      --backend 127.0.0.1:5202 \
+      --cc "$cc" \
+      --tcp-buffer-mib "$TCP_BUFFER_MIB" \
+      --stats-interval 1s \
+      >"${prefix}-proxy.log" 2>&1 &
   fi
+  local proxy_pid=$!
 
   wait_ready "$proxy_pid" "${prefix}-proxy.log"
   local hz start_ticks end_ticks
@@ -161,14 +192,27 @@ run_case() {
   start_ticks=$(proc_ticks "$proxy_pid")
 
   local target=${listen%:*}
-  ip netns exec "$CLIENT_NS" iperf3 \
-    -c "$target" -p 5201 -R -t "$DURATION" --json \
-    >"${prefix}-client.json" 2>"${prefix}-client.err"
+  if ! timeout --signal=TERM "${CASE_TIMEOUT}s" \
+      ip netns exec "$CLIENT_NS" iperf3 \
+        -c "$target" -p 5201 -R -t "$DURATION" --json \
+        >"${prefix}-client.json" 2>"${prefix}-client.err"; then
+    echo "iperf3 failed or exceeded ${CASE_TIMEOUT}s for $name trial $trial" >&2
+    cat "${prefix}-client.err" >&2 || true
+    cat "${prefix}-proxy.log" >&2 || true
+    if [[ -n "$cg" && -f "$cg/memory.events" ]]; then
+      cat "$cg/memory.events" >&2 || true
+    fi
+    kill -TERM "$proxy_pid" 2>/dev/null || true
+    wait_pid_bounded "$proxy_pid" 3
+    wait_pid_bounded "$backend_pid" 3
+    return 1
+  fi
 
   if ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "tcp-shift died during ${name} trial ${trial}; possible memory-limit/OOM failure" >&2
     [[ -n "$cg" && -f "$cg/memory.events" ]] && cat "$cg/memory.events" >&2 || true
     cat "${prefix}-proxy.log" >&2 || true
+    wait_pid_bounded "$backend_pid" 3
     return 1
   fi
 
@@ -183,8 +227,8 @@ run_case() {
   fi
 
   kill -TERM "$proxy_pid" 2>/dev/null || true
-  wait "$proxy_pid" 2>/dev/null || true
-  wait "$backend_pid" 2>/dev/null || true
+  wait_pid_bounded "$proxy_pid" 3
+  wait_pid_bounded "$backend_pid" 3
   if [[ -n "$cg" ]]; then
     rmdir "$cg" >/dev/null 2>&1 || true
   fi
@@ -198,7 +242,7 @@ run_case() {
 
 for trial in $(seq 1 "$TRIALS"); do
   # Same Go relay, but the frontend TCP socket is the host kernel. This gives a
-  # useful lower-bound for incremental netstack memory/CPU overhead.
+  # useful lower-bound for incremental Netstack memory/CPU overhead.
   run_case native-cubic native cubic 10.99.0.1:5201 "$trial"
   run_case gvisor-cubic netstack cubic 10.99.0.2:5201 "$trial"
   run_case gvisor-bbr netstack bbr 10.99.0.2:5201 "$trial"
