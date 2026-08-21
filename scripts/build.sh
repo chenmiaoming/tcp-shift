@@ -27,6 +27,12 @@ git -C "$GVISOR_DIR" reset -q --hard "$GVISOR_SHA"
 git -C "$GVISOR_DIR" clean -q -fd
 python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
 
+# gVisor's Bazel tree contains _test.go files whose package names are valid in
+# its Bazel targets but not in a conventional Go module directory (for example
+# pkg/tcpip/stack/bridge_test.go uses package bridge). They are irrelevant to
+# the library build, so remove tests only from this disposable staging checkout.
+find "$GVISOR_DIR" -type f -name '*_test.go' -delete
+
 gofmt -w \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
@@ -38,9 +44,6 @@ cp "$ROOT/go.mod" "$ROOT/go.local.mod"
 rm -f "$ROOT/go.local.sum"
 go mod edit -modfile="$ROOT/go.local.mod" -replace="gvisor.dev/gvisor=$GVISOR_DIR"
 
-# Do not run `go mod tidy` here: the upstream gVisor tree contains Bazel-oriented
-# test packages that are not intended to be loaded as one conventional Go test
-# module. `go build` ignores those _test.go files and is the path we need.
 go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
 
 printf 'built %s using gVisor %s\n' "$ROOT/bin/tcp-shift" "$GVISOR_SHA"
