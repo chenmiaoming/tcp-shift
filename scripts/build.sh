@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT"
 GVISOR_SHA=${GVISOR_SHA:-80336ad549d71d82c7f77a79cf91d628fa34135a}
 GVISOR_DIR="$ROOT/.deps/gvisor"
 
@@ -38,6 +39,6 @@ rm -f "$ROOT/go.local.sum"
 go mod edit -modfile="$ROOT/go.local.mod" -replace="gvisor.dev/gvisor=$GVISOR_DIR"
 go mod tidy -modfile="$ROOT/go.local.mod"
 
-go build -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" "$ROOT/cmd/tcp-shift"
+go build -modfile="$ROOT/go.local.mod" -trimpath -ldflags='-s -w' -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
 
 printf 'built %s using gVisor %s\n' "$ROOT/bin/tcp-shift" "$GVISOR_SHA"
