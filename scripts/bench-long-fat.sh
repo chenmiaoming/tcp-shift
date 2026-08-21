@@ -17,6 +17,13 @@ RATE=${RATE:-50mbit}
 ONE_WAY_DELAY=${ONE_WAY_DELAY:-50ms}
 LOSS=${LOSS:-0.10%}
 RECOVERY=${RECOVERY:-rack}
+# tc netem defaults to a 1000-packet queue. At 100 Mbit/s and 100 ms of
+# one-way delay, the queue must already hold roughly 833 MTU-sized packets just
+# to represent the BDP. That default therefore creates unintended qdisc drops,
+# especially for Netstack's MSS-sized TUN writes, while native TCP may benefit
+# from GSO and consume far fewer queue entries. Keep the emulation queue well
+# above BDP so configured loss, not queue overflow, is the impairment.
+NETEM_LIMIT=${NETEM_LIMIT:-10000}
 DURATION=${DURATION:-12}
 TRIALS=${TRIALS:-2}
 TCP_BUFFER_MIB=${TCP_BUFFER_MIB:-4}
@@ -106,6 +113,15 @@ wait_pid_bounded() {
   wait "$pid" 2>/dev/null || true
 }
 
+configure_netem() {
+  # replace resets queue state and statistics so every case starts from the
+  # same empty impairment queue and post-case qdisc counters are per-case.
+  tc qdisc replace dev "$ROOT_IF" root netem \
+    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
+  ip netns exec "$CLIENT_NS" tc qdisc replace dev "$CLIENT_IF" root netem \
+    limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
+}
+
 dump_network_state() {
   local label=$1
   {
@@ -115,12 +131,18 @@ dump_network_state() {
     ip route show table main
     echo '--- root veth ---'
     ip -s -details addr show dev "$ROOT_IF" || true
+    echo '--- root veth qdisc ---'
+    tc -s -d qdisc show dev "$ROOT_IF" || true
     echo '--- TUN ---'
     ip -s -details addr show dev "$TUN_IF" || true
+    echo '--- TUN qdisc ---'
+    tc -s -d qdisc show dev "$TUN_IF" || true
     echo '--- client routes ---'
     ip netns exec "$CLIENT_NS" ip route show table main || true
     echo '--- client veth ---'
     ip netns exec "$CLIENT_NS" ip -s -details addr show dev "$CLIENT_IF" || true
+    echo '--- client veth qdisc ---'
+    ip netns exec "$CLIENT_NS" tc -s -d qdisc show dev "$CLIENT_IF" || true
     echo '--- FORWARD chain ---'
     iptables -nvL FORWARD --line-numbers || true
     echo '--- forwarding sysctls ---'
@@ -162,17 +184,14 @@ iptables -I FORWARD 1 -i "$TUN_IF" -o "$ROOT_IF" -j ACCEPT
 sysctl -q -w "net.ipv4.conf.${ROOT_IF}.rp_filter=0" || true
 sysctl -q -w "net.ipv4.conf.${TUN_IF}.rp_filter=0" || true
 
-# Shape each egress direction. The resulting RTT is approximately 2*delay and
-# both data and ACK paths see the configured bottleneck/loss model.
-tc qdisc add dev "$ROOT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
-ip netns exec "$CLIENT_NS" tc qdisc add dev "$CLIENT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
-
+configure_netem
 dump_network_state setup
 cat >"$OUT/scenario.txt" <<EOF
 rate=$RATE
 one_way_delay=$ONE_WAY_DELAY
 loss=$LOSS
 recovery=$RECOVERY
+netem_limit_packets=$NETEM_LIMIT
 duration_seconds=$DURATION
 trials=$TRIALS
 tcp_buffer_mib=$TCP_BUFFER_MIB
@@ -209,6 +228,7 @@ run_case() {
   local cg=""
 
   echo "=== case=$name trial=$trial engine=$engine cc=$cc recovery=$RECOVERY ==="
+  configure_netem
 
   iperf3 -s -1 -B 127.0.0.1 -p 5202 --json >"${prefix}-server.json" 2>"${prefix}-server.err" &
   local backend_pid=$!
@@ -268,9 +288,10 @@ run_case() {
     return 1
   fi
 
+  dump_network_state "${name}-${trial}-post"
+
   if ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "tcp-shift died during ${name} trial ${trial}; possible memory-limit/OOM failure" >&2
-    dump_network_state "${name}-${trial}-relay-died"
     [[ -n "$cg" && -f "$cg/memory.events" ]] && cat "$cg/memory.events" >&2 || true
     cat "${prefix}-proxy.log" >&2 || true
     wait_pid_bounded "$backend_pid" 3
