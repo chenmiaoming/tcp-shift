@@ -16,12 +16,18 @@ TUN_IF=${TUN_IF:-ts0}
 RATE=${RATE:-50mbit}
 ONE_WAY_DELAY=${ONE_WAY_DELAY:-50ms}
 LOSS=${LOSS:-0.10%}
+RECOVERY=${RECOVERY:-rack}
 DURATION=${DURATION:-12}
 TRIALS=${TRIALS:-2}
 TCP_BUFFER_MIB=${TCP_BUFFER_MIB:-4}
 MEMORY_LIMIT_MIB=${MEMORY_LIMIT_MIB:-}
 CASE_TIMEOUT=${CASE_TIMEOUT:-$((DURATION + 30))}
 CGROUP_PREFIX="tcpshift-ci-$$"
+
+if [[ "$RECOVERY" != rack && "$RECOVERY" != legacy ]]; then
+  echo "RECOVERY must be rack or legacy" >&2
+  exit 1
+fi
 
 mkdir -p "$OUT"
 rm -f "$OUT"/*
@@ -162,6 +168,16 @@ tc qdisc add dev "$ROOT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss 
 ip netns exec "$CLIENT_NS" tc qdisc add dev "$CLIENT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
 
 dump_network_state setup
+cat >"$OUT/scenario.txt" <<EOF
+rate=$RATE
+one_way_delay=$ONE_WAY_DELAY
+loss=$LOSS
+recovery=$RECOVERY
+duration_seconds=$DURATION
+trials=$TRIALS
+tcp_buffer_mib=$TCP_BUFFER_MIB
+memory_limit_mib=${MEMORY_LIMIT_MIB:-none}
+EOF
 printf 'case,trial,bps,mbps,peak_rss_kib,cpu_seconds\n' > "$OUT/results.csv"
 
 proc_ticks() {
@@ -192,7 +208,7 @@ run_case() {
   local prefix="$OUT/${name}-${trial}"
   local cg=""
 
-  echo "=== case=$name trial=$trial engine=$engine cc=$cc ==="
+  echo "=== case=$name trial=$trial engine=$engine cc=$cc recovery=$RECOVERY ==="
 
   iperf3 -s -1 -B 127.0.0.1 -p 5202 --json >"${prefix}-server.json" 2>"${prefix}-server.err" &
   local backend_pid=$!
@@ -211,6 +227,7 @@ run_case() {
         --listen "$listen" \
         --backend 127.0.0.1:5202 \
         --cc "$cc" \
+        --recovery "$RECOVERY" \
         --tcp-buffer-mib "$TCP_BUFFER_MIB" \
         --stats-interval 1s
     ) >"${prefix}-proxy.log" 2>&1 &
@@ -221,6 +238,7 @@ run_case() {
       --listen "$listen" \
       --backend 127.0.0.1:5202 \
       --cc "$cc" \
+      --recovery "$RECOVERY" \
       --tcp-buffer-mib "$TCP_BUFFER_MIB" \
       --stats-interval 1s \
       >"${prefix}-proxy.log" 2>&1 &
