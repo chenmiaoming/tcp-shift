@@ -60,30 +60,30 @@ jobs:
 
   long-fat-benchmark:
     name: Long-fat (${{ matrix.scenario }})
-    # Keep the three recovery scenarios independent. The goal is to distinguish
-    # generic Netstack overhead from loss-recovery pathologies before treating
-    # BBR-vs-CUBIC deltas as congestion-control results.
+    # Keep recovery scenarios independent. Lossy cases use repeated trials on
+    # the same runner so BBR-vs-CUBIC comparisons are not based on a single
+    # random netem sample or cross-runner noise.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Control: same high-BDP path with no artificial packet loss. If this
-          # is fast, the large lossy-path gap is not generic TUN/Netstack cost.
           - scenario: lossless-rack
             loss: '0%'
             recovery: rack
-          # Current gVisor default. protocol.go defaults TCPRecovery to
-          # TCPRACKLossDetection.
-          - scenario: lossy-rack
+            trials: '1'
+          # Stress case: netem loss is currently applied in both directions.
+          # This is intentionally named bidir; a data-only-loss performance
+          # scenario will be added separately after recovery behavior is stable.
+          - scenario: bidir-loss-rack
             loss: '0.10%'
             recovery: rack
-          # Diagnostic control: keep SACK and the same loss, but disable RACK
-          # loss detection/recovery by setting TCPRecovery(0).
-          - scenario: lossy-legacy
+            trials: '3'
+          - scenario: bidir-loss-legacy
             loss: '0.10%'
             recovery: legacy
+            trials: '3'
     steps:
       - uses: actions/checkout@v4
 
@@ -112,10 +112,7 @@ jobs:
           # bursts while GSO-compressed native traffic consumes fewer entries.
           NETEM_LIMIT: '10000'
           DURATION: '15'
-          # One trial is deliberate while this is a diagnostic matrix. Once
-          # recovery behavior is understood, statistical runs can move to a
-          # separate performance gate.
-          TRIALS: '1'
+          TRIALS: ${{ matrix.trials }}
           TCP_BUFFER_MIB: '8'
           MEMORY_LIMIT_MIB: '128'
           CASE_TIMEOUT: '45'
