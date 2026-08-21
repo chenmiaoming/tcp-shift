@@ -9,31 +9,39 @@ fi
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BIN="$ROOT/bin/tcp-shift"
 OUT=${OUT:-"$ROOT/.bench"}
+ROUTER_NS=${ROUTER_NS:-tcpshift-router}
 CLIENT_NS=${CLIENT_NS:-tcpshift-client}
-ROOT_IF=${ROOT_IF:-ts-veth0}
-CLIENT_IF=${CLIENT_IF:-ts-veth1}
+ROOT_WAN_IF=${ROOT_WAN_IF:-ts-wan0}
+ROUTER_WAN_IF=${ROUTER_WAN_IF:-ts-wan1}
+ROUTER_CLIENT_IF=${ROUTER_CLIENT_IF:-ts-lan0}
+CLIENT_IF=${CLIENT_IF:-ts-lan1}
 TUN_IF=${TUN_IF:-ts0}
+
+# RFC 2544 benchmarking space. The WAN-facing endpoints are deliberately
+# separate from the transit links so native TCP and gVisor TCP use the same
+# routed impairment path.
+NATIVE_ADDR=${NATIVE_ADDR:-198.18.0.1}
+GVISOR_ADDR=${GVISOR_ADDR:-198.18.0.2}
+ROOT_WAN_ADDR=${ROOT_WAN_ADDR:-198.19.0.1/30}
+ROUTER_WAN_ADDR=${ROUTER_WAN_ADDR:-198.19.0.2/30}
+ROUTER_CLIENT_ADDR=${ROUTER_CLIENT_ADDR:-198.19.0.5/30}
+CLIENT_ADDR=${CLIENT_ADDR:-198.19.0.6/30}
+ROOT_WAN_IP=${ROOT_WAN_ADDR%/*}
+ROUTER_WAN_IP=${ROUTER_WAN_ADDR%/*}
+ROUTER_CLIENT_IP=${ROUTER_CLIENT_ADDR%/*}
+CLIENT_IP=${CLIENT_ADDR%/*}
+
 RATE=${RATE:-50mbit}
 ONE_WAY_DELAY=${ONE_WAY_DELAY:-50ms}
-# LOSS is retained as the compatibility default. DATA_LOSS shapes packets sent
-# from tcp-shift toward the remote client; ACK_LOSS shapes the reverse path.
 LOSS=${LOSS:-0.10%}
 DATA_LOSS=${DATA_LOSS:-$LOSS}
 ACK_LOSS=${ACK_LOSS:-$LOSS}
 RECOVERY=${RECOVERY:-rack}
-# tc netem defaults to a 1000-packet queue. At 100 Mbit/s and 100 ms of
-# one-way delay, the queue must already hold roughly 833 MTU-sized packets just
-# to represent the BDP. That default therefore creates unintended qdisc drops,
-# especially for Netstack's MSS-sized TUN writes, while native TCP may benefit
-# from GSO and consume far fewer queue entries. Keep the emulation queue well
-# above BDP so configured loss, not queue overflow, is the impairment.
 NETEM_LIMIT=${NETEM_LIMIT:-10000}
 DURATION=${DURATION:-12}
 TRIALS=${TRIALS:-2}
 TCP_BUFFER_MIB=${TCP_BUFFER_MIB:-4}
-MEMORY_LIMIT_MIB=${MEMORY_LIMIT_MIB:-}
 CASE_TIMEOUT=${CASE_TIMEOUT:-$((DURATION + 30))}
-CGROUP_PREFIX="tcpshift-ci-$$"
 
 if [[ "$RECOVERY" != rack && "$RECOVERY" != legacy ]]; then
   echo "RECOVERY must be rack or legacy" >&2
@@ -50,56 +58,29 @@ command -v jq >/dev/null
 command -v timeout >/dev/null
 command -v iptables >/dev/null
 
-cleanup_cgroups() {
-  if [[ -d /sys/fs/cgroup ]]; then
-    local cg
-    for cg in /sys/fs/cgroup/${CGROUP_PREFIX}-*; do
-      [[ -d "$cg" ]] || continue
-      rmdir "$cg" >/dev/null 2>&1 || true
-    done
-  fi
-}
+if command -v modprobe >/dev/null 2>&1; then
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+fi
+AVAILABLE_CC=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)
+if ! grep -qw bbr <<<"$AVAILABLE_CC"; then
+  echo "native Linux BBR is unavailable; available congestion controls: $AVAILABLE_CC" >&2
+  exit 1
+fi
 
 cleanup() {
   set +e
   pkill -f "$BIN" >/dev/null 2>&1 || true
   pkill -f 'iperf3 -s -1 -B 127.0.0.1 -p 5202' >/dev/null 2>&1 || true
-  iptables -D FORWARD -i "$ROOT_IF" -o "$TUN_IF" -j ACCEPT >/dev/null 2>&1 || true
-  iptables -D FORWARD -i "$TUN_IF" -o "$ROOT_IF" -j ACCEPT >/dev/null 2>&1 || true
+  iptables -D FORWARD -i "$ROOT_WAN_IF" -o "$TUN_IF" -j ACCEPT >/dev/null 2>&1 || true
+  iptables -D FORWARD -i "$TUN_IF" -o "$ROOT_WAN_IF" -j ACCEPT >/dev/null 2>&1 || true
   ip netns del "$CLIENT_NS" >/dev/null 2>&1 || true
-  ip link del "$ROOT_IF" >/dev/null 2>&1 || true
+  ip netns del "$ROUTER_NS" >/dev/null 2>&1 || true
+  ip link del "$ROOT_WAN_IF" >/dev/null 2>&1 || true
   ip link del "$TUN_IF" >/dev/null 2>&1 || true
-  cleanup_cgroups
+  ip addr del "$NATIVE_ADDR/32" dev lo >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 cleanup
-
-create_memory_cgroup() {
-  local name=$1
-  [[ -n "$MEMORY_LIMIT_MIB" ]] || return 0
-
-  if [[ ! -f /sys/fs/cgroup/cgroup.controllers ]]; then
-    echo "MEMORY_LIMIT_MIB requires cgroup v2" >&2
-    return 1
-  fi
-  if ! grep -qw memory /sys/fs/cgroup/cgroup.controllers; then
-    echo "cgroup v2 memory controller is unavailable" >&2
-    return 1
-  fi
-
-  local cg="/sys/fs/cgroup/${CGROUP_PREFIX}-${name}"
-  mkdir "$cg"
-  if [[ ! -f "$cg/memory.max" ]]; then
-    echo "memory controller is not delegated to $cg" >&2
-    return 1
-  fi
-
-  echo "$((MEMORY_LIMIT_MIB * 1024 * 1024))" > "$cg/memory.max"
-  if [[ -f "$cg/memory.swap.max" ]]; then
-    echo 0 > "$cg/memory.swap.max"
-  fi
-  printf '%s\n' "$cg"
-}
 
 wait_pid_bounded() {
   local pid=$1 seconds=$2
@@ -118,14 +99,14 @@ wait_pid_bounded() {
 }
 
 configure_netem() {
-  # iperf3 runs with -R: tcp-shift is the WAN-facing sender. Packets emitted
-  # by tcp-shift leave the root namespace on ROOT_IF, so ROOT_IF is the data
-  # impairment path. TCP ACKs leave the client namespace on CLIENT_IF.
-  # Keeping these controls independent is important when debugging recovery:
-  # ACK loss can trigger very different behavior from actual data loss.
-  tc qdisc replace dev "$ROOT_IF" root netem \
+  # Keep Linux's sender-side fq intact so native BBR can use the kernel pacing
+  # machinery. Delay/rate/loss live in the intermediate router instead:
+  #   root sender -> fq -> router -> DATA netem -> client
+  #   client -> router -> ACK netem -> root sender
+  tc qdisc replace dev "$ROOT_WAN_IF" root fq
+  ip netns exec "$ROUTER_NS" tc qdisc replace dev "$ROUTER_CLIENT_IF" root netem \
     limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$DATA_LOSS"
-  ip netns exec "$CLIENT_NS" tc qdisc replace dev "$CLIENT_IF" root netem \
+  ip netns exec "$ROUTER_NS" tc qdisc replace dev "$ROUTER_WAN_IF" root netem \
     limit "$NETEM_LIMIT" delay "$ONE_WAY_DELAY" rate "$RATE" loss "$ACK_LOSS"
 }
 
@@ -136,62 +117,82 @@ dump_network_state() {
     date -u +'%Y-%m-%dT%H:%M:%SZ'
     echo "data_loss=$DATA_LOSS"
     echo "ack_loss=$ACK_LOSS"
+    echo "native_cc_available=$AVAILABLE_CC"
     echo '--- root routes ---'
     ip route show table main
-    echo '--- root veth ---'
-    ip -s -details addr show dev "$ROOT_IF" || true
-    echo '--- root veth qdisc ---'
-    tc -s -d qdisc show dev "$ROOT_IF" || true
+    echo '--- root WAN ---'
+    ip -s -details addr show dev "$ROOT_WAN_IF" || true
+    echo '--- sender root fq ---'
+    tc -s -d qdisc show dev "$ROOT_WAN_IF" || true
     echo '--- TUN ---'
     ip -s -details addr show dev "$TUN_IF" || true
-    echo '--- TUN qdisc ---'
-    tc -s -d qdisc show dev "$TUN_IF" || true
+    echo '--- router routes ---'
+    ip netns exec "$ROUTER_NS" ip route show table main || true
+    echo '--- router data qdisc ---'
+    ip netns exec "$ROUTER_NS" tc -s -d qdisc show dev "$ROUTER_CLIENT_IF" || true
+    echo '--- router ACK qdisc ---'
+    ip netns exec "$ROUTER_NS" tc -s -d qdisc show dev "$ROUTER_WAN_IF" || true
     echo '--- client routes ---'
     ip netns exec "$CLIENT_NS" ip route show table main || true
-    echo '--- client veth ---'
+    echo '--- client link ---'
     ip netns exec "$CLIENT_NS" ip -s -details addr show dev "$CLIENT_IF" || true
-    echo '--- client veth qdisc ---'
-    ip netns exec "$CLIENT_NS" tc -s -d qdisc show dev "$CLIENT_IF" || true
-    echo '--- FORWARD chain ---'
+    echo '--- root FORWARD chain ---'
     iptables -nvL FORWARD --line-numbers || true
+    echo '--- router FORWARD chain ---'
+    ip netns exec "$ROUTER_NS" iptables -nvL FORWARD --line-numbers || true
     echo '--- forwarding sysctls ---'
     sysctl net.ipv4.ip_forward || true
-    sysctl "net.ipv4.conf.${ROOT_IF}.rp_filter" || true
-    sysctl "net.ipv4.conf.${TUN_IF}.rp_filter" || true
+    ip netns exec "$ROUTER_NS" sysctl net.ipv4.ip_forward || true
   } >"$OUT/network-${label}.txt" 2>&1
 }
 
 sysctl -q -w net.ipv4.ip_forward=1
-sysctl -q -w net.ipv4.tcp_congestion_control=cubic || true
 
+ip netns add "$ROUTER_NS"
 ip netns add "$CLIENT_NS"
-ip link add "$ROOT_IF" type veth peer name "$CLIENT_IF"
-ip link set "$CLIENT_IF" netns "$CLIENT_NS"
-ip addr add 10.99.0.1/24 dev "$ROOT_IF"
-ip link set "$ROOT_IF" up
+ip netns exec "$ROUTER_NS" ip link set lo up
 ip netns exec "$CLIENT_NS" ip link set lo up
-ip netns exec "$CLIENT_NS" ip addr add 10.99.0.3/24 dev "$CLIENT_IF"
-ip netns exec "$CLIENT_NS" ip link set "$CLIENT_IF" up
-# 10.99.0.2 is owned by gVisor, not by the host veth. Force the client to use
-# the root namespace as the router for that /32 rather than ARPing for it.
-ip netns exec "$CLIENT_NS" ip route add 10.99.0.2/32 via 10.99.0.1 dev "$CLIENT_IF"
 
+# Sender/root <-> impairment router.
+ip link add "$ROOT_WAN_IF" type veth peer name "$ROUTER_WAN_IF"
+ip link set "$ROUTER_WAN_IF" netns "$ROUTER_NS"
+ip addr add "$ROOT_WAN_ADDR" dev "$ROOT_WAN_IF"
+ip link set "$ROOT_WAN_IF" up
+ip netns exec "$ROUTER_NS" ip addr add "$ROUTER_WAN_ADDR" dev "$ROUTER_WAN_IF"
+ip netns exec "$ROUTER_NS" ip link set "$ROUTER_WAN_IF" up
+
+# Impairment router <-> remote client.
+ip link add "$ROUTER_CLIENT_IF" type veth peer name "$CLIENT_IF"
+ip link set "$ROUTER_CLIENT_IF" netns "$ROUTER_NS"
+ip link set "$CLIENT_IF" netns "$CLIENT_NS"
+ip netns exec "$ROUTER_NS" ip addr add "$ROUTER_CLIENT_ADDR" dev "$ROUTER_CLIENT_IF"
+ip netns exec "$ROUTER_NS" ip link set "$ROUTER_CLIENT_IF" up
+ip netns exec "$CLIENT_NS" ip addr add "$CLIENT_ADDR" dev "$CLIENT_IF"
+ip netns exec "$CLIENT_NS" ip link set "$CLIENT_IF" up
+
+# Native endpoint is local to root; gVisor owns its own /32 behind TUN.
+ip addr add "$NATIVE_ADDR/32" dev lo
 ip tuntap add dev "$TUN_IF" mode tun
 ip link set "$TUN_IF" mtu 1500 up
-ip route add 10.99.0.2/32 dev "$TUN_IF"
+ip route add "$GVISOR_ADDR/32" dev "$TUN_IF"
 
-# Hosted CI images may have a DROP policy or firewall jumps in FORWARD. The
-# gVisor cases genuinely traverse veth -> TUN on ingress and TUN -> veth on
-# egress, unlike the native baseline which terminates on 10.99.0.1 locally.
-# Insert narrow interface-specific rules at the top instead of relying on the
-# runner's firewall defaults.
-iptables -I FORWARD 1 -i "$ROOT_IF" -o "$TUN_IF" -j ACCEPT
-iptables -I FORWARD 1 -i "$TUN_IF" -o "$ROOT_IF" -j ACCEPT
+# Routing through the impairment namespace.
+ip route add 198.19.0.4/30 via "$ROUTER_WAN_IP" dev "$ROOT_WAN_IF"
+ip netns exec "$ROUTER_NS" ip route add 198.18.0.0/24 via "$ROOT_WAN_IP" dev "$ROUTER_WAN_IF"
+ip netns exec "$CLIENT_NS" ip route add 198.18.0.0/24 via "$ROUTER_CLIENT_IP" dev "$CLIENT_IF"
 
-# Strict reverse-path filtering is not needed for this synthetic routed path
-# and can vary between hosted-runner images. Disable it only on test links.
-sysctl -q -w "net.ipv4.conf.${ROOT_IF}.rp_filter=0" || true
+# gVisor traffic traverses root forwarding between the routed WAN link and TUN.
+iptables -I FORWARD 1 -i "$ROOT_WAN_IF" -o "$TUN_IF" -j ACCEPT
+iptables -I FORWARD 1 -i "$TUN_IF" -o "$ROOT_WAN_IF" -j ACCEPT
+sysctl -q -w "net.ipv4.conf.${ROOT_WAN_IF}.rp_filter=0" || true
 sysctl -q -w "net.ipv4.conf.${TUN_IF}.rp_filter=0" || true
+
+# The router namespace is the only place where WAN impairment is applied.
+ip netns exec "$ROUTER_NS" sysctl -q -w net.ipv4.ip_forward=1
+ip netns exec "$ROUTER_NS" iptables -I FORWARD 1 -i "$ROUTER_WAN_IF" -o "$ROUTER_CLIENT_IF" -j ACCEPT
+ip netns exec "$ROUTER_NS" iptables -I FORWARD 1 -i "$ROUTER_CLIENT_IF" -o "$ROUTER_WAN_IF" -j ACCEPT
+ip netns exec "$ROUTER_NS" sysctl -q -w "net.ipv4.conf.${ROUTER_WAN_IF}.rp_filter=0" || true
+ip netns exec "$ROUTER_NS" sysctl -q -w "net.ipv4.conf.${ROUTER_CLIENT_IF}.rp_filter=0" || true
 
 configure_netem
 dump_network_state setup
@@ -206,7 +207,9 @@ netem_limit_packets=$NETEM_LIMIT
 duration_seconds=$DURATION
 trials=$TRIALS
 tcp_buffer_mib=$TCP_BUFFER_MIB
-memory_limit_mib=${MEMORY_LIMIT_MIB:-none}
+native_cc_available=$AVAILABLE_CC
+native_sender_qdisc=fq
+impairment_location=router-namespace
 EOF
 printf 'case,trial,bps,mbps,peak_rss_kib,cpu_seconds\n' > "$OUT/results.csv"
 
@@ -236,7 +239,6 @@ wait_ready() {
 run_case() {
   local name=$1 engine=$2 cc=$3 listen=$4 trial=$5
   local prefix="$OUT/${name}-${trial}"
-  local cg=""
 
   echo "=== case=$name trial=$trial engine=$engine cc=$cc recovery=$RECOVERY data_loss=$DATA_LOSS ack_loss=$ACK_LOSS ==="
   configure_netem
@@ -244,36 +246,16 @@ run_case() {
   iperf3 -s -1 -B 127.0.0.1 -p 5202 --json >"${prefix}-server.json" 2>"${prefix}-server.err" &
   local backend_pid=$!
 
-  if [[ -n "$MEMORY_LIMIT_MIB" ]]; then
-    cg=$(create_memory_cgroup "${name}-${trial}")
-    printf 'memory_limit_mib=%s\ncgroup=%s\n' "$MEMORY_LIMIT_MIB" "$cg" > "${prefix}-memory-limit.txt"
-
-    # Enter the cgroup before exec so *all* relay allocations, including Go
-    # runtime startup, are charged to the 128 MiB/no-swap budget.
-    (
-      echo "$BASHPID" > "$cg/cgroup.procs"
-      exec "$BIN" \
-        --engine "$engine" \
-        --tun "$TUN_IF" \
-        --listen "$listen" \
-        --backend 127.0.0.1:5202 \
-        --cc "$cc" \
-        --recovery "$RECOVERY" \
-        --tcp-buffer-mib "$TCP_BUFFER_MIB" \
-        --stats-interval 1s
-    ) >"${prefix}-proxy.log" 2>&1 &
-  else
-    "$BIN" \
-      --engine "$engine" \
-      --tun "$TUN_IF" \
-      --listen "$listen" \
-      --backend 127.0.0.1:5202 \
-      --cc "$cc" \
-      --recovery "$RECOVERY" \
-      --tcp-buffer-mib "$TCP_BUFFER_MIB" \
-      --stats-interval 1s \
-      >"${prefix}-proxy.log" 2>&1 &
-  fi
+  "$BIN" \
+    --engine "$engine" \
+    --tun "$TUN_IF" \
+    --listen "$listen" \
+    --backend 127.0.0.1:5202 \
+    --cc "$cc" \
+    --recovery "$RECOVERY" \
+    --tcp-buffer-mib "$TCP_BUFFER_MIB" \
+    --stats-interval 1s \
+    >"${prefix}-proxy.log" 2>&1 &
   local proxy_pid=$!
 
   wait_ready "$proxy_pid" "${prefix}-proxy.log"
@@ -290,9 +272,6 @@ run_case() {
     dump_network_state "${name}-${trial}-failure"
     cat "${prefix}-client.err" >&2 || true
     cat "${prefix}-proxy.log" >&2 || true
-    if [[ -n "$cg" && -f "$cg/memory.events" ]]; then
-      cat "$cg/memory.events" >&2 || true
-    fi
     kill -TERM "$proxy_pid" 2>/dev/null || true
     wait_pid_bounded "$proxy_pid" 3
     wait_pid_bounded "$backend_pid" 3
@@ -302,8 +281,7 @@ run_case() {
   dump_network_state "${name}-${trial}-post"
 
   if ! kill -0 "$proxy_pid" 2>/dev/null; then
-    echo "tcp-shift died during ${name} trial ${trial}; possible memory-limit/OOM failure" >&2
-    [[ -n "$cg" && -f "$cg/memory.events" ]] && cat "$cg/memory.events" >&2 || true
+    echo "tcp-shift died during ${name} trial ${trial}" >&2
     cat "${prefix}-proxy.log" >&2 || true
     wait_pid_bounded "$backend_pid" 3
     return 1
@@ -314,17 +292,9 @@ run_case() {
   peak_rss=$(awk '/VmHWM:/ {print $2}' "/proc/$proxy_pid/status")
   peak_rss=${peak_rss:-0}
 
-  if [[ -n "$cg" ]]; then
-    [[ -f "$cg/memory.peak" ]] && cat "$cg/memory.peak" > "${prefix}-cgroup-memory-peak-bytes.txt" || true
-    [[ -f "$cg/memory.events" ]] && cat "$cg/memory.events" > "${prefix}-cgroup-memory-events.txt" || true
-  fi
-
   kill -TERM "$proxy_pid" 2>/dev/null || true
   wait_pid_bounded "$proxy_pid" 3
   wait_pid_bounded "$backend_pid" 3
-  if [[ -n "$cg" ]]; then
-    rmdir "$cg" >/dev/null 2>&1 || true
-  fi
 
   local bps mbps cpu
   bps=$(jq -r '.end.sum_received.bits_per_second // .end.sum.bits_per_second // 0' "${prefix}-client.json")
@@ -334,11 +304,12 @@ run_case() {
 }
 
 for trial in $(seq 1 "$TRIALS"); do
-  # Same Go relay, but the frontend TCP socket is the host kernel. This gives a
-  # useful lower-bound for incremental Netstack memory/CPU overhead.
-  run_case native-cubic native cubic 10.99.0.1:5201 "$trial"
-  run_case gvisor-cubic netstack cubic 10.99.0.2:5201 "$trial"
-  run_case gvisor-bbr netstack bbr 10.99.0.2:5201 "$trial"
+  # Native cases use Linux TCP_CONGESTION per accepted WAN-facing socket. They
+  # are not aliases for the host's global congestion-control default.
+  run_case native-cubic native cubic "$NATIVE_ADDR:5201" "$trial"
+  run_case native-bbr native bbr "$NATIVE_ADDR:5201" "$trial"
+  run_case gvisor-cubic netstack cubic "$GVISOR_ADDR:5201" "$trial"
+  run_case gvisor-bbr netstack bbr "$GVISOR_ADDR:5201" "$trial"
 done
 
 python3 "$ROOT/scripts/summarize_bench.py" "$OUT/results.csv" "$OUT/summary.md" "$OUT/summary.json"
