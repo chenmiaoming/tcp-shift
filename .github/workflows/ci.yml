@@ -80,7 +80,7 @@ jobs:
       - name: Build verified gVisor baseline
         run: bash ./scripts/build.sh
 
-      - name: Long-fat network benchmark
+      - name: Long-fat network benchmark under 128 MiB / no-swap relay budget
         env:
           # ~20 Mbit*second BDP: 100 Mbit/s and ~200 ms RTT.
           RATE: 100mbit
@@ -89,6 +89,7 @@ jobs:
           DURATION: '15'
           TRIALS: '2'
           TCP_BUFFER_MIB: '8'
+          MEMORY_LIMIT_MIB: '128'
         run: sudo -E bash ./scripts/bench-long-fat.sh
 
       - name: Publish benchmark summary
