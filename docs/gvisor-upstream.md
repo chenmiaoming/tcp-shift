@@ -15,8 +15,8 @@ for normal development, benchmarks, and release candidates. A baseline is reprod
 and must have passed:
 
 - tcp-shift build and CLI smoke tests;
-- gVisor CUBIC and tcp-shift BBR long-fat-network tests;
-- memory/CPU/throughput reporting;
+- native Linux CUBIC/BBR and gVisor CUBIC/tcp-shift-BBR long-fat-network comparisons;
+- CPU, RSS, throughput, and recovery reporting;
 - protocol correctness tests added as the project matures.
 
 Changing the baseline is an explicit dependency update, not an incidental side effect
@@ -112,8 +112,12 @@ auto-merge them. At minimum promotion should require:
 
 - build compatibility;
 - TCP relay integration tests;
-- repeated long-fat-network benchmark results;
-- no material RSS regression under the 128 MiB target environment;
-- no material throughput/CPU regression relative to the current baseline;
+- repeated long-fat-network benchmark results against native Linux CUBIC and BBR;
+- no material protocol-correctness or loss-recovery regression;
+- no material throughput, CPU, or RSS regression relative to the current baseline;
 - review of relevant gVisor TCP changes reflected between the old and new synthetic
   revisions.
+
+A constrained-memory profile may be added later as a separate deployment target. It is
+not part of the current upstream-promotion gate, whose first priority is a stable,
+production-grade transport implementation.
