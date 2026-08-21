@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Apply the small tcp-shift BBR/pacing patch to a pinned gVisor checkout."""
+"""Apply the tcp-shift BBR/pacing integration to a resolved gVisor checkout.
+
+The patcher intentionally preserves as much upstream source text as possible.
+In particular, sender.sendData() is modified with three narrow insertions rather
+than being replaced wholesale. This keeps unrelated upstream sender changes in
+place and makes the floating-master CI job a useful compatibility signal.
+"""
 
 from __future__ import annotations
 
@@ -32,37 +38,7 @@ def patch_protocol(path: Path) -> None:
     path.write_text(text)
 
 
-def patch_sender(path: Path) -> None:
-    text = path.read_text()
-    text = replace_once(
-        text,
-        '\tcorkTimer timer `state:"nosave"`\n}',
-        '\tcorkTimer timer `state:"nosave"`\n\n'
-        '\t// pacingTimer and its token bucket are used only by congestion controls\n'
-        '\t// that expose a PacingRate method (currently tcp-shift BBR).\n'
-        '\tpacingTimer  timer               `state:"nosave"`\n'
-        '\tpacingBudget int64                `state:"nosave"`\n'
-        '\tpacingLast   tcpip.MonotonicTime `state:"nosave"`\n}',
-        "sender pacing fields",
-    )
-    text = replace_once(
-        text,
-        '\tep.snd.corkTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.corkTimerExpired))',
-        '\tep.snd.corkTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.corkTimerExpired))\n'
-        '\tep.snd.pacingTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.pacingTimerExpired))',
-        "sender pacing timer init",
-    )
-    text = replace_once(
-        text,
-        '\tcase ccCubic:\n\t\treturn newCubicCC(s)\n\tcase ccReno:',
-        '\tcase ccCubic:\n\t\treturn newCubicCC(s)\n\tcase ccBBR:\n\t\treturn newBBRCC(s)\n\tcase ccReno:',
-        "sender cc switch",
-    )
-
-    start = text.index('// sendData sends new data segments.')
-    end = text.index('// +checklocks:s.ep.mu\nfunc (s *sender) enterRecovery()', start)
-    old = text[start:end]
-    new = r'''// pacedCongestionControl is implemented by congestion controls that want the
+PACING_HELPERS = r'''// pacedCongestionControl is implemented by congestion controls that want the
 // generic TCP sender to pace new data. The rate is bytes per second.
 type pacedCongestionControl interface {
 	PacingRate() uint64
@@ -127,81 +103,98 @@ func (s *sender) pacingTimerExpired() tcpip.Error {
 	return nil
 }
 
-// sendData sends new data segments. It is called when data becomes available or
-// when the send window opens up.
-// +checklocks:s.ep.mu
-func (s *sender) sendData() {
-	limit := s.MaxPayloadSize
-	if s.gso {
-		limit = int(s.ep.gso.MaxSize - header.TCPTotalHeaderMaximumSize - 1)
-	}
-	end := s.SndUna.Add(s.SndWnd)
-
-	// Reduce the congestion window to min(IW, cwnd) per RFC 5681, page 10.
-	// "A TCP SHOULD set cwnd to no more than RW before beginning
-	// transmission if the TCP has not sent data in the interval exceeding
-	// the retrasmission timeout."
-	if !s.FastRecovery.Active && s.state != tcpip.RTORecovery && s.ep.stack.Clock().NowMonotonic().Sub(s.LastSendTime) > s.RTO {
-		if s.SndCwnd > InitialCwnd {
-			s.SndCwnd = InitialCwnd
-		}
-	}
-
-	rate := s.pacingRate()
-	if rate == 0 {
-		s.pacingTimer.disable()
-		s.pacingBudget = 0
-		s.pacingLast = tcpip.MonotonicTime{}
-	} else {
-		s.refillPacingBudget(rate, s.ep.stack.Clock().NowMonotonic())
-	}
-
-	var dataSent bool
-	for seg := s.writeNext; seg != nil && s.Outstanding < s.SndCwnd; seg = seg.Next() {
-		// NOTE(gvisor.dev/issue/11632): Use uint64 to avoid overflow.
-		cwndLimit := uint64(s.SndCwnd-s.Outstanding) * uint64(s.MaxPayloadSize)
-		if cwndLimit < uint64(limit) {
-			limit = int(cwndLimit)
-		}
-		if s.isAssignedSequenceNumber(seg) && s.ep.SACKPermitted && s.ep.scoreboard.IsSACKED(seg.sackBlock()) {
-			// Move writeNext along so that we don't try and scan data that
-			// has already been SACKED.
-			s.updateWriteNext(seg.Next())
-			continue
-		}
-
-		if rate != 0 {
-			need := seg.payloadSize()
-			if need <= 0 || need > s.MaxPayloadSize {
-				need = s.MaxPayloadSize
-			}
-			if s.pacingBudget < int64(need) {
-				s.schedulePacing(rate, int64(need))
-				break
-			}
-		}
-
-		if sent := s.maybeSendSegment(seg, limit, end); !sent {
-			break
-		}
-		dataSent = true
-		s.Outstanding += s.pCount(seg, s.MaxPayloadSize)
-		s.updateWriteNext(seg.Next())
-		if rate != 0 {
-			s.pacingBudget -= int64(seg.payloadSize())
-			if s.pacingBudget < 0 {
-				s.pacingBudget = 0
-			}
-		}
-	}
-
-	s.postXmit(dataSent, true /* shouldScheduleProbe */)
-}
-
 '''
-    if 'func (s *sender) sendData()' not in old:
-        raise RuntimeError("sendData block not found")
-    text = text[:start] + new + text[end:]
+
+
+def patch_send_data(text: str) -> str:
+    start_marker = "// sendData sends new data segments."
+    end_marker = "// +checklocks:s.ep.mu\nfunc (s *sender) enterRecovery()"
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    block = text[start:end]
+
+    block = replace_once(
+        block,
+        "\tvar dataSent bool\n\tfor seg := s.writeNext;",
+        "\trate := s.pacingRate()\n"
+        "\tif rate == 0 {\n"
+        "\t\ts.pacingTimer.disable()\n"
+        "\t\ts.pacingBudget = 0\n"
+        "\t\ts.pacingLast = tcpip.MonotonicTime{}\n"
+        "\t} else {\n"
+        "\t\ts.refillPacingBudget(rate, s.ep.stack.Clock().NowMonotonic())\n"
+        "\t}\n\n"
+        "\tvar dataSent bool\n\tfor seg := s.writeNext;",
+        "sendData pacing initialization",
+    )
+
+    block = replace_once(
+        block,
+        "\n\t\tif sent := s.maybeSendSegment(seg, limit, end); !sent {",
+        "\n\t\tif rate != 0 {\n"
+        "\t\t\tneed := seg.payloadSize()\n"
+        "\t\t\tif need <= 0 || need > s.MaxPayloadSize {\n"
+        "\t\t\t\tneed = s.MaxPayloadSize\n"
+        "\t\t\t}\n"
+        "\t\t\tif s.pacingBudget < int64(need) {\n"
+        "\t\t\t\ts.schedulePacing(rate, int64(need))\n"
+        "\t\t\t\tbreak\n"
+        "\t\t\t}\n"
+        "\t\t}\n\n"
+        "\t\tif sent := s.maybeSendSegment(seg, limit, end); !sent {",
+        "sendData pacing admission",
+    )
+
+    block = replace_once(
+        block,
+        "\t\ts.updateWriteNext(seg.Next())\n\t}\n\n\ts.postXmit(dataSent, true /* shouldScheduleProbe */)",
+        "\t\ts.updateWriteNext(seg.Next())\n"
+        "\t\tif rate != 0 {\n"
+        "\t\t\ts.pacingBudget -= int64(seg.payloadSize())\n"
+        "\t\t\tif s.pacingBudget < 0 {\n"
+        "\t\t\t\ts.pacingBudget = 0\n"
+        "\t\t\t}\n"
+        "\t\t}\n"
+        "\t}\n\n\ts.postXmit(dataSent, true /* shouldScheduleProbe */)",
+        "sendData pacing accounting",
+    )
+
+    return text[:start] + block + text[end:]
+
+
+def patch_sender(path: Path) -> None:
+    text = path.read_text()
+    text = replace_once(
+        text,
+        '\tcorkTimer timer `state:"nosave"`\n}',
+        '\tcorkTimer timer `state:"nosave"`\n\n'
+        '\t// pacingTimer and its token bucket are used only by congestion controls\n'
+        '\t// that expose a PacingRate method (currently tcp-shift BBR).\n'
+        '\tpacingTimer  timer               `state:"nosave"`\n'
+        '\tpacingBudget int64                `state:"nosave"`\n'
+        '\tpacingLast   tcpip.MonotonicTime `state:"nosave"`\n}',
+        "sender pacing fields",
+    )
+    text = replace_once(
+        text,
+        '\tep.snd.corkTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.corkTimerExpired))',
+        '\tep.snd.corkTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.corkTimerExpired))\n'
+        '\tep.snd.pacingTimer.init(ep.snd.ep.stack.Clock(), timerHandler(ep.snd.ep, ep.snd.pacingTimerExpired))',
+        "sender pacing timer init",
+    )
+    text = replace_once(
+        text,
+        '\tcase ccCubic:\n\t\treturn newCubicCC(s)\n\tcase ccReno:',
+        '\tcase ccCubic:\n\t\treturn newCubicCC(s)\n\tcase ccBBR:\n\t\treturn newBBRCC(s)\n\tcase ccReno:',
+        "sender cc switch",
+    )
+    text = replace_once(
+        text,
+        "// sendData sends new data segments.",
+        PACING_HELPERS + "// sendData sends new data segments.",
+        "sender pacing helpers",
+    )
+    text = patch_send_data(text)
     path.write_text(text)
 
 
