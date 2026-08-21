@@ -1,0 +1,55 @@
+name: tcp-shift CI
+
+on:
+  push:
+    branches: [main, feat/gvisor-bbr-poc]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-long-fat-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache: false
+
+      - name: Install benchmark tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iperf3 iproute2 jq
+
+      - name: Build patched gVisor tcp-shift
+        run: ./scripts/build.sh
+
+      - name: Smoke test CLI
+        run: ./bin/tcp-shift --help
+
+      - name: Long-fat network benchmark
+        env:
+          RATE: 50mbit
+          ONE_WAY_DELAY: 50ms
+          LOSS: 0.10%
+          DURATION: '12'
+          TRIALS: '2'
+          TCP_BUFFER_MIB: '4'
+        run: sudo -E ./scripts/bench-long-fat.sh
+
+      - name: Publish benchmark summary
+        if: always() && hashFiles('.bench/summary.md') != ''
+        run: cat .bench/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark artifacts
+        if: always() && hashFiles('.bench/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-fat-benchmark
+          path: .bench/
+          if-no-files-found: ignore
