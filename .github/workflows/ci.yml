@@ -60,10 +60,9 @@ jobs:
 
   long-fat-benchmark:
     name: Long-fat (${{ matrix.scenario }})
-    # Separate the two directions because iperf3 runs with -R: ROOT_IF carries
-    # WAN-facing TCP data from tcp-shift to the client, while CLIENT_IF carries
-    # ACKs back to tcp-shift. Bidirectional loss is useful as a stress case but
-    # is not sufficient to diagnose congestion control or recovery behavior.
+    # iperf3 runs with -R: tcp-shift is the WAN-facing sender. Delay and loss
+    # are applied in an intermediate router namespace so native Linux BBR keeps
+    # an fq sender qdisc and gets a meaningful pacing baseline.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -108,10 +107,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iperf3 iproute2 iptables jq
 
+      - name: Verify native Linux BBR baseline
+        shell: bash
+        run: |
+          sudo modprobe tcp_bbr 2>/dev/null || true
+          available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)
+          echo "available congestion controls: $available"
+          if ! grep -qw bbr <<<"$available"; then
+            echo "::error::GitHub runner does not expose native Linux BBR; refusing to publish an incomplete BBR comparison"
+            exit 1
+          fi
+
       - name: Build verified gVisor synthetic-Go baseline
         run: bash ./scripts/build.sh
 
-      - name: Long-fat network benchmark under 128 MiB / no-swap relay budget
+      - name: Long-fat network benchmark
         env:
           # ~20 Mbit*second BDP: 100 Mbit/s and ~200 ms RTT.
           RATE: 100mbit
@@ -121,14 +131,10 @@ jobs:
           DATA_LOSS: ${{ matrix.data_loss }}
           ACK_LOSS: ${{ matrix.ack_loss }}
           RECOVERY: ${{ matrix.recovery }}
-          # netem's default 1000-packet queue is only slightly above the
-          # ~833-packet one-way BDP here and unfairly drops MSS-sized Netstack
-          # bursts while GSO-compressed native traffic consumes fewer entries.
           NETEM_LIMIT: '10000'
           DURATION: '15'
           TRIALS: ${{ matrix.trials }}
           TCP_BUFFER_MIB: '8'
-          MEMORY_LIMIT_MIB: '128'
           CASE_TIMEOUT: '45'
         run: sudo -E bash ./scripts/bench-long-fat.sh
 
