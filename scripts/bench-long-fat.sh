@@ -31,6 +31,7 @@ command -v iperf3 >/dev/null
 command -v tc >/dev/null
 command -v jq >/dev/null
 command -v timeout >/dev/null
+command -v iptables >/dev/null
 
 cleanup_cgroups() {
   if [[ -d /sys/fs/cgroup ]]; then
@@ -46,6 +47,8 @@ cleanup() {
   set +e
   pkill -f "$BIN" >/dev/null 2>&1 || true
   pkill -f 'iperf3 -s -1 -B 127.0.0.1 -p 5202' >/dev/null 2>&1 || true
+  iptables -D FORWARD -i "$ROOT_IF" -o "$TUN_IF" -j ACCEPT >/dev/null 2>&1 || true
+  iptables -D FORWARD -i "$TUN_IF" -o "$ROOT_IF" -j ACCEPT >/dev/null 2>&1 || true
   ip netns del "$CLIENT_NS" >/dev/null 2>&1 || true
   ip link del "$ROOT_IF" >/dev/null 2>&1 || true
   ip link del "$TUN_IF" >/dev/null 2>&1 || true
@@ -97,6 +100,30 @@ wait_pid_bounded() {
   wait "$pid" 2>/dev/null || true
 }
 
+dump_network_state() {
+  local label=$1
+  {
+    echo "label=$label"
+    date -u +'%Y-%m-%dT%H:%M:%SZ'
+    echo '--- root routes ---'
+    ip route show table main
+    echo '--- root veth ---'
+    ip -s -details addr show dev "$ROOT_IF" || true
+    echo '--- TUN ---'
+    ip -s -details addr show dev "$TUN_IF" || true
+    echo '--- client routes ---'
+    ip netns exec "$CLIENT_NS" ip route show table main || true
+    echo '--- client veth ---'
+    ip netns exec "$CLIENT_NS" ip -s -details addr show dev "$CLIENT_IF" || true
+    echo '--- FORWARD chain ---'
+    iptables -nvL FORWARD --line-numbers || true
+    echo '--- forwarding sysctls ---'
+    sysctl net.ipv4.ip_forward || true
+    sysctl "net.ipv4.conf.${ROOT_IF}.rp_filter" || true
+    sysctl "net.ipv4.conf.${TUN_IF}.rp_filter" || true
+  } >"$OUT/network-${label}.txt" 2>&1
+}
+
 sysctl -q -w net.ipv4.ip_forward=1
 sysctl -q -w net.ipv4.tcp_congestion_control=cubic || true
 
@@ -116,11 +143,25 @@ ip tuntap add dev "$TUN_IF" mode tun
 ip link set "$TUN_IF" mtu 1500 up
 ip route add 10.99.0.2/32 dev "$TUN_IF"
 
+# Hosted CI images may have a DROP policy or firewall jumps in FORWARD. The
+# gVisor cases genuinely traverse veth -> TUN on ingress and TUN -> veth on
+# egress, unlike the native baseline which terminates on 10.99.0.1 locally.
+# Insert narrow interface-specific rules at the top instead of relying on the
+# runner's firewall defaults.
+iptables -I FORWARD 1 -i "$ROOT_IF" -o "$TUN_IF" -j ACCEPT
+iptables -I FORWARD 1 -i "$TUN_IF" -o "$ROOT_IF" -j ACCEPT
+
+# Strict reverse-path filtering is not needed for this synthetic routed path
+# and can vary between hosted-runner images. Disable it only on test links.
+sysctl -q -w "net.ipv4.conf.${ROOT_IF}.rp_filter=0" || true
+sysctl -q -w "net.ipv4.conf.${TUN_IF}.rp_filter=0" || true
+
 # Shape each egress direction. The resulting RTT is approximately 2*delay and
 # both data and ACK paths see the configured bottleneck/loss model.
 tc qdisc add dev "$ROOT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
 ip netns exec "$CLIENT_NS" tc qdisc add dev "$CLIENT_IF" root netem delay "$ONE_WAY_DELAY" rate "$RATE" loss "$LOSS"
 
+dump_network_state setup
 printf 'case,trial,bps,mbps,peak_rss_kib,cpu_seconds\n' > "$OUT/results.csv"
 
 proc_ticks() {
@@ -197,6 +238,7 @@ run_case() {
         -c "$target" -p 5201 -R -t "$DURATION" --json \
         >"${prefix}-client.json" 2>"${prefix}-client.err"; then
     echo "iperf3 failed or exceeded ${CASE_TIMEOUT}s for $name trial $trial" >&2
+    dump_network_state "${name}-${trial}-failure"
     cat "${prefix}-client.err" >&2 || true
     cat "${prefix}-proxy.log" >&2 || true
     if [[ -n "$cg" && -f "$cg/memory.events" ]]; then
@@ -210,6 +252,7 @@ run_case() {
 
   if ! kill -0 "$proxy_pid" 2>/dev/null; then
     echo "tcp-shift died during ${name} trial ${trial}; possible memory-limit/OOM failure" >&2
+    dump_network_state "${name}-${trial}-relay-died"
     [[ -n "$cg" && -f "$cg/memory.events" ]] && cat "$cg/memory.events" >&2 || true
     cat "${prefix}-proxy.log" >&2 || true
     wait_pid_bounded "$backend_pid" 3
