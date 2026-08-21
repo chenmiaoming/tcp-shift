@@ -32,6 +32,12 @@ import (
 
 const nicID tcpip.NICID = 1
 
+var (
+	buildVersion   = "dev"
+	gvisorRef      = "unknown"
+	gvisorRevision = "unknown"
+)
+
 var copyBuffers = sync.Pool{
 	New: func() any {
 		b := make([]byte, 32<<10)
@@ -51,6 +57,7 @@ type config struct {
 
 func main() {
 	cfg := config{}
+	showVersion := flag.Bool("version", false, "print tcp-shift and gVisor build revisions")
 	flag.StringVar(&cfg.engine, "engine", "netstack", "frontend engine: netstack or native")
 	flag.StringVar(&cfg.tunName, "tun", "ts0", "existing TUN interface owned by the current user")
 	flag.StringVar(&cfg.listen, "listen", "10.99.0.2:5201", "gVisor TCP listen address")
@@ -59,6 +66,11 @@ func main() {
 	flag.IntVar(&cfg.tcpBufferMiB, "tcp-buffer-mib", 1, "gVisor TCP send/receive buffer size in MiB")
 	flag.DurationVar(&cfg.statsInterval, "stats-interval", 0, "periodically print Go/netstack memory statistics (0 disables)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("tcp-shift %s\ngvisor-ref %s\ngvisor-sha %s\n", buildVersion, gvisorRef, gvisorRevision)
+		return
+	}
 
 	cfg.engine = strings.ToLower(cfg.engine)
 	if cfg.engine != "netstack" && cfg.engine != "native" {
@@ -98,7 +110,7 @@ func main() {
 		go logStats(ctx, s, cfg.statsInterval)
 	}
 
-	log.Printf("ready: engine=%s tun=%s listen=%s backend=%s cc=%s tcp_buffer=%dMiB", cfg.engine, cfg.tunName, cfg.listen, cfg.backend, cfg.cc, cfg.tcpBufferMiB)
+	log.Printf("ready: engine=%s tun=%s listen=%s backend=%s cc=%s tcp_buffer=%dMiB gvisor=%s", cfg.engine, cfg.tunName, cfg.listen, cfg.backend, cfg.cc, cfg.tcpBufferMiB, gvisorRevision)
 
 	go func() {
 		<-ctx.Done()
