@@ -59,11 +59,31 @@ jobs:
         run: ./bin/tcp-shift --help
 
   long-fat-benchmark:
-    name: Long-fat network benchmark
-    # Deliberately independent of the moving synthetic-go job. An upstream
-    # incompatibility must stay visible without suppressing baseline metrics.
+    name: Long-fat (${{ matrix.scenario }})
+    # Keep the three recovery scenarios independent. The goal is to distinguish
+    # generic Netstack overhead from loss-recovery pathologies before treating
+    # BBR-vs-CUBIC deltas as congestion-control results.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Control: same high-BDP path with no artificial packet loss. If this
+          # is fast, the large lossy-path gap is not generic TUN/Netstack cost.
+          - scenario: lossless-rack
+            loss: '0%'
+            recovery: rack
+          # Current gVisor default. protocol.go defaults TCPRecovery to
+          # TCPRACKLossDetection.
+          - scenario: lossy-rack
+            loss: '0.10%'
+            recovery: rack
+          # Diagnostic control: keep SACK and the same loss, but disable RACK
+          # loss detection/recovery by setting TCPRecovery(0).
+          - scenario: lossy-legacy
+            loss: '0.10%'
+            recovery: legacy
     steps:
       - uses: actions/checkout@v4
 
@@ -85,9 +105,13 @@ jobs:
           # ~20 Mbit*second BDP: 100 Mbit/s and ~200 ms RTT.
           RATE: 100mbit
           ONE_WAY_DELAY: 100ms
-          LOSS: 0.10%
+          LOSS: ${{ matrix.loss }}
+          RECOVERY: ${{ matrix.recovery }}
           DURATION: '15'
-          TRIALS: '2'
+          # One trial is deliberate while this is a diagnostic matrix. Once
+          # recovery behavior is understood, statistical runs can move to a
+          # separate performance gate.
+          TRIALS: '1'
           TCP_BUFFER_MIB: '8'
           MEMORY_LIMIT_MIB: '128'
           CASE_TIMEOUT: '45'
@@ -96,7 +120,9 @@ jobs:
       - name: Publish benchmark summary
         if: always() && hashFiles('.bench/summary.md') != ''
         run: |
-          printf '### Build provenance\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '### Scenario: %s\n\n```text\n' '${{ matrix.scenario }}' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench/scenario.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n### Build provenance\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
           cat ./bin/gvisor-build.txt >> "$GITHUB_STEP_SUMMARY"
           printf '```\n\n' >> "$GITHUB_STEP_SUMMARY"
           cat .bench/summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -105,7 +131,7 @@ jobs:
         if: always() && hashFiles('.bench/**') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: long-fat-benchmark
+          name: long-fat-${{ matrix.scenario }}
           path: |
             .bench/
             bin/gvisor-build.txt
