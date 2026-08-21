@@ -17,12 +17,15 @@ TCP_FIELDS = {
     "spurious_recovery": "SpuriousRecovery",
 }
 
+CASE_ORDER = ("native-cubic", "native-bbr", "gvisor-cubic", "gvisor-bbr")
+
 
 def ratio_percent(value: float, baseline: float) -> float:
     return ((value / baseline) - 1.0) * 100.0 if baseline else 0.0
 
 
 def tcp_stats(log_path: Path) -> dict[str, float]:
+    """Read gVisor TCP counters from the relay's periodic stats line."""
     if not log_path.exists():
         return {name: 0.0 for name in TCP_FIELDS}
     last = ""
@@ -37,16 +40,18 @@ def tcp_stats(log_path: Path) -> dict[str, float]:
 
 
 def qdisc_drops(state_path: Path) -> tuple[float, float]:
-    """Return root-veth and client-veth netem drops from one post-case dump."""
+    """Return router data-path and ACK-path netem drops."""
     if not state_path.exists():
         return 0.0, 0.0
     text = state_path.read_text(errors="replace")
     sections = {
-        "root": re.search(
-            r"--- root veth qdisc ---\n(.*?)(?=\n--- TUN ---)", text, re.S
+        "data": re.search(
+            r"--- router data qdisc ---\n(.*?)(?=\n--- router ACK qdisc ---)",
+            text,
+            re.S,
         ),
-        "client": re.search(
-            r"--- client veth qdisc ---\n(.*?)(?=\n--- FORWARD chain ---)",
+        "ack": re.search(
+            r"--- router ACK qdisc ---\n(.*?)(?=\n--- client routes ---)",
             text,
             re.S,
         ),
@@ -55,7 +60,7 @@ def qdisc_drops(state_path: Path) -> tuple[float, float]:
     for name, section in sections.items():
         match = re.search(r"dropped (\d+)", section.group(1) if section else "")
         values[name] = float(match.group(1)) if match else 0.0
-    return values["root"], values["client"]
+    return values["data"], values["ack"]
 
 
 def mean(values: list[float]) -> float:
@@ -68,6 +73,13 @@ def median(values: list[float]) -> float:
 
 def stdev(values: list[float]) -> float:
     return statistics.stdev(values) if len(values) > 1 else 0.0
+
+
+def metric(summary: dict[str, object], case: str, key: str) -> float:
+    entry = summary.get(case, {})
+    if not isinstance(entry, dict):
+        return 0.0
+    return float(entry.get(key, 0.0))
 
 
 def main() -> None:
@@ -88,11 +100,11 @@ def main() -> None:
             "cpu_seconds": float(row["cpu_seconds"]),
         }
         values.update(tcp_stats(bench_dir / f"{name}-{trial}-proxy.log"))
-        root_drops, client_drops = qdisc_drops(
+        data_drops, ack_drops = qdisc_drops(
             bench_dir / f"network-{name}-{trial}-post.txt"
         )
-        values["root_qdisc_drops"] = root_drops
-        values["client_qdisc_drops"] = client_drops
+        values["data_qdisc_drops"] = data_drops
+        values["ack_qdisc_drops"] = ack_drops
         groups[name].append(values)
 
     summary: dict[str, object] = {}
@@ -111,31 +123,37 @@ def main() -> None:
             "tcp_timeouts_mean": mean([v["timeouts"] for v in vals]),
             "tcp_dsack_mean": mean([v["dsack"] for v in vals]),
             "tcp_spurious_recovery_mean": mean([v["spurious_recovery"] for v in vals]),
-            "root_qdisc_drops_mean": mean([v["root_qdisc_drops"] for v in vals]),
-            "client_qdisc_drops_mean": mean([v["client_qdisc_drops"] for v in vals]),
+            "data_qdisc_drops_mean": mean([v["data_qdisc_drops"] for v in vals]),
+            "ack_qdisc_drops_mean": mean([v["ack_qdisc_drops"] for v in vals]),
         }
 
-    native = summary.get("native-cubic", {})
-    cubic = summary.get("gvisor-cubic", {})
-    bbr = summary.get("gvisor-bbr", {})
+    nc_tp = metric(summary, "native-cubic", "throughput_mbps_median")
+    nb_tp = metric(summary, "native-bbr", "throughput_mbps_median")
+    gc_tp = metric(summary, "gvisor-cubic", "throughput_mbps_median")
+    gb_tp = metric(summary, "gvisor-bbr", "throughput_mbps_median")
 
-    # Use medians for throughput comparisons once repeated trials are enabled;
-    # one-trial control jobs naturally have median == mean.
-    native_tp = float(native.get("throughput_mbps_median", 0.0))
-    native_rss = float(native.get("peak_rss_mib_mean", 0.0))
-    native_cpu = float(native.get("cpu_seconds_mean", 0.0))
-    cubic_tp = float(cubic.get("throughput_mbps_median", 0.0))
-    cubic_rss = float(cubic.get("peak_rss_mib_mean", 0.0))
-    cubic_cpu = float(cubic.get("cpu_seconds_mean", 0.0))
-    bbr_tp = float(bbr.get("throughput_mbps_median", 0.0))
+    nc_rss = metric(summary, "native-cubic", "peak_rss_mib_mean")
+    nb_rss = metric(summary, "native-bbr", "peak_rss_mib_mean")
+    gc_rss = metric(summary, "gvisor-cubic", "peak_rss_mib_mean")
+    gb_rss = metric(summary, "gvisor-bbr", "peak_rss_mib_mean")
+
+    nc_cpu = metric(summary, "native-cubic", "cpu_seconds_mean")
+    nb_cpu = metric(summary, "native-bbr", "cpu_seconds_mean")
+    gc_cpu = metric(summary, "gvisor-cubic", "cpu_seconds_mean")
+    gb_cpu = metric(summary, "gvisor-bbr", "cpu_seconds_mean")
 
     comparison = {
         "throughput_basis": "median",
-        "bbr_vs_gvisor_cubic_throughput_percent": ratio_percent(bbr_tp, cubic_tp),
-        "gvisor_cubic_vs_native_throughput_percent": ratio_percent(cubic_tp, native_tp),
-        "gvisor_cubic_vs_native_peak_rss_percent": ratio_percent(cubic_rss, native_rss),
-        "gvisor_cubic_vs_native_peak_rss_mib": cubic_rss - native_rss,
-        "gvisor_cubic_vs_native_cpu_percent": ratio_percent(cubic_cpu, native_cpu),
+        "native_bbr_vs_native_cubic_throughput_percent": ratio_percent(nb_tp, nc_tp),
+        "gvisor_bbr_vs_gvisor_cubic_throughput_percent": ratio_percent(gb_tp, gc_tp),
+        "gvisor_cubic_vs_native_cubic_throughput_percent": ratio_percent(gc_tp, nc_tp),
+        "gvisor_bbr_vs_native_bbr_throughput_percent": ratio_percent(gb_tp, nb_tp),
+        "gvisor_cubic_vs_native_cubic_peak_rss_mib": gc_rss - nc_rss,
+        "gvisor_bbr_vs_native_bbr_peak_rss_mib": gb_rss - nb_rss,
+        "gvisor_cubic_vs_native_cubic_cpu_percent": ratio_percent(gc_cpu, nc_cpu),
+        "gvisor_bbr_vs_native_bbr_cpu_percent": ratio_percent(gb_cpu, nb_cpu),
+        "gvisor_cubic_vs_native_cubic_cpu_seconds": gc_cpu - nc_cpu,
+        "gvisor_bbr_vs_native_bbr_cpu_seconds": gb_cpu - nb_cpu,
     }
     summary["comparison"] = comparison
 
@@ -147,43 +165,60 @@ def main() -> None:
         "| case | trials | mean Mbit/s | median Mbit/s | stddev | mean RSS MiB | mean CPU s | retrans/trial | RTO/trial | DSACK/trial |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for name in ("native-cubic", "gvisor-cubic", "gvisor-bbr"):
+    for name in CASE_ORDER:
         if name not in summary:
             continue
         s = summary[name]
+        assert isinstance(s, dict)
+        if name.startswith("native-"):
+            tcp_cols = "n/a | n/a | n/a"
+        else:
+            tcp_cols = (
+                f"{s['tcp_retransmits_mean']:.1f} | {s['tcp_timeouts_mean']:.1f} | "
+                f"{s['tcp_dsack_mean']:.1f}"
+            )
         lines.append(
             f"| {name} | {s['trials']} | {s['throughput_mbps_mean']:.3f} | "
             f"{s['throughput_mbps_median']:.3f} | {s['throughput_mbps_stdev']:.3f} | "
-            f"{s['peak_rss_mib_mean']:.2f} | {s['cpu_seconds_mean']:.3f} | "
-            f"{s['tcp_retransmits_mean']:.1f} | {s['tcp_timeouts_mean']:.1f} | "
-            f"{s['tcp_dsack_mean']:.1f} |"
+            f"{s['peak_rss_mib_mean']:.2f} | {s['cpu_seconds_mean']:.3f} | {tcp_cols} |"
         )
 
     lines += [
         "",
         "### Comparisons (median throughput)",
         "",
-        f"- BBR vs gVisor CUBIC throughput: **{comparison['bbr_vs_gvisor_cubic_throughput_percent']:+.2f}%**.",
-        f"- gVisor CUBIC vs native throughput: **{comparison['gvisor_cubic_vs_native_throughput_percent']:+.2f}%**.",
-        f"- gVisor CUBIC incremental peak RSS: **{comparison['gvisor_cubic_vs_native_peak_rss_mib']:+.2f} MiB** "
-        f"(**{comparison['gvisor_cubic_vs_native_peak_rss_percent']:+.2f}%** vs native).",
-        f"- gVisor CUBIC vs native relay CPU time: **{comparison['gvisor_cubic_vs_native_cpu_percent']:+.2f}%**.",
+        f"- Native Linux BBR vs native CUBIC: **{comparison['native_bbr_vs_native_cubic_throughput_percent']:+.2f}%**.",
+        f"- gVisor BBR vs gVisor CUBIC: **{comparison['gvisor_bbr_vs_gvisor_cubic_throughput_percent']:+.2f}%**.",
+        f"- gVisor CUBIC vs native CUBIC: **{comparison['gvisor_cubic_vs_native_cubic_throughput_percent']:+.2f}%**.",
+        f"- gVisor BBR vs native Linux BBR: **{comparison['gvisor_bbr_vs_native_bbr_throughput_percent']:+.2f}%**.",
+        "",
+        "### Relay overhead",
+        "",
+        f"- gVisor CUBIC incremental peak RSS vs native CUBIC: **{comparison['gvisor_cubic_vs_native_cubic_peak_rss_mib']:+.2f} MiB**.",
+        f"- gVisor BBR incremental peak RSS vs native BBR: **{comparison['gvisor_bbr_vs_native_bbr_peak_rss_mib']:+.2f} MiB**.",
+        f"- gVisor CUBIC incremental relay CPU time: **{comparison['gvisor_cubic_vs_native_cubic_cpu_seconds']:+.3f} s** "
+        f"(**{comparison['gvisor_cubic_vs_native_cubic_cpu_percent']:+.2f}%**).",
+        f"- gVisor BBR incremental relay CPU time: **{comparison['gvisor_bbr_vs_native_bbr_cpu_seconds']:+.3f} s** "
+        f"(**{comparison['gvisor_bbr_vs_native_bbr_cpu_percent']:+.2f}%**).",
         "",
         "### Emulation counters",
         "",
     ]
-    for name in ("native-cubic", "gvisor-cubic", "gvisor-bbr"):
+    for name in CASE_ORDER:
         if name not in summary:
             continue
         s = summary[name]
+        assert isinstance(s, dict)
         lines.append(
-            f"- {name}: mean root/data-path qdisc drops {s['root_qdisc_drops_mean']:.1f}; "
-            f"mean client/ACK-path qdisc drops {s['client_qdisc_drops_mean']:.1f}."
+            f"- {name}: mean router data-path netem drops {s['data_qdisc_drops_mean']:.1f}; "
+            f"mean router ACK-path netem drops {s['ack_qdisc_drops_mean']:.1f}."
         )
 
     lines += [
         "",
-        "The BBR implementation is an experimental BBRv1-inspired model. The current version uses ACK-rate sampling rather than Linux's full per-packet delivery-rate sampler; CI results are measurements, not a compatibility claim.",
+        "Native Linux retransmission/RTO/DSACK counters are not yet sampled from TCP_INFO, so those table cells are reported as n/a rather than misleading zeros.",
+        "",
+        "The gVisor BBR implementation is an experimental BBRv1-inspired model. The current version uses ACK-rate sampling rather than Linux's full per-packet delivery-rate sampler; CI results are measurements, not a compatibility claim.",
     ]
     Path(sys.argv[2]).write_text("\n".join(lines) + "\n")
 
