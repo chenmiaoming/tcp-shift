@@ -77,12 +77,13 @@ type bbrState struct {
 
 	// Netstack's generic fast/SACK recovery assumes loss-based congestion
 	// controls reduce ssthresh before enterRecovery(), which then sets cwnd to
-	// ssthresh+3. BBR must not apply a Reno/CUBIC multiplicative decrease, but
-	// it still needs packet conservation while recovery decides what to
-	// retransmit. Save the model cwnd here, temporarily constrain recovery to
-	// the estimated in-flight pipe, and restore the model cwnd in PostRecovery.
-	inRecovery        bool
-	recoveryPriorCwnd int
+	// ssthresh+3. BBR instead follows Linux packet conservation once TCP has
+	// established the recovery state: use independent tcp_packets_in_flight-like
+	// accounting plus newly delivered packets, never RFC6675 SetPipe/Outstanding.
+	inRecovery              bool
+	recoveryPriorCwnd       int
+	packetConservation      bool
+	recoveryEntryPending    bool
 }
 
 func newBBRCC(s *sender) *bbrState {
@@ -119,15 +120,63 @@ func mulGain(v, gain uint64) uint64 {
 	return v * gain / bbrGainScale
 }
 
-// OnDeliveryRateSample consumes the TCP-owned delivery sample. Linux BBR does
-// its bandwidth/round accounting directly from struct rate_sample before cwnd
-// is updated; this callback gives tcp-shift the same model input without making
-// the generic sampler depend on BBR. Do not drive cwnd from s.Outstanding here:
-// gVisor's recovery code rewrites Outstanding as an RFC6675/RACK pipe estimate,
-// which is not equivalent to Linux tcp_packets_in_flight().
+func nonNegativeUint(v int) uint64 {
+	if v <= 0 {
+		return 0
+	}
+	return uint64(v)
+}
+
+// OnDeliveryRateSample consumes the TCP-owned delivery sample. The callback is
+// ordered after loss detection/enterRecovery and before RACK/SACK recovery
+// transmits. This is the point where Linux BBR's custom cong_control sees the
+// current CA state and struct rate_sample.
 func (b *bbrState) OnDeliveryRateSample(rs deliveryRateSample) {
 	b.updateBandwidth(rs)
 	b.checkFullBandwidth(rs)
+
+	currentInFlight := b.s.linuxLikePacketsInFlight()
+	stats := b.s.ep.stack.Stats().TCP
+	stats.TCPShiftBBRSamples.Increment()
+	stats.TCPShiftBBRPriorInflightSum.IncrementBy(nonNegativeUint(rs.priorInFlight))
+	stats.TCPShiftBBRCurrentInflightSum.IncrementBy(nonNegativeUint(currentInFlight))
+	stats.TCPShiftBBROutstandingSum.IncrementBy(nonNegativeUint(b.s.Outstanding))
+	if currentInFlight != b.s.Outstanding {
+		stats.TCPShiftBBRInflightMismatchSamples.Increment()
+	}
+
+	if !b.inRecovery || !b.s.FastRecovery.Active {
+		return
+	}
+
+	acked := rs.ackedSacked
+	if acked < 0 {
+		acked = 0
+	}
+	target := max(currentInFlight+acked, 4)
+
+	// Linux enters packet conservation in bbr_set_cwnd(), after model/round
+	// updates for the ACK. HandleLossDetected runs earlier in netstack, so defer
+	// activation until here; otherwise a round boundary on the recovery-entry
+	// ACK could immediately clear the newly-created conservation state.
+	if b.recoveryEntryPending {
+		b.packetConservation = true
+		b.recoveryEntryPending = false
+		b.nextRoundDelivered = rs.totalDelivered
+		b.s.SndCwnd = target
+		b.s.Ssthresh = target
+		return
+	}
+
+	if b.packetConservation {
+		// Subsequent ACKs in the first recovery round may grow cwnd only enough
+		// to replace packets proven delivered, matching Linux's
+		// max(cwnd, tcp_packets_in_flight(tp) + acked).
+		if target > b.s.SndCwnd {
+			b.s.SndCwnd = target
+		}
+		b.s.Ssthresh = b.s.SndCwnd
+	}
 }
 
 func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
@@ -144,6 +193,10 @@ func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 		b.nextRoundDelivered = rs.totalDelivered
 		b.roundCount++
 		b.roundStart = true
+		// Linux packet conservation lasts only through the first packet-timed
+		// recovery round. A recovery-entry transition pending on this same ACK
+		// will be activated later in OnDeliveryRateSample().
+		b.packetConservation = false
 	}
 
 	// Application-limited samples are ignored when they are below the current
@@ -241,7 +294,7 @@ func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
 		return
 	}
 
-	if b.mode == bbrDrain && b.s.Outstanding <= b.bdpPackets(1000) {
+	if b.mode == bbrDrain && b.s.linuxLikePacketsInFlight() <= b.bdpPackets(1000) {
 		b.mode = bbrProbeBW
 		b.cycleIndex = 0
 		b.cycleStamp = now
@@ -266,11 +319,12 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 	b.updateMinRTT(rtt, ackTime)
 	b.updateMode(ackTime)
 
-	if packetsAcked <= 0 || b.mode == bbrProbeRTT {
+	if packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
 		return
 	}
 
 	target := b.bdpPackets(bbrCwndGain)
+	inFlight := b.s.linuxLikePacketsInFlight()
 	switch b.mode {
 	case bbrStartup:
 		b.s.SndCwnd += packetsAcked
@@ -283,8 +337,8 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 			if b.s.SndCwnd > target {
 				b.s.SndCwnd = target
 			}
-		} else if b.s.SndCwnd > 2*target && b.s.Outstanding < b.s.SndCwnd {
-			b.s.SndCwnd = max(target, b.s.Outstanding+packetsAcked)
+		} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
+			b.s.SndCwnd = max(target, inFlight+packetsAcked)
 		}
 	}
 	if b.s.SndCwnd < 4 {
@@ -293,18 +347,19 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 	b.s.Ssthresh = b.s.SndCwnd
 }
 
-// HandleLossDetected enters packet conservation rather than applying the
-// multiplicative decrease used by loss-based congestion controls. Netstack's
-// enterRecovery() immediately sets cwnd=ssthresh+3, so using the model cwnd as
-// ssthresh lets RFC6675 recovery send a large burst whenever SetPipe() falls
-// below that model window. Use the current pipe estimate instead and restore
-// the model window in PostRecovery.
+// HandleLossDetected bridges netstack's Reno-shaped recovery entry to BBR.
+// The temporary ssthresh is based on Linux-like in-flight state only so
+// enterRecovery() cannot expose the large model cwnd to SetPipe. The precise
+// Linux packet-conservation cwnd is installed by OnDeliveryRateSample after
+// FastRecovery.Active becomes true and before recovery sends retransmissions.
 func (b *bbrState) HandleLossDetected() {
 	if !b.inRecovery {
 		b.recoveryPriorCwnd = max(b.s.SndCwnd, 4)
 		b.inRecovery = true
+		recoveryFlight := b.s.linuxLikePacketsInFlight()
+		b.s.Ssthresh = max(recoveryFlight, 4)
 	}
-	b.s.Ssthresh = max(b.s.Outstanding, 4)
+	b.recoveryEntryPending = true
 }
 
 // HandleRTOExpired follows an important Linux BBR invariant: an RTO may collapse
@@ -312,6 +367,8 @@ func (b *bbrState) HandleLossDetected() {
 func (b *bbrState) HandleRTOExpired() {
 	b.inRecovery = false
 	b.recoveryPriorCwnd = 0
+	b.packetConservation = false
+	b.recoveryEntryPending = false
 	b.roundStart = false
 
 	b.s.SndCwnd = 1
@@ -330,4 +387,6 @@ func (b *bbrState) PostRecovery() {
 	b.s.Ssthresh = restored
 	b.recoveryPriorCwnd = 0
 	b.inRecovery = false
+	b.packetConservation = false
+	b.recoveryEntryPending = false
 }
