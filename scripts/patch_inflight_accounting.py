@@ -140,6 +140,25 @@ def patch_rack(path: Path) -> None:
         "RACK reorder-timer loss origin",
     )
 
+    # A TLP can retransmit the highest transmitted segment outside
+    # FastRecovery. probeTimerExpired lives in rack.go, not snd.go.
+    text = replace_once(
+        text,
+        '''\t\tif highestSeqXmit != nil {
+\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
+\t\t\tif dataSent {
+\t\t\t\ts.rc.tlpRxtOut = true''',
+        '''\t\tif highestSeqXmit != nil {
+\t\t\twasRetransmit := highestSeqXmit.xmitCount > 0
+\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
+\t\t\tif dataSent {
+\t\t\t\tif wasRetransmit {
+\t\t\t\t\ts.ep.stack.Stats().TCP.TCPShiftTLPRetransmits.Increment()
+\t\t\t\t}
+\t\t\t\ts.rc.tlpRxtOut = true''',
+        "TLP retransmit classification",
+    )
+
     text = replace_once(
         text,
         '''\tsnd := rc.snd
@@ -224,25 +243,6 @@ def patch_sender(path: Path) -> None:
         '\ts.ep.stack.Stats().TCP.TCPShiftRecoveryExits.Increment()\n'
         '\ts.FastRecovery.Active = false',
         "recovery exit diagnostics",
-    )
-
-    # A TLP can retransmit data outside FastRecovery. Count that path explicitly
-    # so it does not get mistaken for RACK's lost-segment loop.
-    text = replace_once(
-        text,
-        '''\t\tif highestSeqXmit != nil {
-\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
-\t\t\tif dataSent {
-\t\t\t\ts.rc.tlpRxtOut = true''',
-        '''\t\tif highestSeqXmit != nil {
-\t\t\twasRetransmit := highestSeqXmit.xmitCount > 0
-\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
-\t\t\tif dataSent {
-\t\t\t\tif wasRetransmit {
-\t\t\t\t\ts.ep.stack.Stats().TCP.TCPShiftTLPRetransmits.Increment()
-\t\t\t\t}
-\t\t\t\ts.rc.tlpRxtOut = true''',
-        "TLP retransmit classification",
     )
 
     # RTO recovery calls sendData synchronously. Mark that call so the generic
