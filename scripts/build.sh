@@ -65,6 +65,9 @@ fi
 case "$GVISOR_PATCHSET" in
   tcp-shift)
     python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+    # patch_gvisor adds the compact token-bucket pacer. Keep an already-armed
+    # pacing deadline monotonic so ACK-driven sendData calls cannot postpone it.
+    python3 "$ROOT/scripts/patch_pacing_deadline.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
     # Keep the full BBR experiment on unmodified upstream RACK semantics.
