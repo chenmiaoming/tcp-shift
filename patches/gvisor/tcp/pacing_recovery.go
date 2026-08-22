@@ -8,11 +8,11 @@
 
 package tcp
 
-import "gvisor.dev/gvisor/pkg/tcpip"
-
 // preparePacedSend refills the same sender pacing budget used by sendData.
-// Recovery must share this budget: Linux BBR paces retransmissions and new data
-// from one socket pacing clock rather than allowing recovery to bypass pacing.
+// This helper is currently used only by legacy RFC6675 SACK recovery. The RACK
+// experiment showed that externally pacing RACK's recovery loop increased
+// spurious retransmission/DSACK activity, so RACK is intentionally left on its
+// upstream send timing while we debug its loss-inference interaction with BBR.
 // +checklocks:s.ep.mu
 func (s *sender) preparePacedSend() uint64 {
 	rate := s.pacingRate()
@@ -30,10 +30,8 @@ func (s *sender) pacedPayloadSize(payload int) int64 {
 	return int64(payload)
 }
 
-// allowPacedSend checks the token budget and arms pacingTimer when recovery
-// must stop. The timer resumes the active recovery algorithm instead of merely
-// calling sendData, so a loss-recovery episode can make forward progress even
-// if no further ACK arrives while it is pacing-blocked.
+// allowPacedSend checks the token budget and arms pacingTimer when legacy SACK
+// recovery must stop.
 // +checklocks:s.ep.mu
 func (s *sender) allowPacedSend(rate uint64, payload int) bool {
 	if rate == 0 {
@@ -59,27 +57,19 @@ func (s *sender) accountPacedSend(rate uint64, payload int) {
 	}
 }
 
-// resumePacedRecovery resumes the exact recovery path that was pacing-blocked.
-// It returns true when an active recovery algorithm handled the timer event.
+// resumePacedRecovery resumes a pacing-blocked legacy SACK recovery episode.
+// RACK deliberately returns false here and therefore remains entirely on its
+// upstream recovery timing.
 // +checklocks:s.ep.mu
 func (s *sender) resumePacedRecovery() bool {
-	if !s.FastRecovery.Active {
+	if !s.FastRecovery.Active || !s.ep.SACKPermitted {
 		return false
 	}
-
-	if s.ep.tcpRecovery&tcpip.TCPRACKLossDetection != 0 {
-		s.rc.DoRecovery(nil, false /* fastRetransmit */)
+	if sr, ok := s.lr.(*sackRecovery); ok {
+		end := s.SndUna.Add(s.SndWnd)
+		dataSent := sr.handleSACKRecovery(s.MaxPayloadSize, end)
+		s.postXmit(dataSent, true /* shouldScheduleProbe */)
 		return true
 	}
-
-	if s.ep.SACKPermitted {
-		if sr, ok := s.lr.(*sackRecovery); ok {
-			end := s.SndUna.Add(s.SndWnd)
-			dataSent := sr.handleSACKRecovery(s.MaxPayloadSize, end)
-			s.postXmit(dataSent, true /* shouldScheduleProbe */)
-			return true
-		}
-	}
-
 	return false
 }
