@@ -15,25 +15,25 @@ import (
 )
 
 // deliveryRateSample is the sender-wide result of a Linux-style delivery-rate
-// sample. The implementation deliberately mirrors the important invariants of
-// Linux TCP's rate sampler rather than ACK inter-arrival timing:
-//
-//   * each newly transmitted segment snapshots delivered and delivery time;
-//   * ACK/SACK processing advances a monotonic delivered-byte counter;
-//   * the most recently-sent newly-delivered segment provides the prior
-//     snapshot for the sample;
-//   * the sampling interval is max(send elapsed, ACK elapsed), which makes
-//     ACK compression unable to manufacture an arbitrarily high rate from two
-//     closely-spaced ACK arrivals.
-//
-// App-limited tracking is intentionally not folded into this first step. It is
-// represented in the sample so it can be added without changing the BBR API.
+// sample. It intentionally carries both the delta delivered by this sample and
+// the sender's cumulative delivered counters. BBR uses priorDelivered and
+// totalDelivered to define packet-timed round trips, matching Linux's
+// next_rtt_delivered/rtt_cnt model instead of using wall-clock RTT boundaries.
 type deliveryRateSample struct {
-	valid        bool
-	delivered    uint64
-	interval     time.Duration
-	rate         uint64 // delivered bytes/second
-	isAppLimited bool
+	valid          bool
+	delivered      uint64
+	priorDelivered uint64
+	totalDelivered uint64
+	interval       time.Duration
+	rate           uint64 // delivered bytes/second
+	isAppLimited   bool
+}
+
+// deliveryRateConsumer is deliberately independent of BBR. TCP owns delivery
+// accounting; congestion controls may consume the resulting sample if they need
+// a delivery-rate model. Reno and CUBIC simply do not implement this interface.
+type deliveryRateConsumer interface {
+	OnDeliveryRateSample(deliveryRateSample)
 }
 
 type deliveryRateCandidate struct {
@@ -157,20 +157,20 @@ func (s *sender) rateSampleEnd(ackTime tcpip.MonotonicTime) {
 	}
 
 	s.deliveryRate = deliveryRateSample{
-		valid:        true,
-		delivered:    delivered,
-		interval:     interval,
-		rate:         rate,
-		isAppLimited: c.isAppLimited,
+		valid:          true,
+		delivered:      delivered,
+		priorDelivered: c.priorDelivered,
+		totalDelivered: s.rateDelivered,
+		interval:       interval,
+		rate:           rate,
+		isAppLimited:   c.isAppLimited,
 	}
 
-	// Consume the sample when it is generated, not only from the cumulative-ACK
-	// congestion-control hook. This is essential for pure SACK ACKs during loss
-	// recovery, which can represent substantial newly delivered data without
-	// advancing SND.UNA. Keep the call local to the experimental BBR for now;
-	// once behavior is validated this becomes a generic rate-sample callback.
-	if b, ok := s.cc.(*bbrState); ok {
-		b.updateBandwidth(1, ackTime)
+	// Deliver the sample through a generic TCP-owned extension point. This is
+	// the equivalent architectural boundary of Linux producing struct
+	// rate_sample before a congestion-control algorithm consumes it.
+	if consumer, ok := s.cc.(deliveryRateConsumer); ok {
+		consumer.OnDeliveryRateSample(s.deliveryRate)
 	}
 
 	// Advance the sender delivery/send epochs after producing the sample, as
