@@ -82,6 +82,9 @@ case "$GVISOR_PATCHSET" in
     # Measurement-only post-patch: expose delivery-rate interval composition
     # and STARTUP full-bandwidth decisions without changing BBR control state.
     python3 "$ROOT/scripts/patch_rate_diagnostics.py" "$GVISOR_DIR"
+    # gVisor does not call PostRecovery on RTORecovery -> Open. Preserve and
+    # restore BBR's prior model cwnd at the existing recover sequence boundary.
+    python3 "$ROOT/scripts/patch_bbr_rto_cwnd.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
