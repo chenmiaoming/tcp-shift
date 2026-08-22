@@ -67,13 +67,9 @@ case "$GVISOR_PATCHSET" in
     python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
-    # This is a standalone RACK correctness fix as well as part of the full
-    # tcp-shift patchset. Keep it separate so CI can measure its contribution
-    # against completely unmodified gVisor.
-    python3 "$ROOT/scripts/patch_rack_tiebreak.py" "$GVISOR_DIR"
-    # BBR must use Linux tcp_packets_in_flight-like state, not the RFC6675
-    # SetPipe value stored in sender.Outstanding. Apply this after the RACK
-    # correction because its diagnostic hook matches the corrected predicate.
+    # Keep the full BBR experiment on unmodified upstream RACK semantics.
+    # The equal-timestamp ordering change is not reproducibly beneficial in
+    # loss tests, so it stays isolated in the rack-tiebreak control profile.
     python3 "$ROOT/scripts/patch_inflight_accounting.py" "$GVISOR_DIR"
 
     gofmt -w \
