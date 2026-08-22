@@ -31,6 +31,38 @@ type linuxFlightSnapshot struct {
 	packetsInFlight int
 }
 
+// recoveryFlightControl lets a congestion control select the in-flight
+// coordinate system used for recovery cwnd admission. Loss-based controls do
+// not implement this interface and retain gVisor's RFC6675 SetPipe/Outstanding
+// semantics. BBR implements it so both its cwnd calculation and recovery send
+// admission use the same Linux tcp_packets_in_flight-like quantity.
+type recoveryFlightControl interface {
+	recoveryPacketsInFlight() int
+}
+
+// recoveryPacketsInFlight returns the quantity that must be compared with
+// SndCwnd when RACK/RFC6675 recovery decides whether another packet may be
+// transmitted. Keeping this indirection at the admission point is important:
+// SetPipe/Outstanding is still maintained for gVisor recovery bookkeeping, but
+// it must not be compared against a BBR cwnd expressed in Linux-like inflight
+// units.
+//
+// +checklocks:s.ep.mu
+func (s *sender) recoveryPacketsInFlight() int {
+	if cc, ok := s.cc.(recoveryFlightControl); ok {
+		return cc.recoveryPacketsInFlight()
+	}
+	return s.Outstanding
+}
+
+// recoveryPacketsInFlight makes BBR recovery admission use the same independent
+// quantity used by BBR packet conservation and rate_sample.prior_in_flight.
+//
+// +checklocks:b.s.ep.mu
+func (b *bbrState) recoveryPacketsInFlight() int {
+	return b.s.linuxLikePacketsInFlight()
+}
+
 // linuxLikeFlight reconstructs Linux-style TCP in-flight state from netstack's
 // retransmission queue and SACK scoreboard. RACK loss state that would
 // otherwise disappear when sendSegment clears seg.lost is kept separately in
