@@ -2,9 +2,10 @@
 """Apply the tcp-shift BBR/pacing integration to a resolved gVisor checkout.
 
 The patcher intentionally preserves as much upstream source text as possible.
-In particular, sender.sendData() is modified with three narrow insertions rather
-than being replaced wholesale. This keeps unrelated upstream sender changes in
-place and makes the floating-master CI job a useful compatibility signal.
+In particular, sender.sendData() is modified with narrow insertions rather than
+being replaced wholesale. Delivery-rate sampling is also integrated through
+small hooks in segment send/ACK/SACK paths. This keeps unrelated upstream TCP
+changes in place and makes the floating-go CI job a useful compatibility signal.
 """
 
 from __future__ import annotations
@@ -162,8 +163,56 @@ def patch_send_data(text: str) -> str:
     return text[:start] + block + text[end:]
 
 
+def patch_segment(path: Path) -> None:
+    text = path.read_text()
+    text = replace_once(
+        text,
+        '\t// xmitTime is the last transmit time of this segment.\n\txmitTime  tcpip.MonotonicTime\n\txmitCount uint32\n\n\t// acked indicates if the segment has already been SACKed.',
+        '\t// xmitTime is the last transmit time of this segment.\n\txmitTime  tcpip.MonotonicTime\n\txmitCount uint32\n\n'
+        '\t// Delivery-rate sampling metadata. These fields mirror the per-skb\n'
+        '\t// delivery snapshot used by Linux TCP rate sampling and are populated\n'
+        '\t// only for outgoing data.\n'
+        '\trateDelivered     uint64                `state:"nosave"`\n'
+        '\trateDeliveredTime tcpip.MonotonicTime `state:"nosave"`\n'
+        '\trateFirstTxTime   tcpip.MonotonicTime `state:"nosave"`\n'
+        '\trateAppLimited    bool                  `state:"nosave"`\n'
+        '\trateSampleValid   bool                  `state:"nosave"`\n\n'
+        '\t// acked indicates if the segment has already been SACKed.',
+        "segment rate metadata",
+    )
+    text = replace_once(
+        text,
+        '\tt.xmitTime = s.xmitTime\n\tt.xmitCount = s.xmitCount\n\tt.ep = s.ep',
+        '\tt.xmitTime = s.xmitTime\n'
+        '\tt.xmitCount = s.xmitCount\n'
+        '\tt.rateDelivered = s.rateDelivered\n'
+        '\tt.rateDeliveredTime = s.rateDeliveredTime\n'
+        '\tt.rateFirstTxTime = s.rateFirstTxTime\n'
+        '\tt.rateAppLimited = s.rateAppLimited\n'
+        '\tt.rateSampleValid = s.rateSampleValid\n'
+        '\tt.ep = s.ep',
+        "segment clone rate metadata",
+    )
+    path.write_text(text)
+
+
 def patch_sender(path: Path) -> None:
     text = path.read_text()
+    text = replace_once(
+        text,
+        '\t// cc is the congestion control algorithm in use for this sender.\n\tcc congestionControl\n',
+        '\t// cc is the congestion control algorithm in use for this sender.\n'
+        '\tcc congestionControl\n\n'
+        '\t// Generic delivery-rate sampling state. BBR consumes deliveryRate,\n'
+        '\t// while Reno/CUBIC simply ignore it. Keep it outside bbrState so the\n'
+        '\t// TCP sender owns delivery accounting, matching Linux TCP.\n'
+        '\trateDelivered     uint64                `state:"nosave"`\n'
+        '\trateDeliveredTime tcpip.MonotonicTime `state:"nosave"`\n'
+        '\trateFirstTxTime   tcpip.MonotonicTime `state:"nosave"`\n'
+        '\tdeliveryRate      deliveryRateSample   `state:"nosave"`\n'
+        '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n',
+        "sender rate state",
+    )
     text = replace_once(
         text,
         '\tcorkTimer timer `state:"nosave"`\n}',
@@ -195,6 +244,64 @@ def patch_sender(path: Path) -> None:
         "sender pacing helpers",
     )
     text = patch_send_data(text)
+
+    text = replace_once(
+        text,
+        'func (s *sender) handleRcvdSegment(rcvdSeg *segment) {\n\tbestRTT := unknownRTT',
+        'func (s *sender) handleRcvdSegment(rcvdSeg *segment) {\n'
+        '\ts.rateSampleBegin()\n'
+        '\tbestRTT := unknownRTT',
+        "ACK rate sample begin",
+    )
+    text = replace_once(
+        text,
+        '\t\t\tif sb.Start.LessThanEq(seg.sequenceNumber) && !seg.acked {\n\t\t\t\ts.rc.update(seg, rcvdSeg)',
+        '\t\t\tif sb.Start.LessThanEq(seg.sequenceNumber) && !seg.acked {\n'
+        '\t\t\t\ts.rateSampleDelivered(seg, seg.payloadSize(), rcvdSeg.rcvdTime)\n'
+        '\t\t\t\ts.rc.update(seg, rcvdSeg)',
+        "SACK delivery accounting",
+    )
+    text = replace_once(
+        text,
+        '\t\t\tif datalen > ackLeft {\n\t\t\t\tprevCount := s.pCount(seg, s.MaxPayloadSize)',
+        '\t\t\tif datalen > ackLeft {\n'
+        '\t\t\t\tif !s.rateSegmentAlreadyDelivered(seg) {\n'
+        '\t\t\t\t\tdelivered := int(ackLeft)\n'
+        '\t\t\t\t\tif delivered > seg.payloadSize() {\n'
+        '\t\t\t\t\t\tdelivered = seg.payloadSize()\n'
+        '\t\t\t\t\t}\n'
+        '\t\t\t\t\ts.rateSampleDelivered(seg, delivered, rcvdSeg.rcvdTime)\n'
+        '\t\t\t\t}\n'
+        '\t\t\t\tprevCount := s.pCount(seg, s.MaxPayloadSize)',
+        "partial cumulative ACK delivery accounting",
+    )
+    text = replace_once(
+        text,
+        '\t\t\ts.writeList.Remove(seg)\n\n\t\t\t// If SACK is enabled then only reduce outstanding if',
+        '\t\t\tif !s.rateSegmentAlreadyDelivered(seg) {\n'
+        '\t\t\t\ts.rateSampleDelivered(seg, seg.payloadSize(), rcvdSeg.rcvdTime)\n'
+        '\t\t\t}\n'
+        '\t\t\ts.writeList.Remove(seg)\n\n'
+        '\t\t\t// If SACK is enabled then only reduce outstanding if',
+        "full cumulative ACK delivery accounting",
+    )
+    text = replace_once(
+        text,
+        '\t\t// Clear SACK information for all acked data.\n\t\ts.ep.scoreboard.Delete(s.SndUna)',
+        '\t\ts.rateSampleEnd(rcvdSeg.rcvdTime)\n\n'
+        '\t\t// Clear SACK information for all acked data.\n'
+        '\t\ts.ep.scoreboard.Delete(s.SndUna)',
+        "delivery rate sample finalize",
+    )
+    text = replace_once(
+        text,
+        '\tseg.xmitTime = s.ep.stack.Clock().NowMonotonic()\n\tseg.xmitCount++',
+        '\tnow := s.ep.stack.Clock().NowMonotonic()\n'
+        '\ts.rateSampleOnSend(seg, now)\n'
+        '\tseg.xmitTime = now\n'
+        '\tseg.xmitCount++',
+        "send delivery snapshot",
+    )
     path.write_text(text)
 
 
@@ -229,9 +336,11 @@ def main() -> None:
     if not tcp.is_dir():
         raise SystemExit(f"not a gVisor source tree: {root}")
 
-    bbr_src = Path(__file__).resolve().parents[1] / "patches/gvisor/tcp/bbr.go"
-    shutil.copy2(bbr_src, tcp / "bbr.go")
+    patch_root = Path(__file__).resolve().parents[1] / "patches/gvisor/tcp"
+    shutil.copy2(patch_root / "bbr.go", tcp / "bbr.go")
+    shutil.copy2(patch_root / "rate.go", tcp / "rate.go")
     patch_protocol(tcp / "protocol.go")
+    patch_segment(tcp / "segment.go")
     patch_sender(tcp / "snd.go")
     patch_restore(tcp / "endpoint_state.go")
     patch_cleanup(tcp / "endpoint.go")
