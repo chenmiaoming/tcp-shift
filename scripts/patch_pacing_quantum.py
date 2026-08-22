@@ -8,10 +8,11 @@ rate/token-bucket semantics but arms the timer until roughly 2 ms of credit is
 available, matching the token bucket's burst window so each wake can release a
 small batch. An already-armed earlier deadline is also preserved.
 
-Diagnostics are cumulative counters only: timer arms/wakeups, callback lateness,
-and bytes actually emitted by timer-driven versus other sendData invocations.
-They are intended to distinguish scheduler/timer latency from send-path credit
-fragmentation without adding per-packet logging.
+This patch owns the shared pacing-timer callback, including resuming a paced
+legacy-SACK recovery episode. Diagnostics are cumulative counters only: timer
+arms/wakeups, callback lateness, and bytes actually emitted by timer-driven
+versus other sendData invocations. They distinguish scheduler/timer latency
+from send-path credit fragmentation without per-packet logging.
 """
 
 from __future__ import annotations
@@ -154,6 +155,10 @@ def patch_sender(path: Path) -> None:
 \t}
 
 \ts.pacingTimerDispatch = true
+\tif s.resumePacedRecovery() {
+\t\ts.pacingTimerDispatch = false
+\t\treturn nil
+\t}
 \ts.sendData()
 \ts.pacingTimerDispatch = false
 \treturn nil
