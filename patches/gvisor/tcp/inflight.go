@@ -134,30 +134,49 @@ func (s *sender) linuxLikePacketsInFlight() int {
 
 // inflightOnSend updates the shadow state immediately before sendSegment bumps
 // xmitCount. A first transmission is already represented by writeList; only a
-// retransmission needs an additional retrans_out copy.
+// retransmission needs an additional retrans_out copy. It also classifies the
+// retransmission depth so CI can distinguish one recovery retransmission from a
+// segment being sent repeatedly.
 // +checklocks:s.ep.mu
 func (s *sender) inflightOnSend(seg *segment) {
 	if seg == nil || seg.payloadSize() <= 0 || seg.xmitCount == 0 {
 		return
 	}
+
+	stats := s.ep.stack.Stats().TCP
+	switch seg.xmitCount {
+	case 1:
+		stats.TCPShiftRetransmitFirst.Increment()
+	case 2:
+		stats.TCPShiftRetransmitSecond.Increment()
+	default:
+		stats.TCPShiftRetransmitThirdPlus.Increment()
+	}
+
+	if s.tcpShiftRTOResend {
+		stats.TCPShiftRTORetransmits.Increment()
+	}
+
 	seg.inflightRetransActive = true
 	if s.ep.tcpRecovery&tcpip.TCPRACKLossDetection != 0 && s.FastRecovery.Active {
-		s.ep.stack.Stats().TCP.TCPShiftRACKRecoveryRetransmits.Increment()
+		stats.TCPShiftRACKRecoveryRetransmits.Increment()
 	}
 }
 
 // inflightMarkRACKLost records the Linux-equivalent state transition when RACK
-// declares a sequence range lost. The original packet remains in packets_out
-// and becomes lost_out. If the latest retransmitted copy was in flight, that
-// copy is now lost too and must leave retrans_out until another retransmission
-// is sent.
+// declares a sequence range lost. The return value is true when the same
+// sequence range had already been declared lost before and has since been
+// retransmitted; this is the signal needed to detect repeated loss inference on
+// retransmitted copies.
 // +checklocks:s.ep.mu
-func (s *sender) inflightMarkRACKLost(seg *segment) {
+func (s *sender) inflightMarkRACKLost(seg *segment) bool {
 	if seg == nil || seg.payloadSize() <= 0 {
-		return
+		return false
 	}
+	repeated := seg.inflightRACKLost && seg.xmitCount > 1
 	seg.inflightRACKLost = true
 	seg.inflightRetransActive = false
+	return repeated
 }
 
 // recordSetPipeDiagnostics measures how far gVisor's RFC6675 pipe estimator is
