@@ -58,8 +58,19 @@ def patch_tcp_stats(path: Path) -> None:
 	// cumulative so existing Stack.Stats() logging can expose recovery behavior
 	// without adding per-packet logging to hot paths.
 	TCPShiftRACKLossMarks              *StatCounter
+	TCPShiftRACKLossMarksFirst         *StatCounter
+	TCPShiftRACKLossMarksRepeat        *StatCounter
+	TCPShiftRACKLossMarksACK           *StatCounter
+	TCPShiftRACKLossMarksTimer         *StatCounter
 	TCPShiftRACKEqualTimeCandidates    *StatCounter
 	TCPShiftRACKRecoveryRetransmits    *StatCounter
+	TCPShiftRACKFastRetransmits        *StatCounter
+	TCPShiftRACKLostLoopRetransmits    *StatCounter
+	TCPShiftTLPRetransmits             *StatCounter
+	TCPShiftRTORetransmits             *StatCounter
+	TCPShiftRetransmitFirst            *StatCounter
+	TCPShiftRetransmitSecond           *StatCounter
+	TCPShiftRetransmitThirdPlus        *StatCounter
 	TCPShiftRecoveryEntries            *StatCounter
 	TCPShiftRecoveryExits              *StatCounter
 	TCPShiftSetPipeCalls               *StatCounter
@@ -77,24 +88,86 @@ def patch_tcp_stats(path: Path) -> None:
 
 def patch_rack(path: Path) -> None:
     text = path.read_text()
-    old = '''\t\tif seg.xmitTime.Before(rc.XmitTime) || (seg.xmitTime == rc.XmitTime && endSeq.LessThan(rc.EndSequence)) {
+
+    text = replace_once(
+        text,
+        '\t// snd is a reference to the sender.\n\tsnd *sender\n}',
+        '\t// snd is a reference to the sender.\n\tsnd *sender\n\n'
+        '\t// tcpShiftDetectFromTimer distinguishes reorder-timer loss inference\n'
+        '\t// from ACK-driven detectLoss calls without emitting per-packet logs.\n'
+        '\ttcpShiftDetectFromTimer bool `state:"nosave"`\n}',
+        "RACK loss-origin context",
+    )
+
+    # Match unmodified upstream RACK here. The equal-timestamp tie-break remains
+    # a standalone CI control and is deliberately not part of tcp-shift proper.
+    old = '''\t\tif seg.xmitTime.Before(rc.XmitTime) || (seg.xmitTime == rc.XmitTime && rc.EndSequence.LessThan(endSeq)) {
 \t\t\ttimeRemaining := seg.xmitTime.Sub(rcvTime) + rc.RTT + rc.ReoWnd
 \t\t\tif timeRemaining <= 0 {
 \t\t\t\tseg.lost = true
 \t\t\t\tnumLost++
 '''
-    new = '''\t\tif seg.xmitTime.Before(rc.XmitTime) || (seg.xmitTime == rc.XmitTime && endSeq.LessThan(rc.EndSequence)) {
+    new = '''\t\tif seg.xmitTime.Before(rc.XmitTime) || (seg.xmitTime == rc.XmitTime && rc.EndSequence.LessThan(endSeq)) {
 \t\t\tif seg.xmitTime == rc.XmitTime {
 \t\t\t\trc.snd.ep.stack.Stats().TCP.TCPShiftRACKEqualTimeCandidates.Increment()
 \t\t\t}
 \t\t\ttimeRemaining := seg.xmitTime.Sub(rcvTime) + rc.RTT + rc.ReoWnd
 \t\t\tif timeRemaining <= 0 {
-\t\t\t\trc.snd.inflightMarkRACKLost(seg)
-\t\t\t\trc.snd.ep.stack.Stats().TCP.TCPShiftRACKLossMarks.Increment()
+\t\t\t\trepeated := rc.snd.inflightMarkRACKLost(seg)
+\t\t\t\tstats := rc.snd.ep.stack.Stats().TCP
+\t\t\t\tstats.TCPShiftRACKLossMarks.Increment()
+\t\t\t\tif repeated {
+\t\t\t\t\tstats.TCPShiftRACKLossMarksRepeat.Increment()
+\t\t\t\t} else {
+\t\t\t\t\tstats.TCPShiftRACKLossMarksFirst.Increment()
+\t\t\t\t}
+\t\t\t\tif rc.tcpShiftDetectFromTimer {
+\t\t\t\t\tstats.TCPShiftRACKLossMarksTimer.Increment()
+\t\t\t\t} else {
+\t\t\t\t\tstats.TCPShiftRACKLossMarksACK.Increment()
+\t\t\t\t}
 \t\t\t\tseg.lost = true
 \t\t\t\tnumLost++
 '''
     text = replace_once(text, old, new, "RACK inflight loss accounting")
+
+    text = replace_once(
+        text,
+        '\tnumLost := rc.detectLoss(rc.snd.reorderTimer.target)\n',
+        '\trc.tcpShiftDetectFromTimer = true\n'
+        '\tnumLost := rc.detectLoss(rc.snd.reorderTimer.target)\n'
+        '\trc.tcpShiftDetectFromTimer = false\n',
+        "RACK reorder-timer loss origin",
+    )
+
+    text = replace_once(
+        text,
+        '''\tsnd := rc.snd
+\tif fastRetransmit {
+\t\tsnd.resendSegment()
+\t}''',
+        '''\tsnd := rc.snd
+\tif fastRetransmit {
+\t\tsnd.ep.stack.Stats().TCP.TCPShiftRACKFastRetransmits.Increment()
+\t\tsnd.resendSegment()
+\t}''',
+        "RACK fast retransmit classification",
+    )
+
+    text = replace_once(
+        text,
+        '''\t\tif sent := snd.maybeSendSegment(seg, int(snd.ep.scoreboard.SMSS()), snd.SndUna.Add(snd.SndWnd)); !sent {
+\t\t\tbreak
+\t\t}
+\t\tdataSent = true''',
+        '''\t\tif sent := snd.maybeSendSegment(seg, int(snd.ep.scoreboard.SMSS()), snd.SndUna.Add(snd.SndWnd)); !sent {
+\t\t\tbreak
+\t\t}
+\t\tsnd.ep.stack.Stats().TCP.TCPShiftRACKLostLoopRetransmits.Increment()
+\t\tdataSent = true''',
+        "RACK lost-loop retransmit classification",
+    )
+
     text = replace_once(
         text,
         '''\t\t// Check the congestion window after entering recovery.
@@ -126,7 +199,8 @@ def patch_sender(path: Path) -> None:
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n',
         '\tdeliveryRate      deliveryRateSample   `state:"nosave"`\n'
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n'
-        '\tratePriorInFlight int                   `state:"nosave"`\n',
+        '\tratePriorInFlight int                   `state:"nosave"`\n'
+        '\ttcpShiftRTOResend bool                  `state:"nosave"`\n',
         "sender ACK-start prior inflight snapshot",
     )
     text = replace_once(
@@ -151,6 +225,41 @@ def patch_sender(path: Path) -> None:
         '\ts.FastRecovery.Active = false',
         "recovery exit diagnostics",
     )
+
+    # A TLP can retransmit data outside FastRecovery. Count that path explicitly
+    # so it does not get mistaken for RACK's lost-segment loop.
+    text = replace_once(
+        text,
+        '''\t\tif highestSeqXmit != nil {
+\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
+\t\t\tif dataSent {
+\t\t\t\ts.rc.tlpRxtOut = true''',
+        '''\t\tif highestSeqXmit != nil {
+\t\t\twasRetransmit := highestSeqXmit.xmitCount > 0
+\t\t\tdataSent = s.maybeSendSegment(highestSeqXmit, int(s.ep.scoreboard.SMSS()), s.SndUna.Add(s.SndWnd))
+\t\t\tif dataSent {
+\t\t\t\tif wasRetransmit {
+\t\t\t\t\ts.ep.stack.Stats().TCP.TCPShiftTLPRetransmits.Increment()
+\t\t\t\t}
+\t\t\t\ts.rc.tlpRxtOut = true''',
+        "TLP retransmit classification",
+    )
+
+    # RTO recovery calls sendData synchronously. Mark that call so the generic
+    # send hook can count retransmitted segments attributed to the RTO path.
+    start = text.index("func (s *sender) retransmitTimerExpired() tcpip.Error {")
+    end = text.index("// pCount returns the number of packets", start)
+    block = text[start:end]
+    block = replace_once(
+        block,
+        '\ts.sendData()\n\n\treturn nil',
+        '\ts.tcpShiftRTOResend = true\n'
+        '\ts.sendData()\n'
+        '\ts.tcpShiftRTOResend = false\n\n'
+        '\treturn nil',
+        "RTO retransmit context",
+    )
+    text = text[:start] + block + text[end:]
     path.write_text(text)
 
 
