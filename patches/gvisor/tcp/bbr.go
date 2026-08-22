@@ -47,9 +47,10 @@ type bbrBandwidthBucket struct {
 }
 
 // bbrState implements a compact BBRv1-inspired model on top of netstack's
-// packet-count congestion window. Bandwidth and cwnd are driven by the
-// TCP-owned per-delivery rate sample, following Linux BBR's custom
-// cong_control() model rather than gVisor's Reno/CUBIC-oriented Update hook.
+// packet-count congestion window. Bandwidth comes from the TCP-owned delivery
+// sampler and is filtered over packet-timed rounds, following Linux BBR's
+// next_rtt_delivered/rtt_cnt model. In particular, this is a 10-round window,
+// not a 10-ACK window; the distinction is critical on high-BDP paths.
 type bbrState struct {
 	s *sender
 
@@ -74,13 +75,14 @@ type bbrState struct {
 	probeRTTDone      tcpip.MonotonicTime
 	probeRTTStarted   bool
 
-	// Recovery state mirrors the essential BBRv1 semantics: remember the model
-	// cwnd, conserve packets for the first packet-timed recovery round, then
-	// allow cwnd to slow-start toward the BDP target. This differs from the
-	// Reno/CUBIC contract assumed by gVisor's generic recovery code.
+	// Netstack's generic fast/SACK recovery assumes loss-based congestion
+	// controls reduce ssthresh before enterRecovery(), which then sets cwnd to
+	// ssthresh+3. BBR must not apply a Reno/CUBIC multiplicative decrease, but
+	// it still needs packet conservation while recovery decides what to
+	// retransmit. Save the model cwnd here, temporarily constrain recovery to
+	// the estimated in-flight pipe, and restore the model cwnd in PostRecovery.
 	inRecovery        bool
 	recoveryPriorCwnd int
-	packetConservation bool
 }
 
 func newBBRCC(s *sender) *bbrState {
@@ -117,38 +119,31 @@ func mulGain(v, gain uint64) uint64 {
 	return v * gain / bbrGainScale
 }
 
-// OnDeliveryRateSample is tcp-shift's equivalent of Linux BBR's custom
-// cong_control() callback: it runs for ACK/SACK delivery even during recovery,
-// after the sender has established the current recovery state and before the
-// recovery path transmits more data.
+// OnDeliveryRateSample consumes the TCP-owned delivery sample. Linux BBR does
+// its bandwidth/round accounting directly from struct rate_sample before cwnd
+// is updated; this callback gives tcp-shift the same model input without making
+// the generic sampler depend on BBR. Do not drive cwnd from s.Outstanding here:
+// gVisor's recovery code rewrites Outstanding as an RFC6675/RACK pipe estimate,
+// which is not equivalent to Linux tcp_packets_in_flight().
 func (b *bbrState) OnDeliveryRateSample(rs deliveryRateSample) {
-	if !rs.valid {
-		return
-	}
 	b.updateBandwidth(rs)
 	b.checkFullBandwidth(rs)
-	b.updateMode(rs.ackTime)
-	b.updateCwndFromDelivery(rs)
 }
 
 func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 	b.roundStart = false
-	if rs.rate == 0 || rs.interval <= 0 || rs.delivered == 0 {
+	if !rs.valid || rs.rate == 0 || rs.interval <= 0 || rs.delivered == 0 {
 		return
 	}
 
 	// Linux BBR starts a new packet-timed round when the packet that generated
-	// this rate sample was sent after the previous round boundary in delivered
-	// space. Use cumulative bytes rather than packets; the ordering invariant is
-	// identical.
+	// this rate sample was sent before next_rtt_delivered. Use cumulative bytes
+	// rather than packets because the tcp-shift sampler's delivered counter is
+	// byte-based; the ordering invariant is identical.
 	if rs.priorDelivered >= b.nextRoundDelivered {
 		b.nextRoundDelivered = rs.totalDelivered
 		b.roundCount++
 		b.roundStart = true
-		// Linux clears packet_conservation at the next packet-timed round.
-		if b.packetConservation {
-			b.packetConservation = false
-		}
 	}
 
 	// Application-limited samples are ignored when they are below the current
@@ -220,9 +215,6 @@ func (b *bbrState) bdpPackets(gain uint64) int {
 }
 
 func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
-	if now == (tcpip.MonotonicTime{}) {
-		return
-	}
 	if b.minRTT != time.Duration(math.MaxInt64) && b.minRTTStamp != (tcpip.MonotonicTime{}) && b.mode != bbrProbeRTT && now.Sub(b.minRTTStamp) >= bbrMinRTTWindow {
 		b.probeRTTPriorCwnd = b.s.SndCwnd
 		b.mode = bbrProbeRTT
@@ -269,48 +261,30 @@ func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
 	}
 }
 
-// updateCwndFromDelivery mirrors the central BBRv1 recovery behavior. During
-// the first recovery round, P newly delivered packets may release at most P
-// packets (packet conservation). After that, cwnd can grow toward the model BDP
-// target rather than remaining pinned to a loss-based ssthresh.
-func (b *bbrState) updateCwndFromDelivery(rs deliveryRateSample) {
-	acked := rs.ackedSacked
-	if acked <= 0 {
-		return
-	}
-	if b.mode == bbrProbeRTT {
-		b.s.SndCwnd = 4
-		b.s.Ssthresh = 4
-		return
-	}
+// Update implements congestionControl.Update.
+func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.MonotonicTime) {
+	b.updateMinRTT(rtt, ackTime)
+	b.updateMode(ackTime)
 
-	if b.inRecovery && b.s.FastRecovery.Active && b.packetConservation {
-		cwnd := b.s.Outstanding + acked
-		if cwnd > b.s.SndCwnd {
-			b.s.SndCwnd = cwnd
-		}
-		if b.s.SndCwnd < 4 {
-			b.s.SndCwnd = 4
-		}
-		b.s.Ssthresh = b.s.SndCwnd
+	if packetsAcked <= 0 || b.mode == bbrProbeRTT {
 		return
 	}
 
 	target := b.bdpPackets(bbrCwndGain)
 	switch b.mode {
 	case bbrStartup:
-		b.s.SndCwnd += acked
+		b.s.SndCwnd += packetsAcked
 		if b.maxBW != 0 && b.s.SndCwnd > 2*target {
 			b.s.SndCwnd = 2 * target
 		}
 	case bbrDrain, bbrProbeBW:
 		if b.s.SndCwnd < target {
-			b.s.SndCwnd += acked
+			b.s.SndCwnd += packetsAcked
 			if b.s.SndCwnd > target {
 				b.s.SndCwnd = target
 			}
 		} else if b.s.SndCwnd > 2*target && b.s.Outstanding < b.s.SndCwnd {
-			b.s.SndCwnd = max(target, b.s.Outstanding+acked)
+			b.s.SndCwnd = max(target, b.s.Outstanding+packetsAcked)
 		}
 	}
 	if b.s.SndCwnd < 4 {
@@ -319,28 +293,17 @@ func (b *bbrState) updateCwndFromDelivery(rs deliveryRateSample) {
 	b.s.Ssthresh = b.s.SndCwnd
 }
 
-// Update implements gVisor's legacy Reno/CUBIC-oriented congestionControl
-// interface. BBR cwnd/model updates are intentionally not done here anymore:
-// gVisor suppresses Update while FastRecovery is active, while Linux BBR's
-// custom cong_control callback continues to run on ACK/SACK delivery in
-// recovery. Keep this hook only for RTT/minRTT information that gVisor already
-// computes on cumulative ACKs.
-func (b *bbrState) Update(_ int, rtt time.Duration, ackTime tcpip.MonotonicTime) {
-	b.updateMinRTT(rtt, ackTime)
-	b.updateMode(ackTime)
-}
-
-// HandleLossDetected saves the model cwnd and establishes a one-round packet
-// conservation phase. gVisor's enterRecovery() immediately assigns
-// cwnd=ssthresh+3, so provide the current pipe estimate as the temporary
-// ssthresh; per-delivery BBR control then governs further cwnd changes.
+// HandleLossDetected enters packet conservation rather than applying the
+// multiplicative decrease used by loss-based congestion controls. Netstack's
+// enterRecovery() immediately sets cwnd=ssthresh+3, so using the model cwnd as
+// ssthresh lets RFC6675 recovery send a large burst whenever SetPipe() falls
+// below that model window. Use the current pipe estimate instead and restore
+// the model window in PostRecovery.
 func (b *bbrState) HandleLossDetected() {
 	if !b.inRecovery {
 		b.recoveryPriorCwnd = max(b.s.SndCwnd, 4)
 		b.inRecovery = true
 	}
-	b.packetConservation = true
-	b.nextRoundDelivered = b.s.rateDelivered
 	b.s.Ssthresh = max(b.s.Outstanding, 4)
 }
 
@@ -349,12 +312,8 @@ func (b *bbrState) HandleLossDetected() {
 func (b *bbrState) HandleRTOExpired() {
 	b.inRecovery = false
 	b.recoveryPriorCwnd = 0
-	b.packetConservation = false
 	b.roundStart = false
 
-	// gVisor delegates the RFC5681 cwnd collapse to the congestion-control
-	// implementation. Collapse to one packet, then let per-delivery BBR control
-	// grow back toward the preserved model target.
 	b.s.SndCwnd = 1
 	if b.s.Ssthresh < 4 {
 		b.s.Ssthresh = 4
@@ -366,15 +325,9 @@ func (b *bbrState) PostRecovery() {
 		return
 	}
 
-	// Restore the model-driven window saved on entry. A following delivery
-	// sample can then bring it back toward the current BDP target.
 	restored := max(b.recoveryPriorCwnd, 4)
-	if b.s.SndCwnd > restored {
-		restored = b.s.SndCwnd
-	}
 	b.s.SndCwnd = restored
 	b.s.Ssthresh = restored
 	b.recoveryPriorCwnd = 0
 	b.inRecovery = false
-	b.packetConservation = false
 }
