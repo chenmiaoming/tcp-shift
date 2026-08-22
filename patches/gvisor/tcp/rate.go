@@ -42,6 +42,7 @@ type deliveryRateCandidate struct {
 	priorTime      tcpip.MonotonicTime
 	firstTxTime    tcpip.MonotonicTime
 	txTime         tcpip.MonotonicTime
+	ackTime        tcpip.MonotonicTime
 	isAppLimited   bool
 }
 
@@ -73,6 +74,15 @@ func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
 
 // +checklocks:s.ep.mu
 func (s *sender) rateSampleBegin() {
+	// A pure SACK ACK does not advance SND.UNA, so gVisor's legacy congestion
+	// control Update hook is not reached for that ACK. Do not throw away the
+	// delivery candidate in that case: finalize it at the beginning of the next
+	// ACK before starting a fresh sample. Linux accounts SACKed delivery in the
+	// same rate-sampling machinery, and BBR depends heavily on those samples
+	// during loss recovery.
+	if s.rateCandidate.valid {
+		s.rateSampleEnd(s.rateCandidate.ackTime)
+	}
 	s.rateCandidate = deliveryRateCandidate{}
 	s.deliveryRate = deliveryRateSample{}
 }
@@ -109,11 +119,10 @@ func (s *sender) rateSampleDelivered(seg *segment, deliveredBytes int, ackTime t
 			priorTime:      seg.rateDeliveredTime,
 			firstTxTime:    seg.rateFirstTxTime,
 			txTime:         seg.xmitTime,
+			ackTime:        ackTime,
 			isAppLimited:   seg.rateAppLimited,
 		}
 	}
-
-	_ = ackTime // kept in the signature to make delivery sites explicit.
 }
 
 // +checklocks:s.ep.mu
@@ -155,10 +164,23 @@ func (s *sender) rateSampleEnd(ackTime tcpip.MonotonicTime) {
 		isAppLimited: c.isAppLimited,
 	}
 
+	// Consume the sample when it is generated, not only from the cumulative-ACK
+	// congestion-control hook. This is essential for pure SACK ACKs during loss
+	// recovery, which can represent substantial newly delivered data without
+	// advancing SND.UNA. Keep the call local to the experimental BBR for now;
+	// once behavior is validated this becomes a generic rate-sample callback.
+	if b, ok := s.cc.(*bbrState); ok {
+		b.updateBandwidth(1, ackTime)
+	}
+
 	// Advance the sender delivery/send epochs after producing the sample, as
 	// Linux advances delivered_mstamp/first_tx_mstamp between rate samples.
 	s.rateDeliveredTime = ackTime
 	if c.txTime != (tcpip.MonotonicTime{}) {
 		s.rateFirstTxTime = c.txTime
 	}
+
+	// A finalized sample must not be finalized again at the next ACK. Pure SACK
+	// candidates survive only until rateSampleBegin() on the following ACK.
+	s.rateCandidate = deliveryRateCandidate{}
 }
