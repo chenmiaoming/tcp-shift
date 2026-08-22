@@ -26,7 +26,7 @@ type deliveryRateSample struct {
 	interval       time.Duration
 	rate           uint64 // delivered bytes/second
 	ackedSacked    int    // packets newly ACKed or SACKed by this ACK event
-	priorInFlight  int    // sender Outstanding before this ACK event delivered data
+	priorInFlight  int    // Linux-like packets_in_flight snapshot at ACK-event start
 	ackTime        tcpip.MonotonicTime
 	isAppLimited   bool
 }
@@ -56,17 +56,22 @@ type deliveryRateCandidate struct {
 
 // +checklocks:s.ep.mu
 func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
-	// Linux stores the delivery snapshot for newly transmitted data. Preserve
-	// that snapshot across retransmissions so ACKing a retransmit does not make
-	// the rate sample measure only the retransmission-to-ACK interval.
-	if seg == nil || seg.xmitCount != 0 || seg.payloadSize() == 0 {
+	if seg == nil || seg.payloadSize() == 0 {
 		return
 	}
 
-	// A new flight starts a new send phase. This is analogous to Linux
-	// tcp_rate_skb_sent() resetting first_tx_mstamp when there were no packets
-	// in flight.
-	if s.rateFirstTxTime == (tcpip.MonotonicTime{}) || s.Outstanding == 0 {
+	// Maintain the independent Linux-like retrans_out shadow even when this is
+	// a retransmission. Delivery timestamps below remain snapshots of the first
+	// transmission, matching Linux's rate-sampling model.
+	s.inflightOnSend(seg)
+	if seg.xmitCount != 0 {
+		return
+	}
+
+	// A new flight starts a new send phase. Use Linux-like in-flight accounting,
+	// not sender.Outstanding, because SetPipe may rewrite Outstanding while a
+	// recovery episode is active.
+	if s.rateFirstTxTime == (tcpip.MonotonicTime{}) || s.linuxLikePacketsInFlight() == 0 {
 		s.rateFirstTxTime = now
 		if s.rateDeliveredTime == (tcpip.MonotonicTime{}) {
 			s.rateDeliveredTime = now
@@ -91,6 +96,11 @@ func (s *sender) rateSampleBegin() {
 	}
 	s.rateCandidate = deliveryRateCandidate{}
 	s.deliveryRate = deliveryRateSample{}
+
+	// Linux captures rs.prior_in_flight at the beginning of ACK processing from
+	// tcp_packets_in_flight(). Capture the corresponding independent snapshot
+	// once per ACK event, before SACK/loss processing mutates the scoreboard.
+	s.ratePriorInFlight = s.linuxLikePacketsInFlight()
 }
 
 // rateSegmentAlreadyDelivered reports whether a segment was already counted as
@@ -116,7 +126,7 @@ func (s *sender) rateSampleDelivered(seg *segment, deliveredBytes int, ackTime t
 	}
 
 	ackedBytes := deliveredBytes
-	priorInFlight := s.Outstanding
+	priorInFlight := s.ratePriorInFlight
 	if s.rateCandidate.valid {
 		ackedBytes += s.rateCandidate.ackedBytes
 		priorInFlight = s.rateCandidate.priorInFlight
