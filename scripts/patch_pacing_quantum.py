@@ -27,16 +27,28 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: patch_pacing_quantum.py <gvisor-root>")
+def patch_tcp_stats(path: Path) -> None:
+    text = path.read_text()
+    text = replace_once(
+        text,
+        "type TCPStats struct {\n",
+        '''type TCPStats struct {
+\t// tcp-shift userspace pacing diagnostics. These stay cumulative so the
+\t// existing periodic Stack.Stats() dump can expose pacing behavior without
+\t// logging on every send.
+\tTCPShiftPacingTimerArms              *StatCounter
+\tTCPShiftPacingTimerWakeups           *StatCounter
+\tTCPShiftPacingTimerLatenessMicrosSum *StatCounter
+\tTCPShiftPacingTimerBytes             *StatCounter
+\tTCPShiftPacingOtherBytes             *StatCounter
+''',
+        "pacing TCP stats",
+    )
+    path.write_text(text)
 
-    root = Path(sys.argv[1]).resolve()
-    snd = root / "pkg/tcpip/transport/tcp/snd.go"
-    if not snd.is_file():
-        raise SystemExit(f"not a gVisor source tree: {root}")
 
-    text = snd.read_text()
+def patch_sender(path: Path) -> None:
+    text = path.read_text()
 
     # Remember whether the current sendData invocation came from the pacing
     # timer so byte accounting can separate timer-driven progress from ACK/
@@ -167,7 +179,8 @@ def main() -> None:
 \t\t\t} else {
 \t\t\t\tstats.TCPShiftPacingOtherBytes.IncrementBy(sentBytes)
 \t\t\t}
-\n\t\t\ts.pacingBudget -= int64(sentBytes)
+
+\t\t\ts.pacingBudget -= int64(sentBytes)
 \t\t\tif s.pacingBudget < 0 {
 \t\t\t\ts.pacingBudget = 0
 \t\t\t}
@@ -176,7 +189,21 @@ def main() -> None:
         "pacing byte source diagnostics",
     )
 
-    snd.write_text(text)
+    path.write_text(text)
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: patch_pacing_quantum.py <gvisor-root>")
+
+    root = Path(sys.argv[1]).resolve()
+    snd = root / "pkg/tcpip/transport/tcp/snd.go"
+    stats = root / "pkg/tcpip/tcpip.go"
+    if not snd.is_file() or not stats.is_file():
+        raise SystemExit(f"not a gVisor source tree: {root}")
+
+    patch_tcp_stats(stats)
+    patch_sender(snd)
     print(f"patched 2ms userspace pacing quantum with diagnostics at {root}")
 
 
