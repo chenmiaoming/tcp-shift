@@ -71,7 +71,7 @@ func main() {
 	flag.StringVar(&cfg.listen, "listen", "10.99.0.2:5201", "WAN-facing TCP listen address")
 	flag.StringVar(&cfg.backend, "backend", "127.0.0.1:5202", "host-kernel TCP backend")
 	flag.StringVar(&cfg.cc, "cc", "cubic", "congestion control: reno, cubic, or bbr")
-	flag.StringVar(&cfg.recovery, "recovery", "rack", "gVisor TCP loss recovery: rack or legacy")
+	flag.StringVar(&cfg.recovery, "recovery", "legacy", "gVisor TCP loss recovery: legacy (stable) or rack (experimental)")
 	flag.IntVar(&cfg.tcpBufferMiB, "tcp-buffer-mib", 1, "gVisor TCP send/receive buffer size in MiB")
 	flag.DurationVar(&cfg.statsInterval, "stats-interval", 0, "periodically print Go/netstack memory statistics (0 disables)")
 	flag.Parse()
@@ -95,6 +95,9 @@ func main() {
 	cfg.recovery = strings.ToLower(cfg.recovery)
 	if cfg.recovery != "rack" && cfg.recovery != "legacy" {
 		log.Fatalf("unsupported --recovery=%q", cfg.recovery)
+	}
+	if cfg.engine == "netstack" && cfg.cc == "bbr" && cfg.recovery == "rack" {
+		log.Printf("warning: --cc=bbr --recovery=rack is experimental; legacy recovery is the stable tcp-shift default while RACK integration is validated")
 	}
 
 	var (
