@@ -66,7 +66,7 @@ case "$GVISOR_PATCHSET" in
   tcp-shift)
     python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
     # The compact token bucket remains byte-rate based, but userspace timer
-    # wakeups are batched into ~1ms quanta instead of pacing one MSS per wake.
+    # wakeups are batched into ~2ms quanta instead of pacing one MSS per wake.
     python3 "$ROOT/scripts/patch_pacing_quantum.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
     python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
@@ -74,6 +74,10 @@ case "$GVISOR_PATCHSET" in
     # The equal-timestamp ordering change is not reproducibly beneficial in
     # loss tests, so it stays isolated in the rack-tiebreak control profile.
     python3 "$ROOT/scripts/patch_inflight_accounting.py" "$GVISOR_DIR"
+    # gVisor clears its SACK scoreboard and rewinds the retransmit queue on RTO.
+    # Preserve Linux's lost_out/retrans_out coordinate only in tcp-shift's
+    # independent BBR shadow; this does not replace gVisor RTO recovery logic.
+    python3 "$ROOT/scripts/patch_rto_inflight.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
