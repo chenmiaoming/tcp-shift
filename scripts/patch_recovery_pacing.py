@@ -4,8 +4,9 @@
 The initial experiment also paced RACK DoRecovery(), but CI showed worse
 throughput and substantially more retransmission/DSACK activity. Keep RACK on
 upstream timing while its loss-inference interaction with BBR is investigated.
-This layer therefore touches only RFC6675 SACK recovery plus the shared pacing
-timer resume hook.
+This layer therefore touches only RFC6675 SACK recovery. The shared pacing
+timer callback is owned by patch_pacing_quantum.py so the two patch layers do
+not rewrite the same function body.
 """
 
 from __future__ import annotations
@@ -20,28 +21,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     if n != 1:
         raise RuntimeError(f"{label}: expected exactly one match, got {n}")
     return text.replace(old, new, 1)
-
-
-def patch_pacing_timer(path: Path) -> None:
-    text = path.read_text()
-    old = '''func (s *sender) pacingTimerExpired() tcpip.Error {
-\tif s.pacingTimer.isUninitialized() || !s.pacingTimer.checkExpiration() {
-\t\treturn nil
-\t}
-\ts.sendData()
-\treturn nil
-}'''
-    new = '''func (s *sender) pacingTimerExpired() tcpip.Error {
-\tif s.pacingTimer.isUninitialized() || !s.pacingTimer.checkExpiration() {
-\t\treturn nil
-\t}
-\tif s.resumePacedRecovery() {
-\t\treturn nil
-\t}
-\ts.sendData()
-\treturn nil
-}'''
-    path.write_text(replace_once(text, old, new, "pacing timer recovery resume"))
 
 
 def patch_sack(path: Path) -> None:
@@ -109,7 +88,6 @@ def main() -> None:
 
     patch_root = Path(__file__).resolve().parents[1] / "patches/gvisor/tcp"
     shutil.copy2(patch_root / "pacing_recovery.go", tcp / "pacing_recovery.go")
-    patch_pacing_timer(tcp / "snd.go")
     patch_sack(tcp / "sack_recovery.go")
     print(f"patched gVisor legacy SACK recovery pacing at {root}")
 
