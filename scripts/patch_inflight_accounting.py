@@ -218,8 +218,7 @@ def patch_sender(path: Path) -> None:
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n',
         '\tdeliveryRate      deliveryRateSample   `state:"nosave"`\n'
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n'
-        '\tratePriorInFlight int                   `state:"nosave"`\n'
-        '\ttcpShiftRTOResend bool                  `state:"nosave"`\n',
+        '\tratePriorInFlight int                   `state:"nosave"`\n',
         "sender ACK-start prior inflight snapshot",
     )
     text = replace_once(
@@ -244,22 +243,6 @@ def patch_sender(path: Path) -> None:
         '\ts.FastRecovery.Active = false',
         "recovery exit diagnostics",
     )
-
-    # RTO recovery calls sendData synchronously. Mark that call so the generic
-    # send hook can count retransmitted segments attributed to the RTO path.
-    start = text.index("func (s *sender) retransmitTimerExpired() tcpip.Error {")
-    end = text.index("// pCount returns the number of packets", start)
-    block = text[start:end]
-    block = replace_once(
-        block,
-        '\ts.sendData()\n\n\treturn nil',
-        '\ts.tcpShiftRTOResend = true\n'
-        '\ts.sendData()\n'
-        '\ts.tcpShiftRTOResend = false\n\n'
-        '\treturn nil',
-        "RTO retransmit context",
-    )
-    text = text[:start] + block + text[end:]
     path.write_text(text)
 
 
