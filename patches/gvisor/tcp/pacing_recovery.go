@@ -8,6 +8,8 @@
 
 package tcp
 
+import "gvisor.dev/gvisor/pkg/tcpip"
+
 // preparePacedSend refills the same sender pacing budget used by sendData.
 // This helper is currently used only by legacy RFC6675 SACK recovery. The RACK
 // experiment showed that externally pacing RACK's recovery loop increased
@@ -63,6 +65,9 @@ func (s *sender) accountPacedSend(rate uint64, payload int) {
 // +checklocks:s.ep.mu
 func (s *sender) resumePacedRecovery() bool {
 	if !s.FastRecovery.Active || !s.ep.SACKPermitted {
+		return false
+	}
+	if s.ep.tcpRecovery&tcpip.TCPRACKLossDetection != 0 {
 		return false
 	}
 	if sr, ok := s.lr.(*sackRecovery); ok {
