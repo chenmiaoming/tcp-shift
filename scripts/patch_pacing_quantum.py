@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch tcp-shift pacing wakeups into small byte quanta.
+"""Batch tcp-shift pacing wakeups and expose compact pacing diagnostics.
 
 The base patch installs a token-bucket pacer. Waking as soon as credit for one
 MSS is available makes a userspace Go timer behave like a per-packet hardware
@@ -7,6 +7,11 @@ pacer, which is both expensive and imprecise. This patch keeps the same byte
 rate/token-bucket semantics but arms the timer until roughly 2 ms of credit is
 available, matching the token bucket's burst window so each wake can release a
 small batch. An already-armed earlier deadline is also preserved.
+
+Diagnostics are cumulative counters only: timer arms/wakeups, callback lateness,
+and bytes actually emitted by timer-driven versus other sendData invocations.
+They are intended to distinguish scheduler/timer latency from send-path credit
+fragmentation without adding per-packet logging.
 """
 
 from __future__ import annotations
@@ -32,6 +37,24 @@ def main() -> None:
         raise SystemExit(f"not a gVisor source tree: {root}")
 
     text = snd.read_text()
+
+    # Remember whether the current sendData invocation came from the pacing
+    # timer so byte accounting can separate timer-driven progress from ACK/
+    # application-driven progress.
+    text = replace_once(
+        text,
+        '''\tpacingTimer  timer               `state:"nosave"`
+\tpacingBudget int64                `state:"nosave"`
+\tpacingLast   tcpip.MonotonicTime `state:"nosave"`
+''',
+        '''\tpacingTimer         timer               `state:"nosave"`
+\tpacingBudget        int64                `state:"nosave"`
+\tpacingLast          tcpip.MonotonicTime `state:"nosave"`
+\tpacingTimerDispatch bool                 `state:"nosave"`
+''',
+        "pacing dispatch state",
+    )
+
     old = '''func (s *sender) schedulePacing(rate uint64, need int64) {
 \tif rate == 0 || need <= s.pacingBudget {
 \t\treturn
@@ -86,12 +109,75 @@ def main() -> None:
 \tif s.pacingTimer.enabled() && !newTarget.Before(s.pacingTimer.target) {
 \t\treturn
 \t}
+\ts.ep.stack.Stats().TCP.TCPShiftPacingTimerArms.Increment()
 \ts.pacingTimer.enable(d)
 }
 '''
     text = replace_once(text, old, new, "userspace pacing quantum")
+
+    text = replace_once(
+        text,
+        '''func (s *sender) pacingTimerExpired() tcpip.Error {
+\tif s.pacingTimer.isUninitialized() || !s.pacingTimer.checkExpiration() {
+\t\treturn nil
+\t}
+\ts.sendData()
+\treturn nil
+}
+''',
+        '''func (s *sender) pacingTimerExpired() tcpip.Error {
+\tif s.pacingTimer.isUninitialized() {
+\t\treturn nil
+\t}
+\ttarget := s.pacingTimer.target
+\tif !s.pacingTimer.checkExpiration() {
+\t\treturn nil
+\t}
+
+\tstats := s.ep.stack.Stats().TCP
+\tstats.TCPShiftPacingTimerWakeups.Increment()
+\tnow := s.ep.stack.Clock().NowMonotonic()
+\tif late := now.Sub(target); late > 0 {
+\t\tstats.TCPShiftPacingTimerLatenessMicrosSum.IncrementBy(uint64(late / time.Microsecond))
+\t}
+
+\ts.pacingTimerDispatch = true
+\ts.sendData()
+\ts.pacingTimerDispatch = false
+\treturn nil
+}
+''',
+        "pacing timer diagnostics",
+    )
+
+    text = replace_once(
+        text,
+        '''\t\tif rate != 0 {
+\t\t\ts.pacingBudget -= int64(seg.payloadSize())
+\t\t\tif s.pacingBudget < 0 {
+\t\t\t\ts.pacingBudget = 0
+\t\t\t}
+\t\t}
+''',
+        '''\t\tif rate != 0 {
+\t\t\tsentBytes := uint64(seg.payloadSize())
+\t\t\tstats := s.ep.stack.Stats().TCP
+\t\t\tif s.pacingTimerDispatch {
+\t\t\t\tstats.TCPShiftPacingTimerBytes.IncrementBy(sentBytes)
+\t\t\t} else {
+\t\t\t\tstats.TCPShiftPacingOtherBytes.IncrementBy(sentBytes)
+\t\t\t}
+\n\t\t\ts.pacingBudget -= int64(sentBytes)
+\t\t\tif s.pacingBudget < 0 {
+\t\t\t\ts.pacingBudget = 0
+\t\t\t}
+\t\t}
+''',
+        "pacing byte source diagnostics",
+    )
+
     snd.write_text(text)
-    print(f"patched 2ms userspace pacing quantum at {root}")
+    print(f"patched 2ms userspace pacing quantum with diagnostics at {root}")
 
 
 if __name__ == "__main__":
