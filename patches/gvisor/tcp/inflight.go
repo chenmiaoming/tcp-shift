@@ -153,7 +153,12 @@ func (s *sender) inflightOnSend(seg *segment) {
 		stats.TCPShiftRetransmitThirdPlus.Increment()
 	}
 
-	if s.tcpShiftRTOResend {
+	// RTORecovery is a sender state, not just the synchronous call from
+	// retransmitTimerExpired(). An RTO rewinds writeNext and subsequent ACK or
+	// pacing callbacks may continue retransmitting that recovery flight. Count
+	// the whole episode so diagnostics do not mislabel those packets as normal
+	// sender traffic.
+	if s.state == tcpip.RTORecovery {
 		stats.TCPShiftRTORetransmits.Increment()
 	}
 
