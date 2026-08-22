@@ -71,10 +71,16 @@ case "$GVISOR_PATCHSET" in
     # tcp-shift patchset. Keep it separate so CI can measure its contribution
     # against completely unmodified gVisor.
     python3 "$ROOT/scripts/patch_rack_tiebreak.py" "$GVISOR_DIR"
+    # BBR must use Linux tcp_packets_in_flight-like state, not the RFC6675
+    # SetPipe value stored in sender.Outstanding. Apply this after the RACK
+    # correction because its diagnostic hook matches the corrected predicate.
+    python3 "$ROOT/scripts/patch_inflight_accounting.py" "$GVISOR_DIR"
 
     gofmt -w \
+      "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
       "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
       "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/inflight.go" \
       "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
       "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
       "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
