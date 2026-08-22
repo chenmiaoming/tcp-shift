@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Batch tcp-shift pacing wakeups and expose compact pacing diagnostics.
+"""Batch tcp-shift pacing wakeups and tolerate userspace scheduler lateness.
 
-The base patch installs a token-bucket pacer. Waking as soon as credit for one
-MSS is available makes a userspace Go timer behave like a per-packet hardware
-pacer, which is both expensive and imprecise. This patch keeps the same byte
-rate/token-bucket semantics but arms the timer until roughly 2 ms of credit is
-available, matching the token bucket's burst window so each wake can release a
-small batch. An already-armed earlier deadline is also preserved.
+The base patch installs a byte-rate token bucket. Waking as soon as credit for
+one MSS is available makes a userspace Go timer behave like a per-packet
+hardware pacer, which is both expensive and imprecise. This patch keeps a
+roughly 2 ms wake quantum, but deliberately decouples that scheduling quantum
+from the amount of pacing credit that may be retained.
+
+That distinction matters for a userspace stack: a timer callback can be several
+milliseconds late because of host scheduling even when the requested deadline
+is precise. If the bucket stores only one wake quantum, all credit accumulated
+while the callback is late is discarded and scheduler jitter becomes permanent
+throughput loss. The reservoir below keeps up to roughly 10 ms of credit (with
+an absolute cap), while a fresh sender still starts with only one 2 ms quantum.
+Normal timely wakes therefore stay small; only a late sender is allowed to
+catch up using byte credit that was actually earned over elapsed wall time.
 
 This patch owns the shared pacing-timer callback, including resuming a paced
 legacy-SACK recovery episode. Diagnostics are cumulative counters only: timer
-arms/wakeups, callback lateness, and bytes actually emitted by timer-driven
-versus other sendData invocations. They distinguish scheduler/timer latency
-from send-path credit fragmentation without per-packet logging.
+arms/wakeups, callback lateness, bytes emitted by timer-driven versus other
+sendData invocations, and pacing credit discarded at the reservoir cap.
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ def patch_tcp_stats(path: Path) -> None:
 \tTCPShiftPacingTimerLatenessMicrosSum *StatCounter
 \tTCPShiftPacingTimerBytes             *StatCounter
 \tTCPShiftPacingOtherBytes             *StatCounter
+\tTCPShiftPacingCreditClampedBytes     *StatCounter
 ''',
         "pacing TCP stats",
     )
@@ -68,6 +76,92 @@ def patch_sender(path: Path) -> None:
         "pacing dispatch state",
     )
 
+    old_refill = '''func (s *sender) refillPacingBudget(rate uint64, now tcpip.MonotonicTime) {
+\tburst := int64(rate / 500) // about 2ms worth of traffic.
+\tminBurst := int64(2 * s.MaxPayloadSize)
+\tif burst < minBurst {
+\t\tburst = minBurst
+\t}
+\tif burst > 64<<10 {
+\t\tburst = 64 << 10
+\t}
+\tif s.pacingLast == (tcpip.MonotonicTime{}) {
+\t\ts.pacingLast = now
+\t\ts.pacingBudget = burst
+\t\treturn
+\t}
+\telapsed := now.Sub(s.pacingLast)
+\tif elapsed <= 0 {
+\t\treturn
+\t}
+\tadd := int64(rate * uint64(elapsed) / uint64(time.Second))
+\ts.pacingBudget += add
+\tif s.pacingBudget > burst {
+\t\ts.pacingBudget = burst
+\t}
+\ts.pacingLast = now
+}
+'''
+    new_refill = '''func (s *sender) pacingWakeBudget(rate uint64) int64 {
+\tbudget := int64(rate / 500) // about 2ms worth of traffic.
+\tminBudget := int64(2 * s.MaxPayloadSize)
+\tif budget < minBudget {
+\t\tbudget = minBudget
+\t}
+\tif budget > 64<<10 {
+\t\tbudget = 64 << 10
+\t}
+\treturn budget
+}
+
+// pacingBurstCap is deliberately larger than pacingWakeBudget. The wake
+// quantum controls how often a timely userspace timer should run; the reservoir
+// controls how much already-earned credit survives a late callback. Keeping
+// these equal made scheduler lateness translate directly into permanent
+// throughput loss. Ten milliseconds is still small relative to the long-fat
+// BDPs targeted by tcp-shift, and the absolute cap bounds burst size at higher
+// rates.
+func (s *sender) pacingBurstCap(rate uint64) int64 {
+\tburst := int64(rate / 100) // about 10ms worth of traffic.
+\tminBurst := int64(2 * s.MaxPayloadSize)
+\tif burst < minBurst {
+\t\tburst = minBurst
+\t}
+\tif burst > 512<<10 {
+\t\tburst = 512 << 10
+\t}
+\treturn burst
+}
+
+// +checklocks:s.ep.mu
+func (s *sender) refillPacingBudget(rate uint64, now tcpip.MonotonicTime) {
+\tburst := s.pacingBurstCap(rate)
+\tif s.pacingLast == (tcpip.MonotonicTime{}) {
+\t\ts.pacingLast = now
+\t\t// Do not start with the full lateness reservoir: a fresh flow should
+\t\t// still release only one normal userspace pacing quantum.
+\t\ts.pacingBudget = s.pacingWakeBudget(rate)
+\t\tif s.pacingBudget > burst {
+\t\t\ts.pacingBudget = burst
+\t\t}
+\t\treturn
+\t}
+\telapsed := now.Sub(s.pacingLast)
+\tif elapsed <= 0 {
+\t\treturn
+\t}
+\tadd := int64(rate * uint64(elapsed) / uint64(time.Second))
+\ts.pacingBudget += add
+\tif s.pacingBudget > burst {
+\t\tdiscarded := s.pacingBudget - burst
+\t\ts.ep.stack.Stats().TCP.TCPShiftPacingCreditClampedBytes.IncrementBy(uint64(discarded))
+\t\ts.pacingBudget = burst
+\t}
+\ts.pacingLast = now
+}
+'''
+    text = replace_once(text, old_refill, new_refill, "lateness-tolerant pacing reservoir")
+
     old = '''func (s *sender) schedulePacing(rate uint64, need int64) {
 \tif rate == 0 || need <= s.pacingBudget {
 \t\treturn
@@ -86,20 +180,11 @@ def patch_sender(path: Path) -> None:
 \t\treturn
 \t}
 
-\t// Pace a userspace batch, not an individual packet. The token bucket
-\t// already caps stored credit to about 2ms of traffic in
-\t// refillPacingBudget(). Waiting for the same 2ms quantum amortizes Go
-\t// timer/runtime/endpoint-lock overhead while preserving the long-term
-\t// byte rate. At 100 Mbit/s this is only about 25KB, so the batch remains
-\t// small compared with the BDP of the long-fat paths tcp-shift targets.
-\twakeBudget := int64(rate / 500) // about 2ms worth of traffic.
-\tminQuantum := int64(2 * s.MaxPayloadSize)
-\tif wakeBudget < minQuantum {
-\t\twakeBudget = minQuantum
-\t}
-\tif wakeBudget > 64<<10 {
-\t\twakeBudget = 64 << 10
-\t}
+\t// Pace a userspace batch, not an individual packet. The wake threshold is
+\t// intentionally smaller than the stored-credit reservoir: normally we wake
+\t// around every 2ms, while a late callback may retain enough earned credit to
+\t// catch up instead of permanently losing throughput.
+\twakeBudget := s.pacingWakeBudget(rate)
 \tif wakeBudget < need {
 \t\twakeBudget = need
 \t}
@@ -209,7 +294,7 @@ def main() -> None:
 
     patch_tcp_stats(stats)
     patch_sender(snd)
-    print(f"patched 2ms userspace pacing quantum with diagnostics at {root}")
+    print(f"patched lateness-tolerant 2ms userspace pacing with diagnostics at {root}")
 
 
 if __name__ == "__main__":
