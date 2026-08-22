@@ -41,11 +41,16 @@ const (
 	bbrProbeRTT
 )
 
+type bbrBandwidthBucket struct {
+	round uint64
+	rate  uint64
+}
+
 // bbrState implements a compact BBRv1-inspired model on top of netstack's
-// packet-count congestion window. Bandwidth comes from a TCP delivery-rate
-// sampler: transmitted segments snapshot sender delivery state and ACK/SACK
-// processing produces delivered/interval samples. This follows Linux BBR's
-// measurement model much more closely than using adjacent ACK arrival times.
+// packet-count congestion window. Bandwidth comes from the TCP-owned delivery
+// sampler and is filtered over packet-timed rounds, following Linux BBR's
+// next_rtt_delivered/rtt_cnt model. In particular, this is a 10-round window,
+// not a 10-ACK window; the distinction is critical on high-BDP paths.
 type bbrState struct {
 	s *sender
 
@@ -54,13 +59,14 @@ type bbrState struct {
 	minRTT      time.Duration
 	minRTTStamp tcpip.MonotonicTime
 
-	bwSamples [bbrBandwidthWindow]uint64
-	bwIndex   int
-	maxBW     uint64 // bytes/second
+	bwRounds [bbrBandwidthWindow]bbrBandwidthBucket
+	maxBW    uint64 // bytes/second
 
-	roundStart  tcpip.MonotonicTime
-	fullBW      uint64
-	fullBWRound int
+	roundCount         uint64
+	nextRoundDelivered uint64
+	roundStart         bool
+	fullBW             uint64
+	fullBWRound        int
 
 	cycleIndex int
 	cycleStamp tcpip.MonotonicTime
@@ -113,33 +119,77 @@ func mulGain(v, gain uint64) uint64 {
 	return v * gain / bbrGainScale
 }
 
-func (b *bbrState) updateBandwidth(packetsAcked int, _ tcpip.MonotonicTime) {
-	if packetsAcked <= 0 {
-		return
-	}
+// OnDeliveryRateSample consumes the TCP-owned delivery sample. Linux BBR does
+// its bandwidth/round accounting directly from struct rate_sample before cwnd
+// is updated; this callback gives tcp-shift the same ordering without making the
+// generic sampler depend on BBR.
+func (b *bbrState) OnDeliveryRateSample(rs deliveryRateSample) {
+	b.updateBandwidth(rs)
+	b.checkFullBandwidth(rs)
+}
 
-	rs := b.s.deliveryRate
+func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
+	b.roundStart = false
 	if !rs.valid || rs.rate == 0 || rs.interval <= 0 || rs.delivered == 0 {
 		return
 	}
 
-	// Once app-limited detection is wired, a low app-limited sample must not
-	// pull down the max filter; a higher sample is still useful evidence of
-	// available bandwidth. Keeping this guard now makes the eventual app-limited
-	// hook behavior explicit without changing the BBR API again.
+	// Linux BBR starts a new packet-timed round when the packet that generated
+	// this rate sample was sent before next_rtt_delivered. Use cumulative bytes
+	// rather than packets because the tcp-shift sampler's delivered counter is
+	// byte-based; the ordering invariant is identical.
+	if rs.priorDelivered >= b.nextRoundDelivered {
+		b.nextRoundDelivered = rs.totalDelivered
+		b.roundCount++
+		b.roundStart = true
+	}
+
+	// Application-limited samples are ignored when they are below the current
+	// network model, exactly so application think-time cannot drag maxBW down.
 	if rs.isAppLimited && rs.rate < b.maxBW {
 		return
 	}
 
-	b.bwSamples[b.bwIndex] = rs.rate
-	b.bwIndex = (b.bwIndex + 1) % len(b.bwSamples)
+	// Keep one maximum sample for each packet-timed round. A bucket is reused
+	// only after its round number has aged out; recomputing the maximum across
+	// the ten buckets is tiny and avoids embedding Linux's minmax helper.
+	idx := int(b.roundCount % uint64(len(b.bwRounds)))
+	bucket := &b.bwRounds[idx]
+	if bucket.round != b.roundCount {
+		bucket.round = b.roundCount
+		bucket.rate = rs.rate
+	} else if rs.rate > bucket.rate {
+		bucket.rate = rs.rate
+	}
+
 	var maxSample uint64
-	for _, v := range b.bwSamples {
-		if v > maxSample {
-			maxSample = v
+	for _, v := range b.bwRounds {
+		if v.round == 0 || b.roundCount < v.round || b.roundCount-v.round >= bbrBandwidthWindow {
+			continue
+		}
+		if v.rate > maxSample {
+			maxSample = v.rate
 		}
 	}
 	b.maxBW = maxSample
+}
+
+// checkFullBandwidth follows Linux BBR's STARTUP full-pipe test: only one test
+// per packet-timed round, ignore app-limited rounds, require 25% growth to reset
+// the counter, and declare the pipe full after three rounds without that growth.
+func (b *bbrState) checkFullBandwidth(rs deliveryRateSample) {
+	if b.mode != bbrStartup || !b.roundStart || rs.isAppLimited || b.maxBW == 0 {
+		return
+	}
+	if b.fullBW == 0 || b.maxBW >= b.fullBW*5/4 {
+		b.fullBW = b.maxBW
+		b.fullBWRound = 0
+		return
+	}
+	b.fullBWRound++
+	if b.fullBWRound >= bbrFullBWRounds {
+		b.mode = bbrDrain
+	}
 }
 
 func (b *bbrState) updateMinRTT(rtt time.Duration, now tcpip.MonotonicTime) {
@@ -163,31 +213,6 @@ func (b *bbrState) bdpPackets(gain uint64) int {
 		packets = 4
 	}
 	return packets
-}
-
-func (b *bbrState) updateFullBandwidth(now tcpip.MonotonicTime) {
-	if b.mode != bbrStartup || b.minRTT == time.Duration(math.MaxInt64) || b.maxBW == 0 {
-		return
-	}
-	if b.roundStart == (tcpip.MonotonicTime{}) {
-		b.roundStart = now
-		b.fullBW = b.maxBW
-		return
-	}
-	if now.Sub(b.roundStart) < b.minRTT {
-		return
-	}
-	b.roundStart = now
-
-	if b.fullBW == 0 || b.maxBW >= b.fullBW*5/4 {
-		b.fullBW = b.maxBW
-		b.fullBWRound = 0
-		return
-	}
-	b.fullBWRound++
-	if b.fullBWRound >= bbrFullBWRounds {
-		b.mode = bbrDrain
-	}
 }
 
 func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
@@ -239,9 +264,7 @@ func (b *bbrState) updateMode(now tcpip.MonotonicTime) {
 
 // Update implements congestionControl.Update.
 func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.MonotonicTime) {
-	b.updateBandwidth(packetsAcked, ackTime)
 	b.updateMinRTT(rtt, ackTime)
-	b.updateFullBandwidth(ackTime)
 	b.updateMode(ackTime)
 
 	if packetsAcked <= 0 || b.mode == bbrProbeRTT {
@@ -259,6 +282,9 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 			b.s.SndCwnd = 2 * target
 		}
 	case bbrDrain, bbrProbeBW:
+		// Linux BBR slow-starts cwnd back toward the model target after loss or
+		// an RTO rather than permanently carrying a loss-based multiplicative
+		// reduction. Do the same here.
 		if b.s.SndCwnd < target {
 			b.s.SndCwnd += packetsAcked
 			if b.s.SndCwnd > target {
@@ -288,19 +314,22 @@ func (b *bbrState) HandleLossDetected() {
 	b.s.Ssthresh = max(b.s.Outstanding, 4)
 }
 
-// HandleRTOExpired restarts model acquisition after a hard timeout.
+// HandleRTOExpired follows an important Linux BBR invariant: an RTO may collapse
+// the sending cwnd, but it does not erase the bottleneck-bandwidth model. The
+// prior implementation reset maxBW and STARTUP on every RTO, which made random
+// loss destroy the path model and forced BBR to relearn the link repeatedly.
 func (b *bbrState) HandleRTOExpired() {
-	b.mode = bbrStartup
-	b.maxBW = 0
-	b.bwSamples = [bbrBandwidthWindow]uint64{}
-	b.bwIndex = 0
-	b.fullBW = 0
-	b.fullBWRound = 0
-	b.roundStart = tcpip.MonotonicTime{}
 	b.inRecovery = false
 	b.recoveryPriorCwnd = 0
-	b.s.SndCwnd = 4
-	b.s.Ssthresh = 4
+	b.roundStart = false
+
+	// gVisor delegates the RFC5681 cwnd collapse to the congestion-control
+	// implementation. Use one packet here, as its Reno path does, then let BBR's
+	// normal ACK processing grow back toward the preserved model target.
+	b.s.SndCwnd = 1
+	if b.s.Ssthresh < 4 {
+		b.s.Ssthresh = 4
+	}
 }
 
 func (b *bbrState) PostRecovery() {
