@@ -12,10 +12,13 @@ GVISOR_PATCHSET=${GVISOR_PATCHSET:-tcp-shift}
 TCP_SHIFT_VERSION=${TCP_SHIFT_VERSION:-dev}
 OUTPUT=${OUTPUT:-"$ROOT/bin/tcp-shift"}
 
-if [[ "$GVISOR_PATCHSET" != tcp-shift && "$GVISOR_PATCHSET" != vanilla ]]; then
-  echo "GVISOR_PATCHSET must be tcp-shift or vanilla" >&2
-  exit 1
-fi
+case "$GVISOR_PATCHSET" in
+  tcp-shift|vanilla|rack-tiebreak) ;;
+  *)
+    echo "GVISOR_PATCHSET must be tcp-shift, vanilla, or rack-tiebreak" >&2
+    exit 1
+    ;;
+esac
 
 if [[ -z "$GVISOR_REF" ]]; then
   if [[ ! -f "$BASELINE_FILE" ]]; then
@@ -59,25 +62,39 @@ if find "$GVISOR_DIR/pkg" -type f -name '*.tmpl.*' -print -quit | grep -q .; the
   exit 1
 fi
 
-if [[ "$GVISOR_PATCHSET" == tcp-shift ]]; then
-  python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
-  python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
-  python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
+case "$GVISOR_PATCHSET" in
+  tcp-shift)
+    python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+    python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
+    python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
+    # This is a standalone RACK correctness fix as well as part of the full
+    # tcp-shift patchset. Keep it separate so CI can measure its contribution
+    # against completely unmodified gVisor.
+    python3 "$ROOT/scripts/patch_rack_tiebreak.py" "$GVISOR_DIR"
 
-  gofmt -w \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/snd.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/sack_recovery.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint_state.go" \
-    "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint.go"
-else
-  echo "using unmodified gVisor TCP for vanilla control"
-fi
+    gofmt -w \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/snd.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/sack_recovery.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint_state.go" \
+      "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint.go"
+    ;;
+  rack-tiebreak)
+    # Minimal experiment: upstream gVisor plus only the equal-timestamp RACK
+    # ordering correction. No BBR, rate sampler, pacing, or sender-ordering
+    # patches are present in this profile.
+    python3 "$ROOT/scripts/patch_rack_tiebreak.py" "$GVISOR_DIR"
+    gofmt -w "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go"
+    ;;
+  vanilla)
+    echo "using unmodified gVisor TCP for vanilla control"
+    ;;
+esac
 
 cp "$ROOT/go.mod" "$ROOT/go.local.mod"
 rm -f "$ROOT/go.local.sum"
