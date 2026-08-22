@@ -62,20 +62,19 @@ func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
 		return
 	}
 
-	// Maintain the independent Linux-like retrans_out shadow even when this is
-	// a retransmission. Delivery timestamps below remain snapshots of the first
-	// transmission for now; retransmission sampling is handled separately from
-	// the lossless baseline alignment below.
+	// Maintain the independent Linux-like retrans_out shadow before taking the
+	// send snapshot. Linux refreshes the per-SKB delivery snapshot after a
+	// successful retransmission as well as on the first transmission; retaining
+	// the original snapshot while xmitTime advances to the retransmit time mixes
+	// two different epochs and can manufacture very low recovery rate samples.
 	s.inflightOnSend(seg)
-	if seg.xmitCount != 0 {
-		return
-	}
 
 	// Linux starts a new send phase only when packets_out is zero, deliberately
 	// not when packets_in_flight is zero: SACK/loss accounting can transiently
 	// drive packets_in_flight to zero while data still exists in the retransmit
 	// queue. linuxLikeFlight().packetsOut is the corresponding independent
-	// packets_out quantity in tcp-shift.
+	// packets_out quantity in tcp-shift. A retransmission still has packets_out,
+	// so it refreshes the segment snapshot without spuriously starting a phase.
 	flight := s.linuxLikeFlight()
 	if s.rateFirstTxTime == (tcpip.MonotonicTime{}) || flight.packetsOut == 0 {
 		s.rateFirstTxTime = now
@@ -84,6 +83,10 @@ func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
 		}
 	}
 
+	// Refresh these fields on every successful transmission attempt, including
+	// retransmissions. sendSegment() updates seg.xmitTime immediately after this
+	// hook, so the delivery snapshot and transmit timestamp describe the same
+	// transmission epoch when the segment is later ACKed/SACKed.
 	seg.rateDelivered = s.rateDelivered
 	seg.rateDeliveredTime = s.rateDeliveredTime
 	seg.rateFirstTxTime = s.rateFirstTxTime
