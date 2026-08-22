@@ -59,8 +59,17 @@ def patch_rate(path: Path) -> None:
 
     text = replace_once(
         text,
-        "\ts.rateDelivered += uint64(deliveredBytes)\n\n\tif !seg.rateSampleValid {\n\t\treturn\n\t}\n",
-        "\ts.rateDelivered += uint64(deliveredBytes)\n\n"
+        "\ts.rateDelivered += uint64(deliveredBytes)\n"
+        "\tif s.rateAppLimitedUntil != 0 && s.rateDelivered > s.rateAppLimitedUntil {\n"
+        "\t\ts.rateAppLimitedUntil = 0\n"
+        "\t}\n\n"
+        "\tif !seg.rateSampleValid {\n"
+        "\t\treturn\n"
+        "\t}\n",
+        "\ts.rateDelivered += uint64(deliveredBytes)\n"
+        "\tif s.rateAppLimitedUntil != 0 && s.rateDelivered > s.rateAppLimitedUntil {\n"
+        "\t\ts.rateAppLimitedUntil = 0\n"
+        "\t}\n\n"
         "\tif !seg.rateSampleValid {\n"
         "\t\t// Measurement only: invalid per-segment metadata can make an ACK\n"
         "\t\t// advance delivered without contributing a usable rate candidate.\n"
