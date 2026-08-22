@@ -4,9 +4,9 @@
 The base patch installs a token-bucket pacer. Waking as soon as credit for one
 MSS is available makes a userspace Go timer behave like a per-packet hardware
 pacer, which is both expensive and imprecise. This patch keeps the same byte
-rate/token-bucket semantics but arms the timer until roughly 1 ms of credit is
-available, so each wake can release a small batch. An already-armed earlier
-deadline is also preserved.
+rate/token-bucket semantics but arms the timer until roughly 2 ms of credit is
+available, matching the token bucket's burst window so each wake can release a
+small batch. An already-armed earlier deadline is also preserved.
 """
 
 from __future__ import annotations
@@ -50,18 +50,19 @@ def main() -> None:
 \t\treturn
 \t}
 
-\t// A userspace timer should pace a small byte quantum, not one MSS per
-\t// wake. At 100 Mbit/s, one-MSS pacing asks Go/netstack to wake roughly
-\t// every 100-150us; timer/scheduler latency then becomes part of the wire
-\t// rate. Accumulate about 1ms of credit so one wake can release a short
-\t// batch while the token bucket still enforces the long-term byte rate.
-\twakeBudget := int64(rate / 1000) // about 1ms worth of traffic.
+\t// Pace a userspace batch, not an individual packet. The token bucket
+\t// already caps stored credit to about 2ms of traffic in
+\t// refillPacingBudget(). Waiting for the same 2ms quantum amortizes Go
+\t// timer/runtime/endpoint-lock overhead while preserving the long-term
+\t// byte rate. At 100 Mbit/s this is only about 25KB, so the batch remains
+\t// small compared with the BDP of the long-fat paths tcp-shift targets.
+\twakeBudget := int64(rate / 500) // about 2ms worth of traffic.
 \tminQuantum := int64(2 * s.MaxPayloadSize)
 \tif wakeBudget < minQuantum {
 \t\twakeBudget = minQuantum
 \t}
-\tif wakeBudget > 32<<10 {
-\t\twakeBudget = 32 << 10
+\tif wakeBudget > 64<<10 {
+\t\twakeBudget = 64 << 10
 \t}
 \tif wakeBudget < need {
 \t\twakeBudget = need
@@ -90,7 +91,7 @@ def main() -> None:
 '''
     text = replace_once(text, old, new, "userspace pacing quantum")
     snd.write_text(text)
-    print(f"patched millisecond pacing quantum at {root}")
+    print(f"patched 2ms userspace pacing quantum at {root}")
 
 
 if __name__ == "__main__":
