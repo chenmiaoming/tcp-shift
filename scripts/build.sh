@@ -53,6 +53,7 @@ if find "$GVISOR_DIR/pkg" -type f -name '*.tmpl.*' -print -quit | grep -q .; the
 fi
 
 python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
 python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
 
 gofmt -w \
