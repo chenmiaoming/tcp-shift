@@ -16,8 +16,19 @@ TCP_FIELDS = {
     "dsack": "SegmentsAckedWithDSACK",
     "spurious_recovery": "SpuriousRecovery",
     "rack_loss_marks": "TCPShiftRACKLossMarks",
+    "rack_loss_first": "TCPShiftRACKLossMarksFirst",
+    "rack_loss_repeat": "TCPShiftRACKLossMarksRepeat",
+    "rack_loss_ack": "TCPShiftRACKLossMarksACK",
+    "rack_loss_timer": "TCPShiftRACKLossMarksTimer",
     "rack_equal_time": "TCPShiftRACKEqualTimeCandidates",
     "rack_recovery_retrans": "TCPShiftRACKRecoveryRetransmits",
+    "rack_fast_retrans": "TCPShiftRACKFastRetransmits",
+    "rack_lost_loop_retrans": "TCPShiftRACKLostLoopRetransmits",
+    "tlp_retrans": "TCPShiftTLPRetransmits",
+    "rto_retrans": "TCPShiftRTORetransmits",
+    "retrans_first": "TCPShiftRetransmitFirst",
+    "retrans_second": "TCPShiftRetransmitSecond",
+    "retrans_third_plus": "TCPShiftRetransmitThirdPlus",
     "recovery_entries": "TCPShiftRecoveryEntries",
     "recovery_exits": "TCPShiftRecoveryExits",
     "setpipe_calls": "TCPShiftSetPipeCalls",
@@ -145,8 +156,19 @@ def main() -> None:
         }
         for key in (
             "rack_loss_marks",
+            "rack_loss_first",
+            "rack_loss_repeat",
+            "rack_loss_ack",
+            "rack_loss_timer",
             "rack_equal_time",
             "rack_recovery_retrans",
+            "rack_fast_retrans",
+            "rack_lost_loop_retrans",
+            "tlp_retrans",
+            "rto_retrans",
+            "retrans_first",
+            "retrans_second",
+            "retrans_third_plus",
             "recovery_entries",
             "recovery_exits",
             "setpipe_calls",
@@ -281,11 +303,34 @@ def main() -> None:
 
     lines += [
         "",
-        "`SetPipe gap` compares gVisor's RFC6675 recovery-pipe estimate in `sender.Outstanding` with the independent Linux-style `packets_out - sacked_out - lost_out + retrans_out` reconstruction. BBR samples use the independent value; `Outstanding` is retained only for netstack recovery send admission.",
+        "### RACK/retransmission source diagnostics",
+        "",
+        "| case | loss first/repeat | loss ACK/timer | RACK fast/lost-loop | TLP/RTO retrans | retrans first/second/third+ |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for name in ("gvisor-cubic", "gvisor-bbr"):
+        if name not in summary:
+            continue
+        s = summary[name]
+        assert isinstance(s, dict)
+        lines.append(
+            f"| {name} | "
+            f"{s['tcp_shift_rack_loss_first_mean']:.1f}/{s['tcp_shift_rack_loss_repeat_mean']:.1f} | "
+            f"{s['tcp_shift_rack_loss_ack_mean']:.1f}/{s['tcp_shift_rack_loss_timer_mean']:.1f} | "
+            f"{s['tcp_shift_rack_fast_retrans_mean']:.1f}/{s['tcp_shift_rack_lost_loop_retrans_mean']:.1f} | "
+            f"{s['tcp_shift_tlp_retrans_mean']:.1f}/{s['tcp_shift_rto_retrans_mean']:.1f} | "
+            f"{s['tcp_shift_retrans_first_mean']:.1f}/{s['tcp_shift_retrans_second_mean']:.1f}/{s['tcp_shift_retrans_third_plus_mean']:.1f} |"
+        )
+
+    lines += [
+        "",
+        "`SetPipe gap` compares gVisor's RFC6675 recovery-pipe estimate in `sender.Outstanding` with the independent Linux-style `packets_out - sacked_out - lost_out + retrans_out` reconstruction. `Outstanding` remains part of gVisor recovery bookkeeping; Reno/CUBIC recovery admission uses it, while BBR admission and BBR samples use the independent Linux-like value.",
+        "",
+        "`loss first/repeat` separates a sequence range's first RACK loss inference from a later RACK loss inference after retransmission. `loss ACK/timer` separates ACK-driven detectLoss from reorder-timer detectLoss. Retransmission depth is measured before sendSegment increments xmitCount: first means the packet had one prior transmission, second means two, and third+ means at least three.",
         "",
         "Native Linux retransmission/RTO/DSACK counters are not yet sampled from TCP_INFO, so those table cells are reported as n/a rather than misleading zeros.",
         "",
-        "The gVisor BBR implementation is an experimental BBRv1-inspired model. TCP now uses per-segment delivery snapshots, packet-timed bandwidth rounds, and independent Linux-like in-flight accounting; the recovery integration is still being validated against Linux BBR. CI results are measurements, not a compatibility claim.",
+        "The gVisor BBR implementation is an experimental BBRv1-inspired model. TCP now uses per-segment delivery snapshots, packet-timed bandwidth rounds, and independent Linux-like in-flight accounting; recovery correctness is still being validated before tuning BBR gains or pacing parameters. CI results are measurements, not a compatibility claim.",
     ]
     Path(sys.argv[2]).write_text("\n".join(lines) + "\n")
 
