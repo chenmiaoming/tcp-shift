@@ -15,6 +15,19 @@ TCP_FIELDS = {
     "timeouts": "Timeouts",
     "dsack": "SegmentsAckedWithDSACK",
     "spurious_recovery": "SpuriousRecovery",
+    "rack_loss_marks": "TCPShiftRACKLossMarks",
+    "rack_equal_time": "TCPShiftRACKEqualTimeCandidates",
+    "rack_recovery_retrans": "TCPShiftRACKRecoveryRetransmits",
+    "recovery_entries": "TCPShiftRecoveryEntries",
+    "recovery_exits": "TCPShiftRecoveryExits",
+    "setpipe_calls": "TCPShiftSetPipeCalls",
+    "setpipe_mismatch_calls": "TCPShiftSetPipeMismatchCalls",
+    "setpipe_gap_sum": "TCPShiftSetPipeAbsGapSum",
+    "bbr_samples": "TCPShiftBBRSamples",
+    "bbr_inflight_mismatch": "TCPShiftBBRInflightMismatchSamples",
+    "bbr_prior_inflight_sum": "TCPShiftBBRPriorInflightSum",
+    "bbr_current_inflight_sum": "TCPShiftBBRCurrentInflightSum",
+    "bbr_outstanding_sum": "TCPShiftBBROutstandingSum",
 }
 
 CASE_ORDER = ("native-cubic", "native-bbr", "gvisor-cubic", "gvisor-bbr")
@@ -22,6 +35,10 @@ CASE_ORDER = ("native-cubic", "native-bbr", "gvisor-cubic", "gvisor-bbr")
 
 def ratio_percent(value: float, baseline: float) -> float:
     return ((value / baseline) - 1.0) * 100.0 if baseline else 0.0
+
+
+def safe_ratio(value: float, baseline: float) -> float:
+    return value / baseline if baseline else 0.0
 
 
 def tcp_stats(log_path: Path) -> dict[str, float]:
@@ -110,7 +127,7 @@ def main() -> None:
     summary: dict[str, object] = {}
     for name, vals in groups.items():
         throughputs = [v["mbps"] for v in vals]
-        summary[name] = {
+        entry = {
             "trials": len(vals),
             "throughput_mbps_mean": mean(throughputs),
             "throughput_mbps_median": median(throughputs),
@@ -126,6 +143,23 @@ def main() -> None:
             "data_qdisc_drops_mean": mean([v["data_qdisc_drops"] for v in vals]),
             "ack_qdisc_drops_mean": mean([v["ack_qdisc_drops"] for v in vals]),
         }
+        for key in (
+            "rack_loss_marks",
+            "rack_equal_time",
+            "rack_recovery_retrans",
+            "recovery_entries",
+            "recovery_exits",
+            "setpipe_calls",
+            "setpipe_mismatch_calls",
+            "setpipe_gap_sum",
+            "bbr_samples",
+            "bbr_inflight_mismatch",
+            "bbr_prior_inflight_sum",
+            "bbr_current_inflight_sum",
+            "bbr_outstanding_sum",
+        ):
+            entry[f"tcp_shift_{key}_mean"] = mean([v[key] for v in vals])
+        summary[name] = entry
 
     nc_tp = metric(summary, "native-cubic", "throughput_mbps_median")
     nb_tp = metric(summary, "native-bbr", "throughput_mbps_median")
@@ -216,9 +250,42 @@ def main() -> None:
 
     lines += [
         "",
+        "### Recovery/in-flight diagnostics",
+        "",
+        "| case | RACK loss marks | equal-time candidates | RACK recovery retrans | recovery enter/exit | SetPipe mismatch | mean abs SetPipe gap | BBR inflight mismatch | mean BBR prior/current/Outstanding |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name in ("gvisor-cubic", "gvisor-bbr"):
+        if name not in summary:
+            continue
+        s = summary[name]
+        assert isinstance(s, dict)
+        setpipe_calls = float(s["tcp_shift_setpipe_calls_mean"])
+        setpipe_mismatch = float(s["tcp_shift_setpipe_mismatch_calls_mean"])
+        setpipe_gap = float(s["tcp_shift_setpipe_gap_sum_mean"])
+        bbr_samples = float(s["tcp_shift_bbr_samples_mean"])
+        bbr_mismatch = float(s["tcp_shift_bbr_inflight_mismatch_mean"])
+        prior_avg = safe_ratio(float(s["tcp_shift_bbr_prior_inflight_sum_mean"]), bbr_samples)
+        current_avg = safe_ratio(float(s["tcp_shift_bbr_current_inflight_sum_mean"]), bbr_samples)
+        outstanding_avg = safe_ratio(float(s["tcp_shift_bbr_outstanding_sum_mean"]), bbr_samples)
+        lines.append(
+            f"| {name} | {s['tcp_shift_rack_loss_marks_mean']:.1f} | "
+            f"{s['tcp_shift_rack_equal_time_mean']:.1f} | "
+            f"{s['tcp_shift_rack_recovery_retrans_mean']:.1f} | "
+            f"{s['tcp_shift_recovery_entries_mean']:.1f}/{s['tcp_shift_recovery_exits_mean']:.1f} | "
+            f"{safe_ratio(setpipe_mismatch, setpipe_calls) * 100.0:.1f}% | "
+            f"{safe_ratio(setpipe_gap, setpipe_calls):.2f} pkts | "
+            f"{safe_ratio(bbr_mismatch, bbr_samples) * 100.0:.1f}% | "
+            f"{prior_avg:.2f}/{current_avg:.2f}/{outstanding_avg:.2f} |"
+        )
+
+    lines += [
+        "",
+        "`SetPipe gap` compares gVisor's RFC6675 recovery-pipe estimate in `sender.Outstanding` with the independent Linux-style `packets_out - sacked_out - lost_out + retrans_out` reconstruction. BBR samples use the independent value; `Outstanding` is retained only for netstack recovery send admission.",
+        "",
         "Native Linux retransmission/RTO/DSACK counters are not yet sampled from TCP_INFO, so those table cells are reported as n/a rather than misleading zeros.",
         "",
-        "The gVisor BBR implementation is an experimental BBRv1-inspired model. The current version uses ACK-rate sampling rather than Linux's full per-packet delivery-rate sampler; CI results are measurements, not a compatibility claim.",
+        "The gVisor BBR implementation is an experimental BBRv1-inspired model. TCP now uses per-segment delivery snapshots, packet-timed bandwidth rounds, and independent Linux-like in-flight accounting; the recovery integration is still being validated against Linux BBR. CI results are measurements, not a compatibility claim.",
     ]
     Path(sys.argv[2]).write_text("\n".join(lines) + "\n")
 
