@@ -95,6 +95,26 @@ def patch_rack(path: Path) -> None:
 \t\t\t\tnumLost++
 '''
     text = replace_once(text, old, new, "RACK inflight loss accounting")
+    text = replace_once(
+        text,
+        '''\t\t// Check the congestion window after entering recovery.
+\t\tif snd.Outstanding >= snd.SndCwnd {''',
+        '''\t\t// Compare cwnd and in-flight in the same coordinate system. Reno/CUBIC
+\t\t// retain Outstanding; BBR supplies Linux-like packets_in_flight.
+\t\tif snd.recoveryPacketsInFlight() >= snd.SndCwnd {''',
+        "RACK recovery admission inflight",
+    )
+    path.write_text(text)
+
+
+def patch_sack_recovery(path: Path) -> None:
+    text = path.read_text()
+    text = replace_once(
+        text,
+        '\tfor snd.Outstanding < snd.SndCwnd {',
+        '\tfor snd.recoveryPacketsInFlight() < snd.SndCwnd {',
+        "RFC6675 recovery admission inflight",
+    )
     path.write_text(text)
 
 
@@ -147,6 +167,7 @@ def main() -> None:
     patch_segment(tcp / "segment.go")
     patch_tcp_stats(root / "pkg/tcpip/tcpip.go")
     patch_rack(tcp / "rack.go")
+    patch_sack_recovery(tcp / "sack_recovery.go")
     patch_sender(tcp / "snd.go")
     print(f"patched Linux-like inflight accounting at {root}")
 
