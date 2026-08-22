@@ -7,7 +7,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BIN="$ROOT/bin/tcp-shift"
+BIN=${BIN:-"$ROOT/bin/tcp-shift"}
 OUT=${OUT:-"$ROOT/.bench"}
 ROUTER_NS=${ROUTER_NS:-tcpshift-router}
 CLIENT_NS=${CLIENT_NS:-tcpshift-client}
@@ -16,6 +16,11 @@ ROUTER_WAN_IF=${ROUTER_WAN_IF:-ts-wan1}
 ROUTER_CLIENT_IF=${ROUTER_CLIENT_IF:-ts-lan0}
 CLIENT_IF=${CLIENT_IF:-ts-lan1}
 TUN_IF=${TUN_IF:-ts0}
+
+# Space-separated case list. Keeping this selectable lets CI run a genuinely
+# unpatched upstream-gVisor CUBIC+RACK control without asking that build for the
+# tcp-shift-only experimental BBR congestion-control name.
+BENCH_CASES=${BENCH_CASES:-"native-cubic native-bbr gvisor-cubic gvisor-bbr"}
 
 # RFC 2544 benchmarking space. The WAN-facing endpoints are deliberately
 # separate from the transit links so native TCP and gVisor TCP use the same
@@ -48,6 +53,13 @@ if [[ "$RECOVERY" != rack && "$RECOVERY" != legacy ]]; then
   exit 1
 fi
 
+for case_name in $BENCH_CASES; do
+  case "$case_name" in
+    native-cubic|native-bbr|gvisor-cubic|gvisor-bbr) ;;
+    *) echo "unsupported BENCH_CASES entry: $case_name" >&2; exit 1 ;;
+  esac
+done
+
 mkdir -p "$OUT"
 rm -f "$OUT"/*
 
@@ -62,7 +74,7 @@ if command -v modprobe >/dev/null 2>&1; then
   modprobe tcp_bbr >/dev/null 2>&1 || true
 fi
 AVAILABLE_CC=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)
-if ! grep -qw bbr <<<"$AVAILABLE_CC"; then
+if [[ " $BENCH_CASES " == *" native-bbr "* ]] && ! grep -qw bbr <<<"$AVAILABLE_CC"; then
   echo "native Linux BBR is unavailable; available congestion controls: $AVAILABLE_CC" >&2
   exit 1
 fi
@@ -203,6 +215,7 @@ loss_compat_default=$LOSS
 data_loss=$DATA_LOSS
 ack_loss=$ACK_LOSS
 recovery=$RECOVERY
+bench_cases=$BENCH_CASES
 netem_limit_packets=$NETEM_LIMIT
 duration_seconds=$DURATION
 trials=$TRIALS
@@ -304,12 +317,22 @@ run_case() {
 }
 
 for trial in $(seq 1 "$TRIALS"); do
-  # Native cases use Linux TCP_CONGESTION per accepted WAN-facing socket. They
-  # are not aliases for the host's global congestion-control default.
-  run_case native-cubic native cubic "$NATIVE_ADDR:5201" "$trial"
-  run_case native-bbr native bbr "$NATIVE_ADDR:5201" "$trial"
-  run_case gvisor-cubic netstack cubic "$GVISOR_ADDR:5201" "$trial"
-  run_case gvisor-bbr netstack bbr "$GVISOR_ADDR:5201" "$trial"
+  for case_name in $BENCH_CASES; do
+    case "$case_name" in
+      native-cubic)
+        run_case native-cubic native cubic "$NATIVE_ADDR:5201" "$trial"
+        ;;
+      native-bbr)
+        run_case native-bbr native bbr "$NATIVE_ADDR:5201" "$trial"
+        ;;
+      gvisor-cubic)
+        run_case gvisor-cubic netstack cubic "$GVISOR_ADDR:5201" "$trial"
+        ;;
+      gvisor-bbr)
+        run_case gvisor-bbr netstack bbr "$GVISOR_ADDR:5201" "$trial"
+        ;;
+    esac
+  done
 done
 
 python3 "$ROOT/scripts/summarize_bench.py" "$OUT/results.csv" "$OUT/summary.md" "$OUT/summary.json"
