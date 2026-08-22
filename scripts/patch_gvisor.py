@@ -2,9 +2,10 @@
 """Apply the tcp-shift BBR/pacing integration to a resolved gVisor checkout.
 
 The patcher intentionally preserves as much upstream source text as possible.
-In particular, sender.sendData() is modified with three narrow insertions rather
-than being replaced wholesale. This keeps unrelated upstream sender changes in
-place and makes the floating-master CI job a useful compatibility signal.
+In particular, sender.sendData() and RACK recovery are modified with narrow
+insertions rather than wholesale replacements. This keeps unrelated upstream
+sender/recovery changes in place and makes the floating-go CI job a useful
+compatibility signal.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ def patch_protocol(path: Path) -> None:
 
 
 PACING_HELPERS = r'''// pacedCongestionControl is implemented by congestion controls that want the
-// generic TCP sender to pace new data. The rate is bytes per second.
+// generic TCP sender to pace transmissions. The rate is bytes per second.
 type pacedCongestionControl interface {
 	PacingRate() uint64
 }
@@ -79,6 +80,39 @@ func (s *sender) refillPacingBudget(rate uint64, now tcpip.MonotonicTime) {
 	s.pacingLast = now
 }
 
+// preparePacing refreshes the sender-wide token budget. The same budget is
+// shared by normal data and recovery retransmissions so recovery cannot bypass
+// the model's pacing rate.
+// +checklocks:s.ep.mu
+func (s *sender) preparePacing() uint64 {
+	rate := s.pacingRate()
+	if rate == 0 {
+		s.pacingTimer.disable()
+		s.pacingBudget = 0
+		s.pacingLast = tcpip.MonotonicTime{}
+		return 0
+	}
+	s.refillPacingBudget(rate, s.ep.stack.Clock().NowMonotonic())
+	return rate
+}
+
+// pacingBytes returns a conservative estimate of the bytes the next send will
+// place on the wire. maybeSendSegment may split a larger buffered segment at
+// limit; overestimating slightly is safe and only delays the send.
+func (s *sender) pacingBytes(seg *segment, limit int) int64 {
+	if seg == nil {
+		return 0
+	}
+	need := seg.payloadSize()
+	if need <= 0 {
+		return 0
+	}
+	if limit > 0 && need > limit {
+		need = limit
+	}
+	return int64(need)
+}
+
 // +checklocks:s.ep.mu
 func (s *sender) schedulePacing(rate uint64, need int64) {
 	if rate == 0 || need <= s.pacingBudget {
@@ -93,10 +127,40 @@ func (s *sender) schedulePacing(rate uint64, need int64) {
 	s.pacingTimer.enable(d)
 }
 
-// pacingTimerExpired lets paced congestion controls resume sending.
+// +checklocks:s.ep.mu
+func (s *sender) admitPacedSend(rate uint64, need int64) bool {
+	if rate == 0 || need <= 0 {
+		return true
+	}
+	if s.pacingBudget >= need {
+		return true
+	}
+	s.schedulePacing(rate, need)
+	return false
+}
+
+// +checklocks:s.ep.mu
+func (s *sender) accountPacedSend(rate uint64, sent int64) {
+	if rate == 0 || sent <= 0 {
+		return
+	}
+	s.pacingBudget -= sent
+	if s.pacingBudget < 0 {
+		s.pacingBudget = 0
+	}
+}
+
+// pacingTimerExpired lets paced congestion controls resume the path that was
+// actually blocked by pacing. RACK recovery must not fall through to the normal
+// sendData path, otherwise retransmissions can remain stalled while new data is
+// emitted instead.
 // +checklocks:s.ep.mu
 func (s *sender) pacingTimerExpired() tcpip.Error {
 	if s.pacingTimer.isUninitialized() || !s.pacingTimer.checkExpiration() {
+		return nil
+	}
+	if s.FastRecovery.Active && s.ep.SACKPermitted && s.ep.tcpRecovery&tcpip.TCPRACKLossDetection != 0 {
+		s.rc.DoRecovery(nil, false)
 		return nil
 	}
 	s.sendData()
@@ -116,14 +180,7 @@ def patch_send_data(text: str) -> str:
     block = replace_once(
         block,
         "\tvar dataSent bool\n\tfor seg := s.writeNext;",
-        "\trate := s.pacingRate()\n"
-        "\tif rate == 0 {\n"
-        "\t\ts.pacingTimer.disable()\n"
-        "\t\ts.pacingBudget = 0\n"
-        "\t\ts.pacingLast = tcpip.MonotonicTime{}\n"
-        "\t} else {\n"
-        "\t\ts.refillPacingBudget(rate, s.ep.stack.Clock().NowMonotonic())\n"
-        "\t}\n\n"
+        "\trate := s.preparePacing()\n\n"
         "\tvar dataSent bool\n\tfor seg := s.writeNext;",
         "sendData pacing initialization",
     )
@@ -131,15 +188,8 @@ def patch_send_data(text: str) -> str:
     block = replace_once(
         block,
         "\n\t\tif sent := s.maybeSendSegment(seg, limit, end); !sent {",
-        "\n\t\tif rate != 0 {\n"
-        "\t\t\tneed := seg.payloadSize()\n"
-        "\t\t\tif need <= 0 || need > s.MaxPayloadSize {\n"
-        "\t\t\t\tneed = s.MaxPayloadSize\n"
-        "\t\t\t}\n"
-        "\t\t\tif s.pacingBudget < int64(need) {\n"
-        "\t\t\t\ts.schedulePacing(rate, int64(need))\n"
-        "\t\t\t\tbreak\n"
-        "\t\t\t}\n"
+        "\n\t\tif !s.admitPacedSend(rate, s.pacingBytes(seg, limit)) {\n"
+        "\t\t\tbreak\n"
         "\t\t}\n\n"
         "\t\tif sent := s.maybeSendSegment(seg, limit, end); !sent {",
         "sendData pacing admission",
@@ -149,12 +199,7 @@ def patch_send_data(text: str) -> str:
         block,
         "\t\ts.updateWriteNext(seg.Next())\n\t}\n\n\ts.postXmit(dataSent, true /* shouldScheduleProbe */)",
         "\t\ts.updateWriteNext(seg.Next())\n"
-        "\t\tif rate != 0 {\n"
-        "\t\t\ts.pacingBudget -= int64(seg.payloadSize())\n"
-        "\t\t\tif s.pacingBudget < 0 {\n"
-        "\t\t\t\ts.pacingBudget = 0\n"
-        "\t\t\t}\n"
-        "\t\t}\n"
+        "\t\ts.accountPacedSend(rate, int64(seg.payloadSize()))\n"
         "\t}\n\n\ts.postXmit(dataSent, true /* shouldScheduleProbe */)",
         "sendData pacing accounting",
     )
@@ -198,6 +243,54 @@ def patch_sender(path: Path) -> None:
     path.write_text(text)
 
 
+def patch_rack(path: Path) -> None:
+    text = path.read_text()
+    start_marker = "func (rc *rackControl) DoRecovery(_ *segment, fastRetransmit bool) {"
+    start = text.index(start_marker)
+    end = text.index("\n}\n", start) + 2
+    block = text[start:end]
+
+    block = replace_once(
+        block,
+        "\tsnd := rc.snd\n\tif fastRetransmit {\n\t\tsnd.resendSegment()\n\t}\n",
+        "\tsnd := rc.snd\n"
+        "\trate := snd.preparePacing()\n"
+        "\tif fastRetransmit {\n"
+        "\t\tfront := snd.writeList.Front()\n"
+        "\t\tif front != nil && !snd.admitPacedSend(rate, snd.pacingBytes(front, snd.MaxPayloadSize)) {\n"
+        "\t\t\treturn\n"
+        "\t\t}\n"
+        "\t\tsnd.resendSegment()\n"
+        "\t\tif front != nil {\n"
+        "\t\t\tsnd.accountPacedSend(rate, int64(front.payloadSize()))\n"
+        "\t\t}\n"
+        "\t}\n",
+        "RACK fast retransmit pacing",
+    )
+
+    block = replace_once(
+        block,
+        "\t\tif sent := snd.maybeSendSegment(seg, int(snd.ep.scoreboard.SMSS()), snd.SndUna.Add(snd.SndWnd)); !sent {",
+        "\t\tlimit := int(snd.ep.scoreboard.SMSS())\n"
+        "\t\tif !snd.admitPacedSend(rate, snd.pacingBytes(seg, limit)) {\n"
+        "\t\t\tbreak\n"
+        "\t\t}\n\n"
+        "\t\tif sent := snd.maybeSendSegment(seg, limit, snd.SndUna.Add(snd.SndWnd)); !sent {",
+        "RACK recovery pacing admission",
+    )
+
+    block = replace_once(
+        block,
+        "\t\tdataSent = true\n\t\tsnd.Outstanding += snd.pCount(seg, snd.MaxPayloadSize)\n",
+        "\t\tdataSent = true\n"
+        "\t\tsnd.Outstanding += snd.pCount(seg, snd.MaxPayloadSize)\n"
+        "\t\tsnd.accountPacedSend(rate, int64(seg.payloadSize()))\n",
+        "RACK recovery pacing accounting",
+    )
+
+    path.write_text(text[:start] + block + text[end:])
+
+
 def patch_restore(path: Path) -> None:
     text = path.read_text()
     text = replace_once(
@@ -233,6 +326,7 @@ def main() -> None:
     shutil.copy2(bbr_src, tcp / "bbr.go")
     patch_protocol(tcp / "protocol.go")
     patch_sender(tcp / "snd.go")
+    patch_rack(tcp / "rack.go")
     patch_restore(tcp / "endpoint_state.go")
     patch_cleanup(tcp / "endpoint.go")
     print(f"patched gVisor TCP at {root}")
