@@ -79,6 +79,9 @@ case "$GVISOR_PATCHSET" in
     # Preserve Linux's application-limited delivery marker so transient relay
     # send gaps cannot evict a healthy max_bw estimate with low samples.
     python3 "$ROOT/scripts/patch_app_limited.py" "$GVISOR_DIR"
+    # Measurement-only post-patch: expose delivery-rate interval composition
+    # and STARTUP full-bandwidth decisions without changing BBR control state.
+    python3 "$ROOT/scripts/patch_rate_diagnostics.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
