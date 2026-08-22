@@ -73,11 +73,12 @@ case "$GVISOR_PATCHSET" in
     # Keep the full BBR experiment on unmodified upstream RACK semantics.
     # The equal-timestamp ordering change is not reproducibly beneficial in
     # loss tests, so it stays isolated in the rack-tiebreak control profile.
+    # Linux-style RTO lost_out/retrans_out shadow accounting is now part of
+    # this main inflight patch rather than a second post-patch.
     python3 "$ROOT/scripts/patch_inflight_accounting.py" "$GVISOR_DIR"
-    # gVisor clears its SACK scoreboard and rewinds the retransmit queue on RTO.
-    # Preserve Linux's lost_out/retrans_out coordinate only in tcp-shift's
-    # independent BBR shadow; this does not replace gVisor RTO recovery logic.
-    python3 "$ROOT/scripts/patch_rto_inflight.py" "$GVISOR_DIR"
+    # Preserve Linux's application-limited delivery marker so transient relay
+    # send gaps cannot evict a healthy max_bw estimate with low samples.
+    python3 "$ROOT/scripts/patch_app_limited.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
