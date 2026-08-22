@@ -81,6 +81,15 @@ def patch_tcp_stats(path: Path) -> None:
 	TCPShiftBBRPriorInflightSum        *StatCounter
 	TCPShiftBBRCurrentInflightSum      *StatCounter
 	TCPShiftBBROutstandingSum          *StatCounter
+	TCPShiftBBRMaxBWSum                *StatCounter
+	TCPShiftBBRPacingRateSum           *StatCounter
+	TCPShiftBBRCwndSum                 *StatCounter
+	TCPShiftBBRCwndTargetSum           *StatCounter
+	TCPShiftBBRMinRTTMicrosSum         *StatCounter
+	TCPShiftBBRStartupSamples          *StatCounter
+	TCPShiftBBRDrainSamples            *StatCounter
+	TCPShiftBBRProbeBWSamples          *StatCounter
+	TCPShiftBBRProbeRTTSamples         *StatCounter
 '''
     text = replace_once(text, "type TCPStats struct {\n", fields, "TCP diagnostic stats")
     path.write_text(text)
