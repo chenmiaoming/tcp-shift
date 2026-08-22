@@ -8,7 +8,14 @@ BASELINE_FILE="$ROOT/.gvisor-baseline"
 GVISOR_REMOTE=${GVISOR_REMOTE:-https://github.com/google/gvisor.git}
 GVISOR_REF=${GVISOR_REF:-}
 GVISOR_DIR=${GVISOR_DIR:-"$ROOT/.deps/gvisor"}
+GVISOR_PATCHSET=${GVISOR_PATCHSET:-tcp-shift}
 TCP_SHIFT_VERSION=${TCP_SHIFT_VERSION:-dev}
+OUTPUT=${OUTPUT:-"$ROOT/bin/tcp-shift"}
+
+if [[ "$GVISOR_PATCHSET" != tcp-shift && "$GVISOR_PATCHSET" != vanilla ]]; then
+  echo "GVISOR_PATCHSET must be tcp-shift or vanilla" >&2
+  exit 1
+fi
 
 if [[ -z "$GVISOR_REF" ]]; then
   if [[ ! -f "$BASELINE_FILE" ]]; then
@@ -22,7 +29,7 @@ if [[ -z "$GVISOR_REF" ]]; then
   exit 1
 fi
 
-mkdir -p "$ROOT/.deps" "$ROOT/bin"
+mkdir -p "$ROOT/.deps" "$ROOT/bin" "$(dirname "$OUTPUT")"
 
 if [[ ! -d "$GVISOR_DIR/.git" ]]; then
   rm -rf "$GVISOR_DIR"
@@ -52,34 +59,40 @@ if find "$GVISOR_DIR/pkg" -type f -name '*.tmpl.*' -print -quit | grep -q .; the
   exit 1
 fi
 
-python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
-python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
-python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
+if [[ "$GVISOR_PATCHSET" == tcp-shift ]]; then
+  python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+  python3 "$ROOT/scripts/patch_delivery_control.py" "$GVISOR_DIR"
+  python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
 
-gofmt -w \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/snd.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/sack_recovery.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint_state.go" \
-  "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint.go"
+  gofmt -w \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/snd.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/sack_recovery.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint_state.go" \
+    "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint.go"
+else
+  echo "using unmodified gVisor TCP for vanilla control"
+fi
 
 cp "$ROOT/go.mod" "$ROOT/go.local.mod"
 rm -f "$ROOT/go.local.sum"
 go mod edit -modfile="$ROOT/go.local.mod" -replace="gvisor.dev/gvisor=$GVISOR_DIR"
 
 LDFLAGS="-s -w -X main.buildVersion=$TCP_SHIFT_VERSION -X main.gvisorRef=$GVISOR_REF -X main.gvisorRevision=$GVISOR_SHA"
-go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags="$LDFLAGS" -o "$ROOT/bin/tcp-shift" ./cmd/tcp-shift
+go build -mod=mod -modfile="$ROOT/go.local.mod" -trimpath -ldflags="$LDFLAGS" -o "$OUTPUT" ./cmd/tcp-shift
 
-cat > "$ROOT/bin/gvisor-build.txt" <<EOF
+PROVENANCE=${PROVENANCE:-"$(dirname "$OUTPUT")/gvisor-build.txt"}
+cat > "$PROVENANCE" <<EOF
 ref=$GVISOR_REF
 sha=$GVISOR_SHA
 remote=$GVISOR_REMOTE
 source_branch=go
+patchset=$GVISOR_PATCHSET
 EOF
 
-printf 'built %s using gVisor synthetic-go ref=%s sha=%s\n' "$ROOT/bin/tcp-shift" "$GVISOR_REF" "$GVISOR_SHA"
+printf 'built %s using gVisor synthetic-go ref=%s sha=%s patchset=%s\n' "$OUTPUT" "$GVISOR_REF" "$GVISOR_SHA" "$GVISOR_PATCHSET"
