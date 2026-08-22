@@ -53,11 +53,17 @@ if find "$GVISOR_DIR/pkg" -type f -name '*.tmpl.*' -print -quit | grep -q .; the
 fi
 
 python3 "$ROOT/scripts/patch_gvisor.py" "$GVISOR_DIR"
+python3 "$ROOT/scripts/patch_recovery_pacing.py" "$GVISOR_DIR"
 
 gofmt -w \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/bbr.go" \
+  "$GVISOR_DIR/pkg/tcpip/transport/tcp/rate.go" \
+  "$GVISOR_DIR/pkg/tcpip/transport/tcp/pacing_recovery.go" \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/protocol.go" \
+  "$GVISOR_DIR/pkg/tcpip/transport/tcp/segment.go" \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/snd.go" \
+  "$GVISOR_DIR/pkg/tcpip/transport/tcp/rack.go" \
+  "$GVISOR_DIR/pkg/tcpip/transport/tcp/sack_recovery.go" \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint_state.go" \
   "$GVISOR_DIR/pkg/tcpip/transport/tcp/endpoint.go"
 
