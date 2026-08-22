@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Add narrow recovery-pacing hooks to a tcp-shift-patched gVisor tree.
+"""Add narrow legacy-SACK recovery pacing hooks to patched gVisor.
 
-This is intentionally separate from patch_gvisor.py while the behavior is being
-validated. It does not replace upstream recovery functions wholesale: it adds
-pacing admission/accounting around the existing RACK/RFC6675 send sites and
-teaches the pacing timer to resume an active recovery episode.
+The initial experiment also paced RACK DoRecovery(), but CI showed worse
+throughput and substantially more retransmission/DSACK activity. Keep RACK on
+upstream timing while its loss-inference interaction with BBR is investigated.
+This layer therefore touches only RFC6675 SACK recovery plus the shared pacing
+timer resume hook.
 """
 
 from __future__ import annotations
@@ -41,40 +42,6 @@ def patch_pacing_timer(path: Path) -> None:
 \treturn nil
 }'''
     path.write_text(replace_once(text, old, new, "pacing timer recovery resume"))
-
-
-def patch_rack(path: Path) -> None:
-    text = path.read_text()
-    marker = "func (rc *rackControl) DoRecovery(_ *segment, fastRetransmit bool) {"
-    start = text.index(marker)
-    prefix, block = text[:start], text[start:]
-
-    block = replace_once(
-        block,
-        "\tvar dataSent bool\n\t// Iterate the writeList and retransmit the segments which are marked",
-        "\tvar dataSent bool\n"
-        "\trate := snd.preparePacedSend()\n"
-        "\t// Iterate the writeList and retransmit the segments which are marked",
-        "RACK pacing prepare",
-    )
-    block = replace_once(
-        block,
-        "\t\tif sent := snd.maybeSendSegment(seg, int(snd.ep.scoreboard.SMSS()), snd.SndUna.Add(snd.SndWnd)); !sent {",
-        "\t\tif !snd.allowPacedSend(rate, seg.payloadSize()) {\n"
-        "\t\t\tbreak\n"
-        "\t\t}\n"
-        "\t\tif sent := snd.maybeSendSegment(seg, int(snd.ep.scoreboard.SMSS()), snd.SndUna.Add(snd.SndWnd)); !sent {",
-        "RACK pacing admission",
-    )
-    block = replace_once(
-        block,
-        "\t\tdataSent = true\n\t\tsnd.Outstanding += snd.pCount(seg, snd.MaxPayloadSize)\n",
-        "\t\tdataSent = true\n"
-        "\t\tsnd.Outstanding += snd.pCount(seg, snd.MaxPayloadSize)\n"
-        "\t\tsnd.accountPacedSend(rate, seg.payloadSize())\n",
-        "RACK pacing accounting",
-    )
-    path.write_text(prefix + block)
 
 
 def patch_sack(path: Path) -> None:
@@ -143,9 +110,8 @@ def main() -> None:
     patch_root = Path(__file__).resolve().parents[1] / "patches/gvisor/tcp"
     shutil.copy2(patch_root / "pacing_recovery.go", tcp / "pacing_recovery.go")
     patch_pacing_timer(tcp / "snd.go")
-    patch_rack(tcp / "rack.go")
     patch_sack(tcp / "sack_recovery.go")
-    print(f"patched gVisor recovery pacing at {root}")
+    print(f"patched gVisor legacy SACK recovery pacing at {root}")
 
 
 if __name__ == "__main__":
