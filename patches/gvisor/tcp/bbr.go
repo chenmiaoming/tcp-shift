@@ -80,10 +80,10 @@ type bbrState struct {
 	// ssthresh+3. BBR instead follows Linux packet conservation once TCP has
 	// established the recovery state: use independent tcp_packets_in_flight-like
 	// accounting plus newly delivered packets, never RFC6675 SetPipe/Outstanding.
-	inRecovery              bool
-	recoveryPriorCwnd       int
-	packetConservation      bool
-	recoveryEntryPending    bool
+	inRecovery           bool
+	recoveryPriorCwnd    int
+	packetConservation   bool
+	recoveryEntryPending bool
 }
 
 func newBBRCC(s *sender) *bbrState {
@@ -127,6 +127,31 @@ func nonNegativeUint(v int) uint64 {
 	return uint64(v)
 }
 
+// recordModelDiagnostics exposes only the small set of values needed to decide
+// whether throughput is limited by delivery-rate estimation or by the pacer.
+// Values are cumulative sums over delivery samples so the existing periodic
+// Stack.Stats() logger can report them without adding a new debug interface.
+func (b *bbrState) recordModelDiagnostics() {
+	stats := b.s.ep.stack.Stats().TCP
+	stats.TCPShiftBBRMaxBWSum.IncrementBy(b.maxBW)
+	stats.TCPShiftBBRPacingRateSum.IncrementBy(b.PacingRate())
+	stats.TCPShiftBBRCwndSum.IncrementBy(nonNegativeUint(b.s.SndCwnd))
+	stats.TCPShiftBBRCwndTargetSum.IncrementBy(nonNegativeUint(b.bdpPackets(bbrCwndGain)))
+	if b.minRTT > 0 && b.minRTT != time.Duration(math.MaxInt64) {
+		stats.TCPShiftBBRMinRTTMicrosSum.IncrementBy(uint64(b.minRTT / time.Microsecond))
+	}
+	switch b.mode {
+	case bbrStartup:
+		stats.TCPShiftBBRStartupSamples.Increment()
+	case bbrDrain:
+		stats.TCPShiftBBRDrainSamples.Increment()
+	case bbrProbeBW:
+		stats.TCPShiftBBRProbeBWSamples.Increment()
+	case bbrProbeRTT:
+		stats.TCPShiftBBRProbeRTTSamples.Increment()
+	}
+}
+
 // OnDeliveryRateSample consumes the TCP-owned delivery sample. The callback is
 // ordered after loss detection/enterRecovery and before RACK/SACK recovery
 // transmits. This is the point where Linux BBR's custom cong_control sees the
@@ -144,6 +169,7 @@ func (b *bbrState) OnDeliveryRateSample(rs deliveryRateSample) {
 	if currentInFlight != b.s.Outstanding {
 		stats.TCPShiftBBRInflightMismatchSamples.Increment()
 	}
+	b.recordModelDiagnostics()
 
 	if !b.inRecovery || !b.s.FastRecovery.Active {
 		return
