@@ -2,7 +2,9 @@
 """Add tcp-shift Linux-like inflight accounting and recovery diagnostics.
 
 This patch is intentionally applied only to the full tcp-shift patchset. The
-vanilla and rack-tiebreak-only profiles remain useful controls.
+vanilla and rack-tiebreak-only profiles remain useful controls. It also owns
+pure BBR packet-timed-round instrumentation used to validate that recovery does
+not age the 10-round max-bandwidth filter faster than real RTT-scale rounds.
 """
 
 from __future__ import annotations
@@ -56,46 +58,139 @@ def patch_segment(path: Path) -> None:
 def patch_tcp_stats(path: Path) -> None:
     text = path.read_text()
     fields = '''type TCPStats struct {
-	// tcp-shift experimental diagnostics. These counters are deliberately
-	// cumulative so existing Stack.Stats() logging can expose recovery behavior
-	// without adding per-packet logging to hot paths.
-	TCPShiftRACKLossMarks              *StatCounter
-	TCPShiftRACKLossMarksFirst         *StatCounter
-	TCPShiftRACKLossMarksRepeat        *StatCounter
-	TCPShiftRACKLossMarksACK           *StatCounter
-	TCPShiftRACKLossMarksTimer         *StatCounter
-	TCPShiftRACKEqualTimeCandidates    *StatCounter
-	TCPShiftRACKRecoveryRetransmits    *StatCounter
-	TCPShiftRACKFastRetransmits        *StatCounter
-	TCPShiftRACKLostLoopRetransmits    *StatCounter
-	TCPShiftTLPRetransmits             *StatCounter
-	TCPShiftRTORetransmits             *StatCounter
-	TCPShiftRetransmitFirst            *StatCounter
-	TCPShiftRetransmitSecond           *StatCounter
-	TCPShiftRetransmitThirdPlus        *StatCounter
-	TCPShiftRecoveryEntries            *StatCounter
-	TCPShiftRecoveryExits              *StatCounter
-	TCPShiftSetPipeCalls               *StatCounter
-	TCPShiftSetPipeMismatchCalls       *StatCounter
-	TCPShiftSetPipeAbsGapSum           *StatCounter
-	TCPShiftBBRSamples                 *StatCounter
-	TCPShiftBBRAppLimitedSamples       *StatCounter
-	TCPShiftRateAppLimitedMarks        *StatCounter
-	TCPShiftBBRInflightMismatchSamples *StatCounter
-	TCPShiftBBRPriorInflightSum        *StatCounter
-	TCPShiftBBRCurrentInflightSum      *StatCounter
-	TCPShiftBBROutstandingSum          *StatCounter
-	TCPShiftBBRMaxBWSum                *StatCounter
-	TCPShiftBBRPacingRateSum           *StatCounter
-	TCPShiftBBRCwndSum                 *StatCounter
-	TCPShiftBBRCwndTargetSum           *StatCounter
-	TCPShiftBBRMinRTTMicrosSum         *StatCounter
-	TCPShiftBBRStartupSamples          *StatCounter
-	TCPShiftBBRDrainSamples            *StatCounter
-	TCPShiftBBRProbeBWSamples          *StatCounter
-	TCPShiftBBRProbeRTTSamples         *StatCounter
+\t// tcp-shift experimental diagnostics. These counters are deliberately
+\t// cumulative so existing Stack.Stats() logging can expose recovery behavior
+\t// without adding per-packet logging to hot paths.
+\tTCPShiftRACKLossMarks              *StatCounter
+\tTCPShiftRACKLossMarksFirst         *StatCounter
+\tTCPShiftRACKLossMarksRepeat        *StatCounter
+\tTCPShiftRACKLossMarksACK           *StatCounter
+\tTCPShiftRACKLossMarksTimer         *StatCounter
+\tTCPShiftRACKEqualTimeCandidates    *StatCounter
+\tTCPShiftRACKRecoveryRetransmits    *StatCounter
+\tTCPShiftRACKFastRetransmits        *StatCounter
+\tTCPShiftRACKLostLoopRetransmits    *StatCounter
+\tTCPShiftTLPRetransmits             *StatCounter
+\tTCPShiftRTORetransmits             *StatCounter
+\tTCPShiftRetransmitFirst            *StatCounter
+\tTCPShiftRetransmitSecond           *StatCounter
+\tTCPShiftRetransmitThirdPlus        *StatCounter
+\tTCPShiftRecoveryEntries            *StatCounter
+\tTCPShiftRecoveryExits              *StatCounter
+\tTCPShiftSetPipeCalls               *StatCounter
+\tTCPShiftSetPipeMismatchCalls       *StatCounter
+\tTCPShiftSetPipeAbsGapSum           *StatCounter
+\tTCPShiftBBRSamples                 *StatCounter
+\tTCPShiftBBRAppLimitedSamples       *StatCounter
+\tTCPShiftRateAppLimitedMarks        *StatCounter
+\tTCPShiftBBRInflightMismatchSamples *StatCounter
+\tTCPShiftBBRPriorInflightSum        *StatCounter
+\tTCPShiftBBRCurrentInflightSum      *StatCounter
+\tTCPShiftBBROutstandingSum          *StatCounter
+\tTCPShiftBBRMaxBWSum                *StatCounter
+\tTCPShiftBBRPacingRateSum           *StatCounter
+\tTCPShiftBBRCwndSum                 *StatCounter
+\tTCPShiftBBRCwndTargetSum           *StatCounter
+\tTCPShiftBBRMinRTTMicrosSum         *StatCounter
+\tTCPShiftBBRStartupSamples          *StatCounter
+\tTCPShiftBBRDrainSamples            *StatCounter
+\tTCPShiftBBRProbeBWSamples          *StatCounter
+\tTCPShiftBBRProbeRTTSamples         *StatCounter
+\tTCPShiftBBRRoundStarts             *StatCounter
+\tTCPShiftBBRRoundIntervals          *StatCounter
+\tTCPShiftBBRRoundIntervalMicrosSum  *StatCounter
+\tTCPShiftBBRShortRoundStarts        *StatCounter
+\tTCPShiftBBRRecoveryRoundStarts     *StatCounter
+\tTCPShiftBBRPostRTORoundStarts      *StatCounter
 '''
     text = replace_once(text, "type TCPStats struct {\n", fields, "TCP diagnostic stats")
+    path.write_text(text)
+
+
+def patch_bbr(path: Path) -> None:
+    text = path.read_text()
+    text = replace_once(
+        text,
+        '''\troundCount         uint64
+\tnextRoundDelivered uint64
+\troundStart         bool
+\tfullBW             uint64
+''',
+        '''\troundCount         uint64
+\tnextRoundDelivered uint64
+\troundStart         bool
+\tlastRoundStart     tcpip.MonotonicTime
+\tlastRTO            tcpip.MonotonicTime
+\tfullBW             uint64
+''',
+        "BBR round diagnostic timestamps",
+    )
+
+    helper = '''func (b *bbrState) recordRoundStart(rs deliveryRateSample) {
+\tstats := b.s.ep.stack.Stats().TCP
+\tstats.TCPShiftBBRRoundStarts.Increment()
+
+\tif b.inRecovery || b.s.FastRecovery.Active {
+\t\tstats.TCPShiftBBRRecoveryRoundStarts.Increment()
+\t}
+
+\tif b.lastRoundStart != (tcpip.MonotonicTime{}) {
+\t\tdelta := rs.ackTime.Sub(b.lastRoundStart)
+\t\tif delta >= 0 {
+\t\t\tstats.TCPShiftBBRRoundIntervals.Increment()
+\t\t\tstats.TCPShiftBBRRoundIntervalMicrosSum.IncrementBy(uint64(delta / time.Microsecond))
+\t\t\tif b.minRTT > 0 && b.minRTT != time.Duration(math.MaxInt64) && delta < b.minRTT/2 {
+\t\t\t\tstats.TCPShiftBBRShortRoundStarts.Increment()
+\t\t\t}
+\t\t}
+\t}
+
+\t// Count every packet-timed round that begins during the first modeled RTT
+\t// after an RTO. Multiple starts here are especially useful evidence that
+\t// recovery delivery snapshots are aging the 10-round maxBW filter too fast.
+\tif b.lastRTO != (tcpip.MonotonicTime{}) && b.minRTT > 0 && b.minRTT != time.Duration(math.MaxInt64) {
+\t\tsinceRTO := rs.ackTime.Sub(b.lastRTO)
+\t\tif sinceRTO >= 0 && sinceRTO < b.minRTT {
+\t\t\tstats.TCPShiftBBRPostRTORoundStarts.Increment()
+\t\t}
+\t}
+
+\tb.lastRoundStart = rs.ackTime
+}
+
+'''
+    text = replace_once(
+        text,
+        "func (b *bbrState) updateBandwidth(rs deliveryRateSample) {\n",
+        helper + "func (b *bbrState) updateBandwidth(rs deliveryRateSample) {\n",
+        "BBR round diagnostic helper",
+    )
+    text = replace_once(
+        text,
+        '''\t\tb.roundCount++
+\t\tb.roundStart = true
+\t\t// Linux packet conservation lasts only through the first packet-timed
+''',
+        '''\t\tb.roundCount++
+\t\tb.roundStart = true
+\t\tb.recordRoundStart(rs)
+\t\t// Linux packet conservation lasts only through the first packet-timed
+''',
+        "BBR round start diagnostics",
+    )
+    text = replace_once(
+        text,
+        '''func (b *bbrState) HandleRTOExpired() {
+\tb.inRecovery = false
+''',
+        '''func (b *bbrState) HandleRTOExpired() {
+\t// Diagnostic timestamp only: BBR's bandwidth/round state intentionally
+\t// survives RTO exactly as before this instrumentation.
+\tb.lastRTO = b.s.ep.stack.Clock().NowMonotonic()
+\tb.inRecovery = false
+''',
+        "BBR post-RTO round diagnostics",
+    )
     path.write_text(text)
 
 
@@ -281,10 +376,11 @@ def main() -> None:
     shutil.copy2(patch_root / "inflight.go", tcp / "inflight.go")
     patch_segment(tcp / "segment.go")
     patch_tcp_stats(root / "pkg/tcpip/tcpip.go")
+    patch_bbr(tcp / "bbr.go")
     patch_rack(tcp / "rack.go")
     patch_sack_recovery(tcp / "sack_recovery.go")
     patch_sender(tcp / "snd.go")
-    print(f"patched Linux-like inflight accounting at {root}")
+    print(f"patched Linux-like inflight accounting and BBR round diagnostics at {root}")
 
 
 if __name__ == "__main__":
