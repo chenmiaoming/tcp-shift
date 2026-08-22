@@ -31,8 +31,8 @@ def patch_segment(path: Path) -> None:
         '\t// Linux-like in-flight shadow state. RACK loss must survive the\n'
         '\t// retransmission path clearing seg.lost, while retransActive tracks\n'
         '\t// whether the latest retransmitted copy is still in flight.\n'
-        '\tinflightRACKLost       bool `state:"nosave"`\n'
-        '\tinflightRetransActive  bool `state:"nosave"`\n\n'
+        '\tinflightRACKLost      bool `state:"nosave"`\n'
+        '\tinflightRetransActive bool `state:"nosave"`\n\n'
         '\t// acked indicates if the segment has already been SACKed.',
         "segment inflight metadata",
     )
@@ -57,19 +57,19 @@ def patch_tcp_stats(path: Path) -> None:
 	// tcp-shift experimental diagnostics. These counters are deliberately
 	// cumulative so existing Stack.Stats() logging can expose recovery behavior
 	// without adding per-packet logging to hot paths.
-	TCPShiftRACKLossMarks                *StatCounter
-	TCPShiftRACKEqualTimeCandidates      *StatCounter
-	TCPShiftRACKRecoveryRetransmits      *StatCounter
-	TCPShiftRecoveryEntries              *StatCounter
-	TCPShiftRecoveryExits                *StatCounter
-	TCPShiftSetPipeCalls                 *StatCounter
-	TCPShiftSetPipeMismatchCalls         *StatCounter
-	TCPShiftSetPipeAbsGapSum             *StatCounter
-	TCPShiftBBRSamples                   *StatCounter
-	TCPShiftBBRInflightMismatchSamples   *StatCounter
-	TCPShiftBBRPriorInflightSum          *StatCounter
-	TCPShiftBBRCurrentInflightSum        *StatCounter
-	TCPShiftBBROutstandingSum            *StatCounter
+	TCPShiftRACKLossMarks              *StatCounter
+	TCPShiftRACKEqualTimeCandidates    *StatCounter
+	TCPShiftRACKRecoveryRetransmits    *StatCounter
+	TCPShiftRecoveryEntries            *StatCounter
+	TCPShiftRecoveryExits              *StatCounter
+	TCPShiftSetPipeCalls               *StatCounter
+	TCPShiftSetPipeMismatchCalls       *StatCounter
+	TCPShiftSetPipeAbsGapSum           *StatCounter
+	TCPShiftBBRSamples                 *StatCounter
+	TCPShiftBBRInflightMismatchSamples *StatCounter
+	TCPShiftBBRPriorInflightSum        *StatCounter
+	TCPShiftBBRCurrentInflightSum      *StatCounter
+	TCPShiftBBROutstandingSum          *StatCounter
 '''
     text = replace_once(text, "type TCPStats struct {\n", fields, "TCP diagnostic stats")
     path.write_text(text)
@@ -100,6 +100,15 @@ def patch_rack(path: Path) -> None:
 
 def patch_sender(path: Path) -> None:
     text = path.read_text()
+    text = replace_once(
+        text,
+        '\tdeliveryRate      deliveryRateSample    `state:"nosave"`\n'
+        '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n',
+        '\tdeliveryRate      deliveryRateSample    `state:"nosave"`\n'
+        '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n'
+        '\tratePriorInFlight int                   `state:"nosave"`\n',
+        "sender ACK-start prior inflight snapshot",
+    )
     text = replace_once(
         text,
         '\ts.Outstanding = pipe\n}',
