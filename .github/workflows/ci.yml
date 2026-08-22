@@ -58,6 +58,80 @@ jobs:
       - name: Smoke test CLI
         run: ./bin/tcp-shift --help
 
+  upstream-gvisor-rack-control:
+    name: Upstream gVisor CUBIC+RACK control
+    # This job deliberately builds the exact synthetic-Go baseline with no
+    # tcp-shift TCP patches. It tells us whether spurious RACK retransmissions
+    # already exist in upstream gVisor or are introduced by our sender patches.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install benchmark tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iperf3 iproute2 iptables jq
+
+      - name: Build unmodified gVisor control
+        env:
+          GVISOR_PATCHSET: vanilla
+          OUTPUT: ${{ github.workspace }}/bin/tcp-shift-upstream
+          PROVENANCE: ${{ github.workspace }}/bin/gvisor-build-upstream.txt
+        run: bash ./scripts/build.sh
+
+      - name: Verify vanilla provenance
+        run: |
+          ./bin/tcp-shift-upstream --version
+          cat ./bin/gvisor-build-upstream.txt
+          grep -qx 'patchset=vanilla' ./bin/gvisor-build-upstream.txt
+
+      - name: Benchmark upstream CUBIC+RACK
+        env:
+          BIN: ${{ github.workspace }}/bin/tcp-shift-upstream
+          OUT: ${{ github.workspace }}/.bench-upstream-rack
+          # Native CUBIC is retained as a same-run control for runner/netem
+          # variability; no experimental BBR symbol is requested from vanilla.
+          BENCH_CASES: 'native-cubic gvisor-cubic'
+          RATE: 100mbit
+          ONE_WAY_DELAY: 100ms
+          LOSS: '0%'
+          DATA_LOSS: '0.10%'
+          ACK_LOSS: '0%'
+          RECOVERY: rack
+          NETEM_LIMIT: '10000'
+          DURATION: '15'
+          TRIALS: '3'
+          TCP_BUFFER_MIB: '8'
+          CASE_TIMEOUT: '45'
+        run: sudo -E bash ./scripts/bench-long-fat.sh
+
+      - name: Publish upstream control summary
+        if: always() && hashFiles('.bench-upstream-rack/summary.md') != ''
+        run: |
+          printf '### Unmodified upstream gVisor: CUBIC + RACK\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench-upstream-rack/scenario.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n### Build provenance\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          cat ./bin/gvisor-build-upstream.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench-upstream-rack/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload upstream control artifacts
+        if: always() && hashFiles('.bench-upstream-rack/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-gvisor-cubic-rack-control
+          path: |
+            .bench-upstream-rack/
+            bin/gvisor-build-upstream.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   long-fat-benchmark:
     name: Long-fat (${{ matrix.scenario }})
     # iperf3 runs with -R: tcp-shift is the WAN-facing sender. Delay and loss
