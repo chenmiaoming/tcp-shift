@@ -102,9 +102,9 @@ def patch_sender(path: Path) -> None:
     text = path.read_text()
     text = replace_once(
         text,
-        '\tdeliveryRate      deliveryRateSample    `state:"nosave"`\n'
+        '\tdeliveryRate      deliveryRateSample   `state:"nosave"`\n'
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n',
-        '\tdeliveryRate      deliveryRateSample    `state:"nosave"`\n'
+        '\tdeliveryRate      deliveryRateSample   `state:"nosave"`\n'
         '\trateCandidate     deliveryRateCandidate `state:"nosave"`\n'
         '\tratePriorInFlight int                   `state:"nosave"`\n',
         "sender ACK-start prior inflight snapshot",
