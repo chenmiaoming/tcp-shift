@@ -41,14 +41,11 @@ const (
 	bbrProbeRTT
 )
 
-// bbrState implements a small BBRv1-inspired model on top of netstack's
-// packet-count congestion window. Bandwidth is sampled from cumulatively ACKed
-// data over ACK arrival intervals. A generic sender pacer consumes PacingRate.
-//
-// The ACK-rate sampler is intentionally simpler than Linux's per-packet
-// delivery-rate sampler. This keeps the first tcp-shift experiment small while
-// preserving the two properties that matter for the experiment: a bandwidth /
-// min-RTT model and pacing independent of cwnd growth.
+// bbrState implements a compact BBRv1-inspired model on top of netstack's
+// packet-count congestion window. Bandwidth comes from a TCP delivery-rate
+// sampler: transmitted segments snapshot sender delivery state and ACK/SACK
+// processing produces delivered/interval samples. This follows Linux BBR's
+// measurement model much more closely than using adjacent ACK arrival times.
 type bbrState struct {
 	s *sender
 
@@ -61,7 +58,6 @@ type bbrState struct {
 	bwIndex   int
 	maxBW     uint64 // bytes/second
 
-	lastAckTime tcpip.MonotonicTime
 	roundStart  tcpip.MonotonicTime
 	fullBW      uint64
 	fullBWRound int
@@ -117,27 +113,33 @@ func mulGain(v, gain uint64) uint64 {
 	return v * gain / bbrGainScale
 }
 
-func (b *bbrState) updateBandwidth(packetsAcked int, ackTime tcpip.MonotonicTime) {
+func (b *bbrState) updateBandwidth(packetsAcked int, _ tcpip.MonotonicTime) {
 	if packetsAcked <= 0 {
 		return
 	}
-	if b.lastAckTime != (tcpip.MonotonicTime{}) {
-		interval := ackTime.Sub(b.lastAckTime)
-		if interval > 0 {
-			ackedBytes := uint64(packetsAcked) * uint64(b.s.MaxPayloadSize)
-			sample := ackedBytes * uint64(time.Second) / uint64(interval)
-			b.bwSamples[b.bwIndex] = sample
-			b.bwIndex = (b.bwIndex + 1) % len(b.bwSamples)
-			var maxSample uint64
-			for _, v := range b.bwSamples {
-				if v > maxSample {
-					maxSample = v
-				}
-			}
-			b.maxBW = maxSample
+
+	rs := b.s.deliveryRate
+	if !rs.valid || rs.rate == 0 || rs.interval <= 0 || rs.delivered == 0 {
+		return
+	}
+
+	// Once app-limited detection is wired, a low app-limited sample must not
+	// pull down the max filter; a higher sample is still useful evidence of
+	// available bandwidth. Keeping this guard now makes the eventual app-limited
+	// hook behavior explicit without changing the BBR API again.
+	if rs.isAppLimited && rs.rate < b.maxBW {
+		return
+	}
+
+	b.bwSamples[b.bwIndex] = rs.rate
+	b.bwIndex = (b.bwIndex + 1) % len(b.bwSamples)
+	var maxSample uint64
+	for _, v := range b.bwSamples {
+		if v > maxSample {
+			maxSample = v
 		}
 	}
-	b.lastAckTime = ackTime
+	b.maxBW = maxSample
 }
 
 func (b *bbrState) updateMinRTT(rtt time.Duration, now tcpip.MonotonicTime) {
@@ -294,7 +296,6 @@ func (b *bbrState) HandleRTOExpired() {
 	b.bwIndex = 0
 	b.fullBW = 0
 	b.fullBWRound = 0
-	b.lastAckTime = tcpip.MonotonicTime{}
 	b.roundStart = tcpip.MonotonicTime{}
 	b.inRecovery = false
 	b.recoveryPriorCwnd = 0
