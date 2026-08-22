@@ -15,10 +15,9 @@ import (
 )
 
 // deliveryRateSample is the sender-wide result of a Linux-style delivery-rate
-// sample. It intentionally carries both the delta delivered by this sample and
-// the sender's cumulative delivered counters. BBR uses priorDelivered and
-// totalDelivered to define packet-timed round trips, matching Linux's
-// next_rtt_delivered/rtt_cnt model instead of using wall-clock RTT boundaries.
+// sample. Besides delivery rate, it carries the ACK/SACK delivery count and the
+// pre-ACK in-flight estimate needed by congestion controls with a custom
+// per-delivery control loop such as BBR.
 type deliveryRateSample struct {
 	valid          bool
 	delivered      uint64
@@ -26,12 +25,16 @@ type deliveryRateSample struct {
 	totalDelivered uint64
 	interval       time.Duration
 	rate           uint64 // delivered bytes/second
+	ackedSacked    int    // packets newly ACKed or SACKed by this ACK event
+	priorInFlight  int    // sender Outstanding before this ACK event delivered data
+	ackTime        tcpip.MonotonicTime
 	isAppLimited   bool
 }
 
 // deliveryRateConsumer is deliberately independent of BBR. TCP owns delivery
-// accounting; congestion controls may consume the resulting sample if they need
-// a delivery-rate model. Reno and CUBIC simply do not implement this interface.
+// accounting and invokes this after ACK processing has established the current
+// recovery state but before recovery transmits more data. This mirrors Linux's
+// custom cong_control(..., struct rate_sample *) ordering.
 type deliveryRateConsumer interface {
 	OnDeliveryRateSample(deliveryRateSample)
 }
@@ -44,6 +47,11 @@ type deliveryRateCandidate struct {
 	txTime         tcpip.MonotonicTime
 	ackTime        tcpip.MonotonicTime
 	isAppLimited   bool
+
+	// ackedBytes is delivery caused by the current ACK event, not the longer
+	// interval represented by delivered=totalDelivered-priorDelivered.
+	ackedBytes    int
+	priorInFlight int
 }
 
 // +checklocks:s.ep.mu
@@ -74,14 +82,12 @@ func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
 
 // +checklocks:s.ep.mu
 func (s *sender) rateSampleBegin() {
-	// A pure SACK ACK does not advance SND.UNA, so gVisor's legacy congestion
-	// control Update hook is not reached for that ACK. Do not throw away the
-	// delivery candidate in that case: finalize it at the beginning of the next
-	// ACK before starting a fresh sample. Linux accounts SACKed delivery in the
-	// same rate-sampling machinery, and BBR depends heavily on those samples
-	// during loss recovery.
+	// This fallback handles an early-return path that produced SACK delivery but
+	// did not reach the normal end-of-ACK finalization hook. Normally the prior
+	// event has already been finalized and notified before this point.
 	if s.rateCandidate.valid {
 		s.rateSampleEnd(s.rateCandidate.ackTime)
+		s.rateSampleNotify()
 	}
 	s.rateCandidate = deliveryRateCandidate{}
 	s.deliveryRate = deliveryRateSample{}
@@ -109,9 +115,17 @@ func (s *sender) rateSampleDelivered(seg *segment, deliveredBytes int, ackTime t
 		return
 	}
 
+	ackedBytes := deliveredBytes
+	priorInFlight := s.Outstanding
+	if s.rateCandidate.valid {
+		ackedBytes += s.rateCandidate.ackedBytes
+		priorInFlight = s.rateCandidate.priorInFlight
+	}
+
 	// Linux chooses the newly-delivered skb carrying the most recent delivery
 	// snapshot. rateDelivered is monotonically increasing, so the largest prior
-	// value is the appropriate candidate.
+	// value is the appropriate timing candidate. ACK-event accounting is carried
+	// forward even when that timing candidate changes.
 	if !s.rateCandidate.valid || seg.rateDelivered > s.rateCandidate.priorDelivered {
 		s.rateCandidate = deliveryRateCandidate{
 			valid:          true,
@@ -121,7 +135,12 @@ func (s *sender) rateSampleDelivered(seg *segment, deliveredBytes int, ackTime t
 			txTime:         seg.xmitTime,
 			ackTime:        ackTime,
 			isAppLimited:   seg.rateAppLimited,
+			ackedBytes:     ackedBytes,
+			priorInFlight:  priorInFlight,
 		}
+	} else {
+		s.rateCandidate.ackedBytes = ackedBytes
+		s.rateCandidate.ackTime = ackTime
 	}
 }
 
@@ -156,6 +175,15 @@ func (s *sender) rateSampleEnd(ackTime tcpip.MonotonicTime) {
 		return
 	}
 
+	ackedSacked := 0
+	if c.ackedBytes > 0 {
+		mss := s.MaxPayloadSize
+		if mss <= 0 {
+			mss = 1
+		}
+		ackedSacked = (c.ackedBytes + mss - 1) / mss
+	}
+
 	s.deliveryRate = deliveryRateSample{
 		valid:          true,
 		delivered:      delivered,
@@ -163,14 +191,10 @@ func (s *sender) rateSampleEnd(ackTime tcpip.MonotonicTime) {
 		totalDelivered: s.rateDelivered,
 		interval:       interval,
 		rate:           rate,
+		ackedSacked:    ackedSacked,
+		priorInFlight:  c.priorInFlight,
+		ackTime:        ackTime,
 		isAppLimited:   c.isAppLimited,
-	}
-
-	// Deliver the sample through a generic TCP-owned extension point. This is
-	// the equivalent architectural boundary of Linux producing struct
-	// rate_sample before a congestion-control algorithm consumes it.
-	if consumer, ok := s.cc.(deliveryRateConsumer); ok {
-		consumer.OnDeliveryRateSample(s.deliveryRate)
 	}
 
 	// Advance the sender delivery/send epochs after producing the sample, as
@@ -180,7 +204,19 @@ func (s *sender) rateSampleEnd(ackTime tcpip.MonotonicTime) {
 		s.rateFirstTxTime = c.txTime
 	}
 
-	// A finalized sample must not be finalized again at the next ACK. Pure SACK
-	// candidates survive only until rateSampleBegin() on the following ACK.
+	// A finalized sample must not be finalized again. Notification is separate
+	// so sender.handleRcvdSegment can first establish CA/recovery state and then
+	// invoke the congestion-control loop before retransmission.
 	s.rateCandidate = deliveryRateCandidate{}
+}
+
+// +checklocks:s.ep.mu
+func (s *sender) rateSampleNotify() {
+	if !s.deliveryRate.valid {
+		return
+	}
+	if consumer, ok := s.cc.(deliveryRateConsumer); ok {
+		consumer.OnDeliveryRateSample(s.deliveryRate)
+	}
+	s.deliveryRate = deliveryRateSample{}
 }
