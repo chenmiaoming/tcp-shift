@@ -132,6 +132,79 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  gvisor-rack-tiebreak-control:
+    name: gVisor CUBIC+RACK tie-break-only control
+    # Identical to the upstream control except for one RACK predicate: when
+    # transmit timestamps tie, a candidate is older than the RACK reference
+    # only when candidate.endSeq < reference.endSeq, matching Linux
+    # tcp_skb_sent_after(). No BBR/rate/pacing tcp-shift patches are present.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install benchmark tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iperf3 iproute2 iptables jq
+
+      - name: Build gVisor with only RACK tie-break correction
+        env:
+          GVISOR_PATCHSET: rack-tiebreak
+          OUTPUT: ${{ github.workspace }}/bin/tcp-shift-rack-tiebreak
+          PROVENANCE: ${{ github.workspace }}/bin/gvisor-build-rack-tiebreak.txt
+        run: bash ./scripts/build.sh
+
+      - name: Verify tie-break-only provenance
+        run: |
+          ./bin/tcp-shift-rack-tiebreak --version
+          cat ./bin/gvisor-build-rack-tiebreak.txt
+          grep -qx 'patchset=rack-tiebreak' ./bin/gvisor-build-rack-tiebreak.txt
+
+      - name: Benchmark tie-break-only CUBIC+RACK
+        env:
+          BIN: ${{ github.workspace }}/bin/tcp-shift-rack-tiebreak
+          OUT: ${{ github.workspace }}/.bench-rack-tiebreak
+          BENCH_CASES: 'native-cubic gvisor-cubic'
+          RATE: 100mbit
+          ONE_WAY_DELAY: 100ms
+          LOSS: '0%'
+          DATA_LOSS: '0.10%'
+          ACK_LOSS: '0%'
+          RECOVERY: rack
+          NETEM_LIMIT: '10000'
+          DURATION: '15'
+          TRIALS: '3'
+          TCP_BUFFER_MIB: '8'
+          CASE_TIMEOUT: '45'
+        run: sudo -E bash ./scripts/bench-long-fat.sh
+
+      - name: Publish tie-break control summary
+        if: always() && hashFiles('.bench-rack-tiebreak/summary.md') != ''
+        run: |
+          printf '### Upstream gVisor + RACK equal-time tie-break correction\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench-rack-tiebreak/scenario.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n### Build provenance\n\n```text\n' >> "$GITHUB_STEP_SUMMARY"
+          cat ./bin/gvisor-build-rack-tiebreak.txt >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat .bench-rack-tiebreak/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload tie-break control artifacts
+        if: always() && hashFiles('.bench-rack-tiebreak/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: gvisor-rack-tiebreak-control
+          path: |
+            .bench-rack-tiebreak/
+            bin/gvisor-build-rack-tiebreak.txt
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   long-fat-benchmark:
     name: Long-fat (${{ matrix.scenario }})
     # iperf3 runs with -R: tcp-shift is the WAN-facing sender. Delay and loss
