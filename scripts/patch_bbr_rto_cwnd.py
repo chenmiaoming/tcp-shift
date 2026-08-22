@@ -73,7 +73,12 @@ def patch_bbr(path: Path) -> None:
 """
     text = replace_once(text, old_update, new_update, "BBR RTO cwnd restore on ACK")
 
+    # patch_inflight_accounting.py owns the RTO diagnostic timestamp and is
+    # applied before this adapter, so match the generated post-patch source.
     old_rto = """func (b *bbrState) HandleRTOExpired() {
+\t// Diagnostic timestamp only: BBR's bandwidth/round state intentionally
+\t// survives RTO exactly as before this instrumentation.
+\tb.lastRTO = b.s.ep.stack.Clock().NowMonotonic()
 \tb.inRecovery = false
 \tb.recoveryPriorCwnd = 0
 \tb.packetConservation = false
@@ -83,6 +88,10 @@ def patch_bbr(path: Path) -> None:
 \tb.s.SndCwnd = 1
 """
     new_rto = """func (b *bbrState) HandleRTOExpired() {
+\t// Diagnostic timestamp only: BBR's bandwidth/round state intentionally
+\t// survives RTO exactly as before this instrumentation.
+\tb.lastRTO = b.s.ep.stack.Clock().NowMonotonic()
+
 \t// Linux BBR's ssthresh callback saves the last-known-good cwnd before the
 \t// TCP core collapses cwnd for timeout recovery. If this RTO interrupted fast
 \t// recovery, gVisor has just called leaveRecovery(), so SndCwnd is already the
