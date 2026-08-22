@@ -28,10 +28,11 @@ def patch_segment(path: Path) -> None:
         '\t// acked indicates if the segment has already been SACKed.',
         '\trateAppLimited    bool                  `state:"nosave"`\n'
         '\trateSampleValid   bool                  `state:"nosave"`\n\n'
-        '\t// Linux-like in-flight shadow state. RACK loss must survive the\n'
-        '\t// retransmission path clearing seg.lost, while retransActive tracks\n'
-        '\t// whether the latest retransmitted copy is still in flight.\n'
+        '\t// Linux-like in-flight shadow state. RACK/RTO loss must survive\n'
+        '\t// transient gVisor recovery metadata resets, while retransActive\n'
+        '\t// tracks whether the latest retransmitted copy is still in flight.\n'
         '\tinflightRACKLost      bool `state:"nosave"`\n'
+        '\tinflightRTOLost       bool `state:"nosave"`\n'
         '\tinflightRetransActive bool `state:"nosave"`\n\n'
         '\t// acked indicates if the segment has already been SACKed.',
         "segment inflight metadata",
@@ -44,6 +45,7 @@ def patch_segment(path: Path) -> None:
         '\tt.rateAppLimited = s.rateAppLimited\n'
         '\tt.rateSampleValid = s.rateSampleValid\n'
         '\tt.inflightRACKLost = s.inflightRACKLost\n'
+        '\tt.inflightRTOLost = s.inflightRTOLost\n'
         '\tt.inflightRetransActive = s.inflightRetransActive\n'
         '\tt.ep = s.ep',
         "segment clone inflight metadata",
@@ -77,6 +79,8 @@ def patch_tcp_stats(path: Path) -> None:
 	TCPShiftSetPipeMismatchCalls       *StatCounter
 	TCPShiftSetPipeAbsGapSum           *StatCounter
 	TCPShiftBBRSamples                 *StatCounter
+	TCPShiftBBRAppLimitedSamples       *StatCounter
+	TCPShiftRateAppLimitedMarks        *StatCounter
 	TCPShiftBBRInflightMismatchSamples *StatCounter
 	TCPShiftBBRPriorInflightSum        *StatCounter
 	TCPShiftBBRCurrentInflightSum      *StatCounter
@@ -251,6 +255,16 @@ def patch_sender(path: Path) -> None:
         '\ts.ep.stack.Stats().TCP.TCPShiftRecoveryExits.Increment()\n'
         '\ts.FastRecovery.Active = false',
         "recovery exit diagnostics",
+    )
+    text = replace_once(
+        text,
+        '\ts.state = tcpip.RTORecovery\n\ts.cc.HandleRTOExpired()\n',
+        '\ts.state = tcpip.RTORecovery\n'
+        '\t// Keep BBR\'s independent packets_in_flight coordinate consistent\n'
+        '\t// with Linux loss accounting before congestion control observes RTO.\n'
+        '\ts.inflightEnterRTO()\n'
+        '\ts.cc.HandleRTOExpired()\n',
+        "RTO inflight transition",
     )
     path.write_text(text)
 
