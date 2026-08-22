@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 )
 
 // deliveryRateSample is the sender-wide result of a Linux-style delivery-rate
@@ -45,6 +46,7 @@ type deliveryRateCandidate struct {
 	priorTime      tcpip.MonotonicTime
 	firstTxTime    tcpip.MonotonicTime
 	txTime         tcpip.MonotonicTime
+	endSeq         seqnum.Value
 	ackTime        tcpip.MonotonicTime
 	isAppLimited   bool
 
@@ -62,16 +64,20 @@ func (s *sender) rateSampleOnSend(seg *segment, now tcpip.MonotonicTime) {
 
 	// Maintain the independent Linux-like retrans_out shadow even when this is
 	// a retransmission. Delivery timestamps below remain snapshots of the first
-	// transmission, matching Linux's rate-sampling model.
+	// transmission for now; retransmission sampling is handled separately from
+	// the lossless baseline alignment below.
 	s.inflightOnSend(seg)
 	if seg.xmitCount != 0 {
 		return
 	}
 
-	// A new flight starts a new send phase. Use Linux-like in-flight accounting,
-	// not sender.Outstanding, because SetPipe may rewrite Outstanding while a
-	// recovery episode is active.
-	if s.rateFirstTxTime == (tcpip.MonotonicTime{}) || s.linuxLikePacketsInFlight() == 0 {
+	// Linux starts a new send phase only when packets_out is zero, deliberately
+	// not when packets_in_flight is zero: SACK/loss accounting can transiently
+	// drive packets_in_flight to zero while data still exists in the retransmit
+	// queue. linuxLikeFlight().packetsOut is the corresponding independent
+	// packets_out quantity in tcp-shift.
+	flight := s.linuxLikeFlight()
+	if s.rateFirstTxTime == (tcpip.MonotonicTime{}) || flight.packetsOut == 0 {
 		s.rateFirstTxTime = now
 		if s.rateDeliveredTime == (tcpip.MonotonicTime{}) {
 			s.rateDeliveredTime = now
@@ -132,17 +138,23 @@ func (s *sender) rateSampleDelivered(seg *segment, deliveredBytes int, ackTime t
 		priorInFlight = s.rateCandidate.priorInFlight
 	}
 
-	// Linux chooses the newly-delivered skb carrying the most recent delivery
-	// snapshot. rateDelivered is monotonically increasing, so the largest prior
-	// value is the appropriate timing candidate. ACK-event accounting is carried
-	// forward even when that timing candidate changes.
-	if !s.rateCandidate.valid || seg.rateDelivered > s.rateCandidate.priorDelivered {
+	// Current Linux rate sampling chooses the newly-delivered skb that was sent
+	// most recently, using end_seq as the tie-break when transmit timestamps are
+	// equal. Several packets emitted in one send phase can carry the same
+	// delivered snapshot, so selecting only by priorDelivered can anchor the
+	// sample to the wrong packet in a stretched/delayed ACK.
+	endSeq := seg.sequenceNumber.Add(seqnum.Size(seg.payloadSize()))
+	newer := !s.rateCandidate.valid ||
+		s.rateCandidate.txTime.Before(seg.xmitTime) ||
+		(seg.xmitTime == s.rateCandidate.txTime && s.rateCandidate.endSeq.LessThan(endSeq))
+	if newer {
 		s.rateCandidate = deliveryRateCandidate{
 			valid:          true,
 			priorDelivered: seg.rateDelivered,
 			priorTime:      seg.rateDeliveredTime,
 			firstTxTime:    seg.rateFirstTxTime,
 			txTime:         seg.xmitTime,
+			endSeq:         endSeq,
 			ackTime:        ackTime,
 			isAppLimited:   seg.rateAppLimited,
 			ackedBytes:     ackedBytes,
