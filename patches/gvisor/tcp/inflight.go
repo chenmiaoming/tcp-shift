@@ -9,6 +9,7 @@
 package tcp
 
 import (
+	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 )
@@ -23,10 +24,10 @@ import (
 // is a recovery pipe estimate rather than the congestion-control in-flight
 // quantity used by Linux BBR.
 type linuxFlightSnapshot struct {
-	packetsOut  int
-	sackedOut   int
-	lostOut     int
-	retransOut  int
+	packetsOut      int
+	sackedOut       int
+	lostOut         int
+	retransOut      int
 	packetsInFlight int
 }
 
@@ -108,7 +109,7 @@ func (s *sender) inflightOnSend(seg *segment) {
 		return
 	}
 	seg.inflightRetransActive = true
-	if s.ep.tcpRecovery&1 != 0 && s.FastRecovery.Active {
+	if s.ep.tcpRecovery&tcpip.TCPRACKLossDetection != 0 && s.FastRecovery.Active {
 		s.ep.stack.Stats().TCP.TCPShiftRACKRecoveryRetransmits.Increment()
 	}
 }
