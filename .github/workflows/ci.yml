@@ -79,6 +79,11 @@ jobs:
             ack_loss: '0%'
             recovery: rack
             trials: '3'
+          - scenario: data-loss-legacy
+            data_loss: '0.10%'
+            ack_loss: '0%'
+            recovery: legacy
+            trials: '3'
           - scenario: ack-loss-rack
             data_loss: '0%'
             ack_loss: '0.10%'
