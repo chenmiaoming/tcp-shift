@@ -211,6 +211,18 @@ func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 		return
 	}
 
+	// Linux tcp_rate_gen rejects delivery samples shorter than tcp_min_rtt().
+	// Such samples are common after a spurious retransmission: the retransmitted
+	// skb gets a fresh send timestamp even though the receiver may already have
+	// the original data, so its apparent delivery interval can be less than one
+	// physical RTT. Letting those samples advance BBR's packet-timed round would
+	// age the 10-round maxBW filter much faster than the path can actually turn
+	// over. tcp-shift currently exposes minRTT through BBR rather than generic
+	// TCP state, so apply the same validity gate here before round accounting.
+	if b.minRTT > 0 && b.minRTT != time.Duration(math.MaxInt64) && rs.interval < b.minRTT {
+		return
+	}
+
 	// Linux BBR starts a new packet-timed round when the packet that generated
 	// this rate sample was sent before next_rtt_delivered. Use cumulative bytes
 	// rather than packets because the tcp-shift sampler's delivered counter is
@@ -365,7 +377,7 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 			}
 		} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
 			b.s.SndCwnd = max(target, inFlight+packetsAcked)
-		}
+			}
 	}
 	if b.s.SndCwnd < 4 {
 		b.s.SndCwnd = 4
