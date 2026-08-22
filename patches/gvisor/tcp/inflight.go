@@ -64,10 +64,10 @@ func (b *bbrState) recoveryPacketsInFlight() int {
 }
 
 // linuxLikeFlight reconstructs Linux-style TCP in-flight state from netstack's
-// retransmission queue and SACK scoreboard. RACK loss state that would
-// otherwise disappear when sendSegment clears seg.lost is kept separately in
-// seg.inflightRACKLost. Likewise inflightRetransActive tracks whether the most
-// recent retransmitted copy is still considered in the network.
+// retransmission queue and SACK scoreboard. RACK and RTO loss state that would
+// otherwise disappear when gVisor clears transient recovery metadata is kept
+// separately on each segment. inflightRetransActive tracks whether the latest
+// retransmitted copy is still considered in the network.
 //
 // +checklocks:s.ep.mu
 func (s *sender) linuxLikeFlight() linuxFlightSnapshot {
@@ -102,15 +102,15 @@ func (s *sender) linuxLikeFlight() linuxFlightSnapshot {
 			}
 
 			// Legacy RFC6675 loss is represented by the scoreboard. RACK marks
-			// loss directly on segments, so retain that state across the
-			// retransmission that clears seg.lost.
-			if seg.inflightRACKLost || (s.ep.SACKPermitted && s.ep.scoreboard.IsRangeLost(sb)) {
+			// loss directly on segments, and RTO clears the scoreboard entirely,
+			// so preserve those loss states in the independent shadow.
+			if seg.inflightRACKLost || seg.inflightRTOLost || (s.ep.SACKPermitted && s.ep.scoreboard.IsRangeLost(sb)) {
 				out.lostOut++
 			}
 
 			// Linux retrans_out counts a retransmitted copy that is itself still
-			// outstanding. If RACK subsequently marks that copy lost,
-			// inflightMarkRACKLost clears this bit until the next retransmission.
+			// outstanding. If RACK subsequently marks that copy lost, or a new RTO
+			// epoch starts, the active retransmitted copy is cleared until resend.
 			if seg.inflightRetransActive {
 				out.retransOut++
 			}
@@ -130,6 +130,27 @@ func (s *sender) linuxLikeFlight() linuxFlightSnapshot {
 // +checklocks:s.ep.mu
 func (s *sender) linuxLikePacketsInFlight() int {
 	return s.linuxLikeFlight().packetsInFlight
+}
+
+// inflightEnterRTO mirrors Linux tcp_enter_loss/tcp_timeout_mark_lost for the
+// independent accounting coordinate consumed by BBR. gVisor clears the SACK
+// scoreboard and rewinds writeNext on RTO, so without this shadow all pre-RTO
+// packets would incorrectly reappear as packets_in_flight.
+//
+// Mark only data that has actually been transmitted; unsent write-list entries
+// remain normal new data. Any older retransmitted copy is no longer counted as
+// active when a new RTO epoch starts. A later retransmission adds retrans_out
+// again through inflightOnSend(), yielding packets_out-lost_out+retrans_out.
+//
+// +checklocks:s.ep.mu
+func (s *sender) inflightEnterRTO() {
+	for seg := s.writeList.Front(); seg != nil; seg = seg.Next() {
+		if seg.payloadSize() <= 0 || seg.xmitCount == 0 {
+			continue
+		}
+		seg.inflightRTOLost = true
+		seg.inflightRetransActive = false
+	}
 }
 
 // inflightOnSend updates the shadow state immediately before sendSegment bumps
