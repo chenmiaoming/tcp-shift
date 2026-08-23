@@ -89,6 +89,10 @@ case "$GVISOR_PATCHSET" in
     # Single-variable STARTUP experiment: make pacing persistent like Linux BBR
     # (nominal init, first-RTT reinit, and no decreases before full_bw).
     python3 "$ROOT/scripts/patch_bbr_startup_pacing.py" "$GVISOR_DIR"
+    # gVisor suppresses generic CC Update while FastRecovery is active. Linux
+    # BBR resumes normal cwnd control after its first packet-conservation round;
+    # run that missing custom-control step from the delivery-rate callback.
+    python3 "$ROOT/scripts/patch_bbr_recovery_cwnd.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
