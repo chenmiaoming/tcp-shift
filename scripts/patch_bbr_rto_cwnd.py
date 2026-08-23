@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Restore BBR's last-known-good cwnd after gVisor RTO recovery.
+"""Adapt BBR state across gVisor RTO recovery.
 
 Linux BBR saves prior_cwnd before loss recovery and restores it when TCP exits
 Loss/Recovery. gVisor's congestion-control interface has a PostRecovery hook
 for fast recovery, but the RTORecovery -> Open transition does not call it.
 This narrow BBR-only adapter uses gVisor's existing recover boundary
 (FastRecovery.Last < SndUna) from sender ACK processing to perform the missing
-restore inside BBR.Update(). It does not alter gVisor loss detection,
-retransmission, or recovery admission.
+restore inside BBR.Update().
+
+Linux BBR also clears its STARTUP full_bw baseline on TCP_CA_Loss. It does not
+explicitly clear full_bw_cnt; the next eligible packet-timed round observes a
+zero baseline, re-anchors full_bw to max_bw, and naturally resets the no-growth
+counter. Mirror that behavior here without changing maxBW, pacing, gains, loss
+detection, retransmission, or recovery admission.
 """
 
 from __future__ import annotations
@@ -30,8 +35,10 @@ def patch_tcp_stats(path: Path) -> None:
 \tTCPShiftBBRRTOPriorCwndSum                *StatCounter
 \tTCPShiftBBRRTORecoveryExits               *StatCounter
 \tTCPShiftBBRRTORecoveredCwndSum             *StatCounter
+\tTCPShiftBBRFullBWResetsOnRTO              *StatCounter
+\tTCPShiftBBRFullBWPriorOnRTOSum             *StatCounter
 """
-    text = replace_once(text, anchor, addition, "BBR RTO cwnd diagnostic counters")
+    text = replace_once(text, anchor, addition, "BBR RTO diagnostic counters")
     path.write_text(text)
 
 
@@ -88,8 +95,7 @@ def patch_bbr(path: Path) -> None:
 \tb.s.SndCwnd = 1
 """
     new_rto = """func (b *bbrState) HandleRTOExpired() {
-\t// Diagnostic timestamp only: BBR's bandwidth/round state intentionally
-\t// survives RTO exactly as before this instrumentation.
+\t// Diagnostic timestamp used by packet-timed round instrumentation.
 \tb.lastRTO = b.s.ep.stack.Clock().NowMonotonic()
 
 \t// Linux BBR's ssthresh callback saves the last-known-good cwnd before the
@@ -104,6 +110,17 @@ def patch_bbr(path: Path) -> None:
 \tstats.TCPShiftBBRRTORecoveryEntries.Increment()
 \tstats.TCPShiftBBRRTOPriorCwndSum.IncrementBy(nonNegativeUint(prior))
 
+\t// Linux bbr_set_state(TCP_CA_Loss) clears full_bw but intentionally leaves
+\t// full_bw_cnt alone. On the next eligible packet-timed round, a zero full_bw
+\t// baseline causes the normal STARTUP growth branch to re-anchor full_bw and
+\t// reset the no-growth count. Do the same here. Linux also sets round_start
+\t// for its immediate long-term policer-sampling callback; tcp-shift has no
+\t// equivalent LT sampler, and updateBandwidth() recomputes roundStart from
+\t// delivery metadata on the next ACK, so there is no synthetic round bit here.
+\tstats.TCPShiftBBRFullBWResetsOnRTO.Increment()
+\tstats.TCPShiftBBRFullBWPriorOnRTOSum.IncrementBy(b.fullBW)
+\tb.fullBW = 0
+
 \tb.inRecovery = false
 \tb.packetConservation = false
 \tb.recoveryEntryPending = false
@@ -111,7 +128,7 @@ def patch_bbr(path: Path) -> None:
 
 \tb.s.SndCwnd = 1
 """
-    text = replace_once(text, old_rto, new_rto, "BBR save cwnd on RTO")
+    text = replace_once(text, old_rto, new_rto, "BBR save cwnd/reset fullBW on RTO")
 
     path.write_text(text)
 
@@ -126,7 +143,7 @@ def main() -> None:
 
     patch_tcp_stats(root / "pkg/tcpip/tcpip.go")
     patch_bbr(tcp / "bbr.go")
-    print(f"patched BBR RTO prior-cwnd save/restore at {root}")
+    print(f"patched BBR RTO prior-cwnd restore and fullBW reset at {root}")
 
 
 if __name__ == "__main__":
