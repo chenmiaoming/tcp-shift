@@ -42,43 +42,6 @@ def patch_tcp_stats(path: Path) -> None:
 def patch_bbr(path: Path) -> None:
     text = path.read_text()
 
-    # Insert a helper immediately before Update(), but leave Update's prelude
-    # untouched. Earlier post-patches own RTO-recovery restoration and the
-    # first-real-RTT pacing reinitialization, so matching the whole function
-    # would unnecessarily couple this experiment to their exact text/order.
-    marker = "// Update implements congestionControl.Update.\n"
-    helper = """func (b *bbrState) applyCwndControl(packetsAcked int) {
-\tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
-\t\treturn
-\t}
-
-\ttarget := b.bdpPackets(bbrCwndGain)
-\tinFlight := b.s.linuxLikePacketsInFlight()
-\tswitch b.mode {
-\tcase bbrStartup:
-\t\tb.s.SndCwnd += packetsAcked
-\t\tif b.maxBW != 0 && b.s.SndCwnd > 2*target {
-\t\t\tb.s.SndCwnd = 2 * target
-\t\t}
-\tcase bbrDrain, bbrProbeBW:
-\t\tif b.s.SndCwnd < target {
-\t\t\tb.s.SndCwnd += packetsAcked
-\t\t\tif b.s.SndCwnd > target {
-\t\t\t\tb.s.SndCwnd = target
-\t\t\t}
-\t\t} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
-\t\t\tb.s.SndCwnd = max(target, inFlight+packetsAcked)
-\t\t}
-\t}
-\tif b.s.SndCwnd < 4 {
-\t\tb.s.SndCwnd = 4
-\t}
-\tb.s.Ssthresh = b.s.SndCwnd
-}
-
-""" + marker
-    text = replace_once(text, marker, helper, "insert BBR cwnd-control helper")
-
     # Replace only the existing cwnd-control body inside Update(). RTO restore,
     # minRTT handling, pacing reinit, and mode updates remain exactly where the
     # preceding patches placed them.
@@ -116,7 +79,45 @@ def patch_bbr(path: Path) -> None:
         "reuse BBR cwnd control from generic Update",
     )
 
-    old_tail = """\tif b.packetConservation {
+    # Now that the original body is gone, inserting the helper cannot create a
+    # second match for old_body. Keep Update's prelude owned by earlier patches.
+    marker = "// Update implements congestionControl.Update.\n"
+    helper = """func (b *bbrState) applyCwndControl(packetsAcked int) {
+\tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
+\t\treturn
+\t}
+
+\ttarget := b.bdpPackets(bbrCwndGain)
+\tinFlight := b.s.linuxLikePacketsInFlight()
+\tswitch b.mode {
+\tcase bbrStartup:
+\t\tb.s.SndCwnd += packetsAcked
+\t\tif b.maxBW != 0 && b.s.SndCwnd > 2*target {
+\t\t\tb.s.SndCwnd = 2 * target
+\t\t}
+\tcase bbrDrain, bbrProbeBW:
+\t\tif b.s.SndCwnd < target {
+\t\t\tb.s.SndCwnd += packetsAcked
+\t\t\tif b.s.SndCwnd > target {
+\t\t\t\tb.s.SndCwnd = target
+\t\t\t}
+\t\t} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
+\t\t\tb.s.SndCwnd = max(target, inFlight+packetsAcked)
+\t\t}
+\t}
+\tif b.s.SndCwnd < 4 {
+\t\tb.s.SndCwnd = 4
+\t}
+\tb.s.Ssthresh = b.s.SndCwnd
+}
+
+""" + marker
+    text = replace_once(text, marker, helper, "insert BBR cwnd-control helper")
+
+    # Anchor only on the unique packet-conservation block. Another patch owns a
+    # recordRoundStart() helper between OnDeliveryRateSample and updateBandwidth,
+    # so assuming direct function adjacency here would be unnecessarily brittle.
+    old_conservation = """\tif b.packetConservation {
 \t\t// Subsequent ACKs in the first recovery round may grow cwnd only enough
 \t\t// to replace packets proven delivered, matching Linux's
 \t\t// max(cwnd, tcp_packets_in_flight(tp) + acked).
@@ -125,11 +126,8 @@ def patch_bbr(path: Path) -> None:
 \t\t}
 \t\tb.s.Ssthresh = b.s.SndCwnd
 \t}
-}
-
-func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 """
-    new_tail = """\tif b.packetConservation {
+    new_conservation = """\tif b.packetConservation {
 \t\t// Subsequent ACKs in the first recovery round may grow cwnd only enough
 \t\t// to replace packets proven delivered, matching Linux's
 \t\t// max(cwnd, tcp_packets_in_flight(tp) + acked).
@@ -155,11 +153,13 @@ func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 \t} else {
 \t\tstats.TCPShiftBBRRecoveryCwndNoGrowth.Increment()
 \t}
-}
-
-func (b *bbrState) updateBandwidth(rs deliveryRateSample) {
 """
-    text = replace_once(text, old_tail, new_tail, "BBR cwnd control after conservation round")
+    text = replace_once(
+        text,
+        old_conservation,
+        new_conservation,
+        "BBR cwnd control after conservation round",
+    )
 
     path.write_text(text)
 
