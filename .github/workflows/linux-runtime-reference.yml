@@ -1,0 +1,46 @@
+name: Linux TCP runtime reference
+
+on:
+  push:
+    branches:
+      - feat/linux-tcp-runtime
+    paths:
+      - '.github/workflows/linux-runtime-reference.yml'
+      - 'runtime/linux/**'
+      - 'scripts/build_lkl_reference.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lkl-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential \
+            libelf-dev libssl-dev dwarves
+
+      - name: Build pinned LKL networking reference
+        run: bash ./scripts/build_lkl_reference.sh
+
+      - name: Show networking configuration
+        run: |
+          grep -E '^(CONFIG_(NET|INET|TCP_CONG|DEFAULT_TCP_CONG|NET_SCH|HIGH_RES_TIMERS|VIRTIO_NET))' \
+            .bench/linux-runtime-reference/lkl.config | sort
+          echo "liblkl bytes: $(cat .bench/linux-runtime-reference/liblkl.bytes)"
+          echo "LKL commit: $(cat .bench/linux-runtime-reference/lkl.commit)"
+
+      - name: Upload reference provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-runtime-reference
+          path: .bench/linux-runtime-reference/
+          if-no-files-found: error
