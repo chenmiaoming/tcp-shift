@@ -83,8 +83,12 @@ case "$GVISOR_PATCHSET" in
     # and STARTUP full-bandwidth decisions without changing BBR control state.
     python3 "$ROOT/scripts/patch_rate_diagnostics.py" "$GVISOR_DIR"
     # gVisor does not call PostRecovery on RTORecovery -> Open. Preserve and
-    # restore BBR's prior model cwnd at the existing recover sequence boundary.
+    # restore BBR's prior model cwnd at the existing recover sequence boundary,
+    # and mirror Linux's full_bw reset on TCP_CA_Loss.
     python3 "$ROOT/scripts/patch_bbr_rto_cwnd.py" "$GVISOR_DIR"
+    # Single-variable STARTUP experiment: make pacing persistent like Linux BBR
+    # (nominal init, first-RTT reinit, and no decreases before full_bw).
+    python3 "$ROOT/scripts/patch_bbr_startup_pacing.py" "$GVISOR_DIR"
 
     gofmt -w \
       "$GVISOR_DIR/pkg/tcpip/tcpip.go" \
