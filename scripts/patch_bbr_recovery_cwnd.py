@@ -42,44 +42,12 @@ def patch_tcp_stats(path: Path) -> None:
 def patch_bbr(path: Path) -> None:
     text = path.read_text()
 
-    # Factor the existing open-state cwnd rule into a helper so the recovery
-    # custom-control path can apply exactly the same model, without duplicating
-    # policy or changing generic Update() semantics.
-    old_update = """// Update implements congestionControl.Update.
-func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.MonotonicTime) {
-\tb.updateMinRTT(rtt, ackTime)
-\tb.maybeReinitPacingFromRTT(rtt)
-\tb.updateMode(ackTime)
-
-\tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
-\t\treturn
-\t}
-
-\ttarget := b.bdpPackets(bbrCwndGain)
-\tinFlight := b.s.linuxLikePacketsInFlight()
-\tswitch b.mode {
-\tcase bbrStartup:
-\t\tb.s.SndCwnd += packetsAcked
-\t\tif b.maxBW != 0 && b.s.SndCwnd > 2*target {
-\t\t\tb.s.SndCwnd = 2 * target
-\t\t}
-\tcase bbrDrain, bbrProbeBW:
-\t\tif b.s.SndCwnd < target {
-\t\t\tb.s.SndCwnd += packetsAcked
-\t\t\tif b.s.SndCwnd > target {
-\t\t\t\tb.s.SndCwnd = target
-\t\t\t}
-\t\t} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
-\t\t\tb.s.SndCwnd = max(target, inFlight+packetsAcked)
-\t\t}
-\t}
-\tif b.s.SndCwnd < 4 {
-\t\tb.s.SndCwnd = 4
-\t}
-\tb.s.Ssthresh = b.s.SndCwnd
-}
-"""
-    new_update = """func (b *bbrState) applyCwndControl(packetsAcked int) {
+    # Insert a helper immediately before Update(), but leave Update's prelude
+    # untouched. Earlier post-patches own RTO-recovery restoration and the
+    # first-real-RTT pacing reinitialization, so matching the whole function
+    # would unnecessarily couple this experiment to their exact text/order.
+    marker = "// Update implements congestionControl.Update.\n"
+    helper = """func (b *bbrState) applyCwndControl(packetsAcked int) {
 \tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
 \t\treturn
 \t}
@@ -108,15 +76,45 @@ func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.Mon
 \tb.s.Ssthresh = b.s.SndCwnd
 }
 
-// Update implements congestionControl.Update for the generic open-state path.
-func (b *bbrState) Update(packetsAcked int, rtt time.Duration, ackTime tcpip.MonotonicTime) {
-\tb.updateMinRTT(rtt, ackTime)
-\tb.maybeReinitPacingFromRTT(rtt)
-\tb.updateMode(ackTime)
-\tb.applyCwndControl(packetsAcked)
-}
+""" + marker
+    text = replace_once(text, marker, helper, "insert BBR cwnd-control helper")
+
+    # Replace only the existing cwnd-control body inside Update(). RTO restore,
+    # minRTT handling, pacing reinit, and mode updates remain exactly where the
+    # preceding patches placed them.
+    old_body = """\tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
+\t\treturn
+\t}
+
+\ttarget := b.bdpPackets(bbrCwndGain)
+\tinFlight := b.s.linuxLikePacketsInFlight()
+\tswitch b.mode {
+\tcase bbrStartup:
+\t\tb.s.SndCwnd += packetsAcked
+\t\tif b.maxBW != 0 && b.s.SndCwnd > 2*target {
+\t\t\tb.s.SndCwnd = 2 * target
+\t\t}
+\tcase bbrDrain, bbrProbeBW:
+\t\tif b.s.SndCwnd < target {
+\t\t\tb.s.SndCwnd += packetsAcked
+\t\t\tif b.s.SndCwnd > target {
+\t\t\t\tb.s.SndCwnd = target
+\t\t\t}
+\t\t} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
+\t\t\tb.s.SndCwnd = max(target, inFlight+packetsAcked)
+\t\t}
+\t}
+\tif b.s.SndCwnd < 4 {
+\t\tb.s.SndCwnd = 4
+\t}
+\tb.s.Ssthresh = b.s.SndCwnd
 """
-    text = replace_once(text, old_update, new_update, "factor BBR cwnd control")
+    text = replace_once(
+        text,
+        old_body,
+        "\tb.applyCwndControl(packetsAcked)\n",
+        "reuse BBR cwnd control from generic Update",
+    )
 
     old_tail = """\tif b.packetConservation {
 \t\t// Subsequent ACKs in the first recovery round may grow cwnd only enough
