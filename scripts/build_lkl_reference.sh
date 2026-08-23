@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PIN_FILE="$ROOT/runtime/linux/lkl-reference.commit"
 DEPS_DIR="${DEPS_DIR:-$ROOT/.deps}"
 SRC="$DEPS_DIR/lkl-linux"
-REF="${LKL_REF:-$(tr -d '[:space:]' < "$PIN_FILE") }"
+REF="${LKL_REF:-$(tr -d '[:space:]' < "$PIN_FILE")}" 
 
 if [[ -z "$REF" ]]; then
   echo "empty LKL reference" >&2
