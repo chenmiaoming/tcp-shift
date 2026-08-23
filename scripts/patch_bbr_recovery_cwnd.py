@@ -11,7 +11,7 @@ gVisor's generic congestionControl.Update() is deliberately skipped whenever
 FastRecovery.Active is true. tcp-shift already runs its delivery-rate consumer
 before legacy/RACK recovery retransmits, so this narrow adapter performs only
 the missing BBR cwnd step there after the conservation round. Open-state ACKs
-continue to use Update(), avoiding double growth.
+and the existing Update() implementation are left completely unchanged.
 """
 
 from __future__ import annotations
@@ -42,47 +42,16 @@ def patch_tcp_stats(path: Path) -> None:
 def patch_bbr(path: Path) -> None:
     text = path.read_text()
 
-    # Replace only the existing cwnd-control body inside Update(). RTO restore,
-    # minRTT handling, pacing reinit, and mode updates remain exactly where the
-    # preceding patches placed them.
-    old_body = """\tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
-\t\treturn
-\t}
-
-\ttarget := b.bdpPackets(bbrCwndGain)
-\tinFlight := b.s.linuxLikePacketsInFlight()
-\tswitch b.mode {
-\tcase bbrStartup:
-\t\tb.s.SndCwnd += packetsAcked
-\t\tif b.maxBW != 0 && b.s.SndCwnd > 2*target {
-\t\t\tb.s.SndCwnd = 2 * target
-\t\t}
-\tcase bbrDrain, bbrProbeBW:
-\t\tif b.s.SndCwnd < target {
-\t\t\tb.s.SndCwnd += packetsAcked
-\t\t\tif b.s.SndCwnd > target {
-\t\t\t\tb.s.SndCwnd = target
-\t\t\t}
-\t\t} else if b.s.SndCwnd > 2*target && inFlight < b.s.SndCwnd {
-\t\t\tb.s.SndCwnd = max(target, inFlight+packetsAcked)
-\t\t}
-\t}
-\tif b.s.SndCwnd < 4 {
-\t\tb.s.SndCwnd = 4
-\t}
-\tb.s.Ssthresh = b.s.SndCwnd
-"""
-    text = replace_once(
-        text,
-        old_body,
-        "\tb.applyCwndControl(packetsAcked)\n",
-        "reuse BBR cwnd control from generic Update",
-    )
-
-    # Now that the original body is gone, inserting the helper cannot create a
-    # second match for old_body. Keep Update's prelude owned by earlier patches.
+    # Keep the generic Update() path byte-for-byte unchanged. This temporary
+    # experiment needs only the policy equivalent while FastRecovery.Active,
+    # where gVisor suppresses Update() entirely. Duplicating the compact policy
+    # here also avoids coupling this post-patch to RTO/pacing instrumentation
+    # that legitimately adds prelude code to Update().
     marker = "// Update implements congestionControl.Update.\n"
-    helper = """func (b *bbrState) applyCwndControl(packetsAcked int) {
+    helper = """// applyRecoveryCwndControl mirrors the current tcp-shift BBR cwnd policy,
+// but is called only from the delivery-rate path while FastRecovery.Active and
+// after the first packet-conservation round has ended.
+func (b *bbrState) applyRecoveryCwndControl(packetsAcked int) {
 \tif packetsAcked <= 0 || b.mode == bbrProbeRTT || b.packetConservation || b.recoveryEntryPending {
 \t\treturn
 \t}
@@ -112,7 +81,7 @@ def patch_bbr(path: Path) -> None:
 }
 
 """ + marker
-    text = replace_once(text, marker, helper, "insert BBR cwnd-control helper")
+    text = replace_once(text, marker, helper, "insert recovery-only BBR cwnd helper")
 
     # Anchor only on the unique packet-conservation block. Another patch owns a
     # recordRoundStart() helper between OnDeliveryRateSample and updateBandwidth,
@@ -145,7 +114,7 @@ def patch_bbr(path: Path) -> None:
 \t// delivery consumer is tcp-shift's custom cong_control-equivalent, so apply
 \t// that missing cwnd step here before recovery transmits more data.
 \tbefore := b.s.SndCwnd
-\tb.applyCwndControl(acked)
+\tb.applyRecoveryCwndControl(acked)
 \tstats.TCPShiftBBRRecoveryCwndUpdates.Increment()
 \tstats.TCPShiftBBRRecoveryCwndAckedPacketsSum.IncrementBy(nonNegativeUint(acked))
 \tif b.s.SndCwnd > before {
@@ -174,7 +143,7 @@ def main() -> None:
 
     patch_tcp_stats(root / "pkg/tcpip/tcpip.go")
     patch_bbr(tcp / "bbr.go")
-    print(f"patched BBR cwnd control after recovery conservation round at {root}")
+    print(f"patched recovery-only BBR cwnd control after conservation round at {root}")
 
 
 if __name__ == "__main__":
