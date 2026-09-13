@@ -107,3 +107,19 @@ target_link_libraries(tcp-shift-p1 PRIVATE
     tcp_shift_probe
 )
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)
+
+# Deterministic, unprivileged contract for the production L3 TX path. A
+# nonblocking SOCK_DGRAM socketpair provides packet semantics and is filled to
+# EAGAIN so the same queue/flush code used by TUN is exercised without a test
+# hook in the runtime.
+add_executable(tcp-shift-p1-backpressure-contract
+    src/tests/l3_tun_backpressure_test.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p1-backpressure-contract PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p1-backpressure-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p1-backpressure-contract PRIVATE tcp_shift_l3)
+target_link_options(tcp-shift-p1-backpressure-contract PRIVATE -Wl,--gc-sections)
