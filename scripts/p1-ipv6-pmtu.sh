@@ -214,7 +214,11 @@ ip -6 route replace "$WAN_CLIENT_IP"/128 dev "$WAN_HOST_IF" mtu "$PATH_MTU"
 ip -6 route get "$WAN_CLIENT_IP" > "$OUT/egress-route.txt"
 grep -F "mtu $PATH_MTU" "$OUT/egress-route.txt" >/dev/null
 
-timeout 4 tcpdump -i "$TUN_NAME" -c 1 -nn -vv -l \
+# Both the oversized echo request and the resulting PTB are ICMPv6 packets
+# destined for lwIP and therefore visible on the TUN. Capture two packets so
+# the request cannot satisfy the capture by itself; then require the second
+# semantic event to be a Packet Too Big advertising the configured path MTU.
+timeout 4 tcpdump -i "$TUN_NAME" -c 2 -nn -vv -l \
     "icmp6 and dst host $LWIP_IP" > "$OUT/ptb-wire.txt" 2>&1 &
 CAPTURE_PID=$!
 sleep 0.1
