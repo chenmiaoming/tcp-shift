@@ -21,6 +21,7 @@ on:
       - 'scripts/p2-backend-recovery-smoke.sh'
       - 'scripts/p2-reset-recovery-smoke.sh'
       - 'scripts/p2-concurrency-smoke.sh'
+      - 'scripts/p2-active-shutdown-smoke.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -63,6 +64,7 @@ jobs:
           sh -n scripts/p2-backend-recovery-smoke.sh
           sh -n scripts/p2-reset-recovery-smoke.sh
           sh -n scripts/p2-concurrency-smoke.sh
+          sh -n scripts/p2-active-shutdown-smoke.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
@@ -99,6 +101,9 @@ jobs:
       - name: Exercise concurrent bridge flows
         run: sh scripts/p2-concurrency-smoke.sh
 
+      - name: Exercise active-flow shutdown cleanup
+        run: sh scripts/p2-active-shutdown-smoke.sh
+
       - name: Exercise IPv6 public bridge to IPv4 loopback backend
         run: |
           sudo env TCP_SHIFT_P2_IPV6_BINARY="$PWD/.build/tcp-shift-p2-ipv6" \
@@ -117,5 +122,6 @@ jobs:
             .build/p2-backend-recovery-ci
             .build/p2-reset-recovery-ci
             .build/p2-concurrency-ci
+            .build/p2-active-shutdown-ci
             .build/p2-ipv6-bridge-ci
           if-no-files-found: warn
