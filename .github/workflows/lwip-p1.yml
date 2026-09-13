@@ -73,6 +73,7 @@ jobs:
           cmake --build .build --target \
             tcp-shift-p1 \
             tcp-shift-p1-ipv6 \
+            tcp-shift-p1-ipv6-ext-header-probe \
             tcp-shift-p1-backpressure-contract \
             tcp-shift-p1-rx-contract \
             --parallel
@@ -111,7 +112,9 @@ jobs:
 
       - name: Exercise product-owned IPv6 nft ingress lifecycle
         run: |
-          sudo env TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
+          sudo env \
+            TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
+            TCP_SHIFT_P1_IPV6_EXT_PROBE="$PWD/.build/tcp-shift-p1-ipv6-ext-header-probe" \
             sh scripts/p1-ipv6-nft-lifecycle.sh
 
       - name: Upload P1 diagnostics
