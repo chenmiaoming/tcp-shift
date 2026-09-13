@@ -37,10 +37,12 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
+            conntrack \
             git \
             iproute2 \
             iputils-ping \
             libcap2-bin \
+            nftables \
             python3
 
       - name: Validate smoke harness
@@ -49,6 +51,7 @@ jobs:
           sh -n scripts/p1-ipv4-smoke.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
+          sudo nft list ruleset > /dev/null
 
       - name: Build pinned P1 runtime
         run: |
@@ -56,13 +59,13 @@ jobs:
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target tcp-shift-p1 --parallel
 
-      - name: Grant only TUN setup capability to the bring-up binary
+      - name: Grant only network-admin capability to the bring-up binary
         run: |
           sudo setcap cap_net_admin+ep .build/tcp-shift-p1
           getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
           grep -F 'cap_net_admin=ep' .build/p1-capability.txt
 
-      - name: Exercise IPv4 ICMP and TCP through lwIP
+      - name: Exercise direct and DNAT IPv4 through lwIP
         run: sh scripts/p1-ipv4-smoke.sh
 
       - name: Upload P1 diagnostics
