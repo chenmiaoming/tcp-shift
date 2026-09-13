@@ -22,6 +22,7 @@ Implemented and compiling under `-Werror`:
 - the FIFO is capped at 64 packets and 96 KiB and records peak queued bytes and queue drops;
 - once a packet is queued, subsequent packets queue behind it so TUN packet order is preserved;
 - `src/runtime/lwip_loop.*` uses epoll and `sys_timeouts_sleeptime()` / `sys_check_timeouts()`; there is no fixed polling tick;
+- event-loop telemetry records waits, ready wakes, timeout wakes, EINTR, TUN readable wakes, and TUN writable wakes;
 - EPOLLOUT is armed only while the bounded TUN TX queue is non-empty;
 - `src/lwip/probe_listener.*` installs a minimal raw-API IPv4 TCP listener used only to qualify SYN/SYN-ACK/accept behavior before P2;
 - `tcp-shift-p1` is a temporary privileged bring-up executable that owns TUN, host IPv4 interface configuration, lwIP netif state, timers, and packet I/O.
@@ -30,8 +31,7 @@ The nonpersistent TUN fd is the rollback boundary for host-side address/MTU/conn
 
 Still required before P1a exit:
 
-- explicit idle-wakeup measurement;
-- failure-path tests for TUN TX queue pressure and cleanup;
+- deterministic failure-path tests for TUN TX queue pressure, FIFO ordering, queue ceilings, and cleanup;
 - production lifecycle ownership for narrow forwarding/NAT rules instead of CI-only harness rules;
 - checksum/MTU boundary qualification beyond the normal 1500-byte smoke path.
 
@@ -94,9 +94,30 @@ rx_packets=12 tx_packets=7 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=2 
 
 The harness also required conntrack evidence for both the original external tuple and the reply tuple involving lwIP. It then verified that the nonpersistent TUN, namespace, veth pair, nftables table, and temporary forwarding rules were removed.
 
-The first DNAT attempt intentionally remained a failed CI record: run `34742949259` showed that GitHub runners have Docker's IPv4 `FORWARD` policy set to `DROP`. Routes and DNAT were present, but forwarded TCP timed out. The retained nftables/conntrack/runtime diagnostics isolated that environment prerequisite. The harness now inserts two exact interface/IP/port ACCEPT rules during the test and removes them during cleanup. This is CI scaffolding, not product firewall behavior.
+The first DNAT attempt remains a useful failed CI record: run `34742949259` showed that GitHub runners have Docker's IPv4 `FORWARD` policy set to `DROP`. Routes and DNAT were present, but forwarded TCP timed out. Retained nftables/conntrack/runtime diagnostics isolated that environment prerequisite. The harness now inserts two exact interface/IP/port ACCEPT rules during the test and removes them during cleanup. This is CI scaffolding, not product firewall behavior.
 
-For commit `4d3141499cfd1624f6a15552d509edf73a30e11a`, P0 qualification, upstream provenance, and the P1 IPv4 behavior workflow all passed.
+### Run 34743203062: measured idle event-loop behavior
+
+The workflow first ran a separate two-second idle-only P1 process so traffic from the later ICMP/TCP tests could not contaminate the measurement. The runtime reported:
+
+```text
+loop_wait_calls=4
+loop_ready_wakeups=1
+loop_timeout_wakeups=2
+loop_eintr_wakeups=1
+loop_tun_readable_wakeups=1
+loop_tun_writable_wakeups=0
+```
+
+The gate allows lwIP's own timer deadlines and rejects high-frequency polling. Four `epoll_wait` calls in two seconds is comfortably below the deliberately loose initial ceiling of 32. Most importantly, an empty TX queue produced zero TUN writable wakeups. The single EINTR is the terminating SIGTERM; the single readable wake occurred during interface bring-up and produced one RX packet with no TX response.
+
+The workflow then restarted a fresh process and re-ran the normal packet path. ICMP remained 3/3, direct TCP and DNAT TCP both connected, and the active runtime reported:
+
+```text
+rx_packets=12 tx_packets=7 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=2 tcp_rx_bytes=0 tcp_errors=0 loop_wait_calls=12 loop_ready_wakeups=8 loop_timeout_wakeups=3 loop_eintr_wakeups=1 loop_tun_readable_wakeups=8 loop_tun_writable_wakeups=0
+```
+
+For commit `3b63669d14fc7cbf40d048e45b729c7950c352d8`, P0 qualification, upstream provenance, and the P1 IPv4 behavior workflow all passed. The measured idle-wakeup requirement is therefore satisfied for the current IPv4 event loop.
 
 ## Temporary IPv4 bring-up shape
 
@@ -116,7 +137,7 @@ The process creates `ts0`, sets its host-side address to `10.0.0.1`, sets MTU 15
 
 ## P1b: IPv6
 
-Immediately after the remaining IPv4 event-loop/backpressure/lifecycle invariants are qualified, extend the same adapter rather than creating a parallel runtime. Required work includes IPv6 address configuration, `netif->output_ip6`, `ip6_input`, ICMPv6, TCP, Packet Too Big/PMTU validation, and extension-header-safe netfilter rules.
+Immediately after the remaining IPv4 backpressure/lifecycle/MTU invariants are qualified, extend the same adapter rather than creating a parallel runtime. Required work includes IPv6 address configuration, `netif->output_ip6`, `ip6_input`, ICMPv6, TCP, Packet Too Big/PMTU validation, and extension-header-safe netfilter rules.
 
 IPv6-only deployment is an exit requirement because it is common in the low-cost VPS environments the product targets.
 
@@ -124,9 +145,7 @@ IPv6-only deployment is an exit requirement because it is common in the low-cost
 
 There is one mutable lwIP owner. TUN RX, TUN TX retry, lwIP timers, and later backend sockets all execute on that owner. No per-flow worker threads are introduced.
 
-The loop derives its sleep deadline from lwIP timers. It does not use a fixed periodic polling tick. TUN writable interest is disabled by default and enabled only while at least one whole packet is queued after backpressure.
-
-P1a still needs a measured idle-wakeup bound so this design property is evidence rather than inspection alone.
+The loop derives its sleep deadline from lwIP timers. It does not use a fixed periodic polling tick. TUN writable interest is disabled by default and enabled only while at least one whole packet is queued after backpressure. Run `34743203062` turns this from an inspection-only property into measured evidence.
 
 ## Packet ownership
 
