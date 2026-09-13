@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 OUT="$BUILD/p1-ipv6-nft-ci"
 BINARY=${TCP_SHIFT_P1_IPV6_BINARY:-"$BUILD/tcp-shift-p1-ipv6"}
+EXT_PROBE=${TCP_SHIFT_P1_IPV6_EXT_PROBE:-"$BUILD/tcp-shift-p1-ipv6-ext-header-probe"}
 TUN_NAME=${TCP_SHIFT_P1_IPV6_NFT_TUN_NAME:-tsp1v6nft0}
 LWIP_IP=${TCP_SHIFT_P1_IPV6_NFT_LWIP_IP:-fd00:198:18::2}
 HOST_CIDR=${TCP_SHIFT_P1_IPV6_NFT_HOST_CIDR:-fd00:198:18::1/126}
@@ -19,6 +20,7 @@ WAN_CLIENT_CIDR=${TCP_SHIFT_P1_IPV6_NFT_WAN_CLIENT_CIDR:-2001:db8:101::2/64}
 PRODUCT_TABLE=tcp_shift_p1
 UNRELATED_TABLE=tcp_shift_p1_unrelated_v6_ci
 PID=
+CAPTURE_PID=
 OLD_FORWARD=
 FORWARD_RULES=0
 
@@ -32,6 +34,10 @@ mkdir -p "$OUT"
     echo "missing IPv6 P1 binary: $BINARY" >&2
     exit 1
 }
+[ -x "$EXT_PROBE" ] || {
+    echo "missing IPv6 extension-header probe: $EXT_PROBE" >&2
+    exit 1
+}
 [ -c /dev/net/tun ] || {
     echo "/dev/net/tun is unavailable" >&2
     exit 1
@@ -42,6 +48,10 @@ command -v nft >/dev/null 2>&1 || {
 }
 command -v ip6tables >/dev/null 2>&1 || {
     echo "ip6tables is unavailable" >&2
+    exit 1
+}
+command -v tcpdump >/dev/null 2>&1 || {
+    echo "tcpdump is unavailable" >&2
     exit 1
 }
 
@@ -83,6 +93,11 @@ stop_runtime()
 cleanup()
 {
     set +e
+    if [ -n "${CAPTURE_PID:-}" ] && kill -0 "$CAPTURE_PID" 2>/dev/null; then
+        kill "$CAPTURE_PID" >/dev/null 2>&1 || true
+        wait "$CAPTURE_PID" >/dev/null 2>&1 || true
+    fi
+    CAPTURE_PID=
     stop_runtime
     capture_state
     remove_forward_rules
@@ -229,7 +244,6 @@ wait_runtime_ready
 
 nft list table ip6 "$PRODUCT_TABLE" > "$OUT/product-table-live.txt"
 grep -F "ip6 daddr $WAN_HOST_IP" "$OUT/product-table-live.txt" >/dev/null
-grep -F 'meta l4proto tcp' "$OUT/product-table-live.txt" >/dev/null
 grep -F "tcp dport $TCP_PORT" "$OUT/product-table-live.txt" >/dev/null
 grep -F "$LWIP_IP" "$OUT/product-table-live.txt" >/dev/null
 
@@ -238,6 +252,32 @@ ip6tables -w -I FORWARD 1 -i "$WAN_HOST_IF" -o "$TUN_NAME" \
 ip6tables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
     -p tcp -s "$LWIP_IP" --sport "$TCP_PORT" -j ACCEPT
 FORWARD_RULES=1
+
+# nft canonical output may fold an explicit `meta l4proto tcp` dependency into
+# `tcp dport`. Prove the property behaviorally instead: send a valid TCP SYN
+# behind an IPv6 Hop-by-Hop header and require that the DNATted packet appears
+# on the TUN with the internal lwIP destination.
+timeout 4 tcpdump -i "$TUN_NAME" -c 1 -nn -vv -l \
+    "ip6 and src host $WAN_CLIENT_IP" > "$OUT/extension-header-wire.txt" 2>&1 &
+CAPTURE_PID=$!
+sleep 0.1
+ip netns exec "$NS_NAME" "$EXT_PROBE" \
+    "$WAN_CLIENT_IP" "$WAN_HOST_IP" 40183 "$TCP_PORT" \
+    > "$OUT/extension-header-probe.txt" 2> "$OUT/extension-header-probe.stderr"
+if ! wait "$CAPTURE_PID"; then
+    CAPTURE_PID=
+    cat "$OUT/extension-header-probe.stderr" >&2 || true
+    cat "$OUT/extension-header-wire.txt" >&2 || true
+    cat "$OUT/product-table-live.txt" >&2 || true
+    echo "IPv6 extension-header packet did not traverse DNAT into TUN" >&2
+    exit 1
+fi
+CAPTURE_PID=
+grep -F 'ipv6_extension_header_syn_sent' "$OUT/extension-header-probe.txt" >/dev/null
+grep -F "$WAN_CLIENT_IP" "$OUT/extension-header-wire.txt" >/dev/null
+grep -F "$LWIP_IP" "$OUT/extension-header-wire.txt" >/dev/null
+nft list table ip6 "$PRODUCT_TABLE" > "$OUT/product-table-after-extension.txt"
+printf 'ipv6_extension_header_dnat=ok\n' | tee "$OUT/extension-header-summary.txt"
 
 if ! ip netns exec "$NS_NAME" python3 - "$WAN_HOST_IP" "$TCP_PORT" \
     > "$OUT/public-connect.txt" 2> "$OUT/public-connect.stderr" <<'PY'
@@ -254,7 +294,7 @@ PY
 then
     capture_state
     cat "$OUT/public-connect.stderr" >&2 || true
-    cat "$OUT/product-table-live.txt" >&2 || true
+    cat "$OUT/product-table-after-extension.txt" >&2 || true
     cat "$OUT/runtime.stderr" >&2 || true
     echo "product-owned IPv6 DNAT connection failed" >&2
     exit 1
