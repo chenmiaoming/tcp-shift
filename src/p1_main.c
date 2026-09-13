@@ -130,13 +130,15 @@ int main(int argc, char **argv)
     }
 
     fprintf(stderr,
-            "tcp-shift-p1: rx_packets=%llu tx_packets=%llu "
-            "tx_queue_peak_bytes=%u tx_queue_drops=%llu "
+            "tcp-shift-p1: rx_packets=%llu rx_drops=%llu rx_errors=%llu "
+            "tx_packets=%llu tx_queue_peak_bytes=%u tx_queue_drops=%llu "
             "tcp_accepts=%llu tcp_rx_bytes=%llu tcp_errors=%llu "
             "loop_wait_calls=%llu loop_ready_wakeups=%llu "
             "loop_timeout_wakeups=%llu loop_eintr_wakeups=%llu "
             "loop_tun_readable_wakeups=%llu loop_tun_writable_wakeups=%llu\n",
             (unsigned long long)l3.rx_packets,
+            (unsigned long long)l3.rx_drops,
+            (unsigned long long)l3.rx_errors,
             (unsigned long long)l3.tx_packets,
             l3.tx_queue_peak_bytes,
             (unsigned long long)l3.tx_queue_drops,
