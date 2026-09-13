@@ -4,6 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 COMPILE_COMMANDS="$BUILD/compile_commands.json"
+TARGET_MANIFEST="$BUILD/CMakeFiles/tcp_shift_lwip.dir/build.make"
 BINARY="$BUILD/tcp-shift"
 CONTRACT="$BUILD/tcp-shift-config-contract"
 MAX_BINARY_BYTES=${TCP_SHIFT_P0_MAX_BINARY_BYTES:-524288}
@@ -16,16 +17,21 @@ fail()
 }
 
 [ -f "$COMPILE_COMMANDS" ] || fail "missing compile_commands.json"
+[ -f "$TARGET_MANIFEST" ] || fail "missing tcp_shift_lwip build manifest"
 [ -x "$BINARY" ] || fail "missing tcp-shift binary"
 [ -x "$CONTRACT" ] || fail "missing config contract binary"
 
+# Filelists.cmake defines broad EXCLUDE_FROM_ALL targets, so the global CMake
+# compile database can contain commands for sources that were never built.
+# Enforce the product boundary against the manifest for the actual linked
+# tcp_shift_lwip target instead.
 for required in \
     '/src/core/tcp.c' \
     '/src/core/tcp_in.c' \
     '/src/core/tcp_out.c' \
     '/src/core/ipv4/ip4.c'
 do
-    grep -F "$required" "$COMPILE_COMMANDS" >/dev/null || \
+    grep -F "$required" "$TARGET_MANIFEST" >/dev/null || \
         fail "required lwIP source not compiled: $required"
 done
 
@@ -36,7 +42,7 @@ for forbidden in \
     '/src/netif/lowpan6' \
     '/contrib/ports/unix/port/sys_arch.c'
 do
-    if grep -F "$forbidden" "$COMPILE_COMMANDS" >/dev/null; then
+    if grep -F "$forbidden" "$TARGET_MANIFEST" >/dev/null; then
         fail "forbidden P0 source compiled: $forbidden"
     fi
 done
