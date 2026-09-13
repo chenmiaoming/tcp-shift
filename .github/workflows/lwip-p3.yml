@@ -1,0 +1,74 @@
+name: lwIP P3 memory baseline
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p3.yml'
+      - 'CMakeLists.txt'
+      - 'src/bridge/**'
+      - 'src/runtime/**'
+      - 'src/lwip/**'
+      - 'src/host/**'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p3-memory-baseline.sh'
+      - 'docs/milestones/p3-memory-capacity.md'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  staged-memory-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P3 dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            python3
+
+      - name: Validate P3 harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p3-memory-baseline.sh
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          test -r /proc/self/smaps_rollup
+
+      - name: Build pinned bridge runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Measure staged idle connection memory
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-memory-baseline.sh
+
+      - name: Upload P3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p3-memory-baseline
+          path: .build/p3-memory-baseline
+          if-no-files-found: warn
