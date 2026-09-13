@@ -193,7 +193,8 @@ static int tcp_shift_nft_ingress_install(struct tcp_shift_nft_ingress *ingress,
     int destination_length;
     int length;
 
-    if (ingress == NULL || public_port == 0U || target_port == 0U) {
+    if (ingress == NULL || table_name == NULL || public_address == NULL ||
+        target_address == NULL || public_port == 0U || target_port == 0U) {
         errno = EINVAL;
         return -1;
     }
