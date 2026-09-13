@@ -7,7 +7,7 @@ COMPILE_COMMANDS="$BUILD/compile_commands.json"
 BINARY="$BUILD/tcp-shift"
 CONTRACT="$BUILD/tcp-shift-config-contract"
 MAX_BINARY_BYTES=${TCP_SHIFT_P0_MAX_BINARY_BYTES:-524288}
-MAX_RSS_KIB=${TCP_SHIFT_P0_MAX_RSS_KIB:-16384}
+RSS_LIMIT_KIB=${TCP_SHIFT_P0_MAX_RSS_KIB:-16384}
 
 fail()
 {
@@ -57,16 +57,10 @@ BINARY_BYTES=$(stat -c '%s' "$BINARY")
 
 command -v /usr/bin/time >/dev/null 2>&1 || fail "/usr/bin/time is required"
 /usr/bin/time -f '%M' -o "$BUILD/p0-maxrss-kib.txt" "$BINARY" >/dev/null
-MAX_RSS_KIB=$(tr -d '[:space:]' < "$BUILD/p0-maxrss-kib.txt")
-case "$MAX_RSS_KIB" in
-    ''|*[!0-9]*) fail "invalid maximum RSS sample: $MAX_RSS_KIB" ;;
+RSS_SAMPLE_KIB=$(tr -d '[:space:]' < "$BUILD/p0-maxrss-kib.txt")
+case "$RSS_SAMPLE_KIB" in
+    ''|*[!0-9]*) fail "invalid maximum RSS sample: $RSS_SAMPLE_KIB" ;;
 esac
-[ "$MAX_RSS_KIB" -le "$MAX_RSS_KIB" ] || fail "unreachable RSS check"
-
-# Preserve the configured gate separately: the sample variable intentionally
-# has a distinct name below to keep the report unambiguous.
-RSS_SAMPLE_KIB=$MAX_RSS_KIB
-RSS_LIMIT_KIB=${TCP_SHIFT_P0_MAX_RSS_KIB:-16384}
 [ "$RSS_SAMPLE_KIB" -le "$RSS_LIMIT_KIB" ] || \
     fail "maximum RSS $RSS_SAMPLE_KIB KiB exceeds $RSS_LIMIT_KIB KiB"
 
