@@ -8,10 +8,13 @@
 
 #include "lwip/err.h"
 #include "lwip/ip4.h"
+#include "lwip/ip6.h"
+#include "lwip/ip6_addr.h"
 #include "lwip/pbuf.h"
 
 #define TCP_SHIFT_L3_TUN_MAX_IOV 64U
 #define TCP_SHIFT_L3_TUN_RX_BUFFER 2048U
+#define TCP_SHIFT_IP_VERSION_SHIFT 4U
 
 static int tcp_shift_l3_tun_write_packet(struct tcp_shift_l3_tun *l3,
                                          struct pbuf *p)
@@ -99,14 +102,10 @@ static void tcp_shift_l3_tun_pop_tx(struct tcp_shift_l3_tun *l3)
     pbuf_free(p);
 }
 
-static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
-                                           struct pbuf *p,
-                                           const ip4_addr_t *destination)
+static err_t tcp_shift_l3_tun_output_packet(struct netif *netif, struct pbuf *p)
 {
     struct tcp_shift_l3_tun *l3 = netif->state;
     int result;
-
-    (void)destination;
 
     if (l3 == NULL || l3->tun_fd < 0 || p == NULL) {
         return ERR_IF;
@@ -127,6 +126,44 @@ static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
     return ERR_IF;
 }
 
+static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
+                                           struct pbuf *p,
+                                           const ip4_addr_t *destination)
+{
+    (void)destination;
+    return tcp_shift_l3_tun_output_packet(netif, p);
+}
+
+static err_t tcp_shift_l3_tun_output_ipv6(struct netif *netif,
+                                           struct pbuf *p,
+                                           const ip6_addr_t *destination)
+{
+    (void)destination;
+    return tcp_shift_l3_tun_output_packet(netif, p);
+}
+
+static err_t tcp_shift_l3_tun_input(struct pbuf *p, struct netif *netif)
+{
+    unsigned char first_byte;
+    unsigned version;
+
+    if (p == NULL || netif == NULL || p->tot_len == 0U) {
+        return ERR_ARG;
+    }
+    if (pbuf_copy_partial(p, &first_byte, 1U, 0U) != 1U) {
+        return ERR_VAL;
+    }
+
+    version = (unsigned)(first_byte >> TCP_SHIFT_IP_VERSION_SHIFT);
+    if (version == 4U) {
+        return ip4_input(p, netif);
+    }
+    if (version == 6U) {
+        return ip6_input(p, netif);
+    }
+    return ERR_VAL;
+}
+
 static err_t tcp_shift_l3_tun_netif_init(struct netif *netif)
 {
     if (netif == NULL || netif->state == NULL) {
@@ -137,7 +174,16 @@ static err_t tcp_shift_l3_tun_netif_init(struct netif *netif)
     netif->name[1] = 's';
     netif->mtu = TCP_SHIFT_L3_TUN_MTU;
     netif->output = tcp_shift_l3_tun_output_ipv4;
+    netif->output_ip6 = tcp_shift_l3_tun_output_ipv6;
     return ERR_OK;
+}
+
+static void tcp_shift_l3_tun_finish_attach(struct tcp_shift_l3_tun *l3)
+{
+    l3->attached = 1U;
+    netif_set_default(&l3->netif);
+    netif_set_up(&l3->netif);
+    netif_set_link_up(&l3->netif);
 }
 
 int tcp_shift_l3_tun_attach_ipv4(struct tcp_shift_l3_tun *l3,
@@ -156,16 +202,39 @@ int tcp_shift_l3_tun_attach_ipv4(struct tcp_shift_l3_tun *l3,
     l3->tun_fd = tun_fd;
 
     if (netif_add(&l3->netif, address, netmask, gateway, l3,
-                  tcp_shift_l3_tun_netif_init, ip4_input) == NULL) {
+                  tcp_shift_l3_tun_netif_init,
+                  tcp_shift_l3_tun_input) == NULL) {
         l3->tun_fd = -1;
         errno = EIO;
         return -1;
     }
 
-    l3->attached = 1U;
-    netif_set_default(&l3->netif);
-    netif_set_up(&l3->netif);
-    netif_set_link_up(&l3->netif);
+    tcp_shift_l3_tun_finish_attach(l3);
+    return 0;
+}
+
+int tcp_shift_l3_tun_attach_ipv6(struct tcp_shift_l3_tun *l3,
+                                 int tun_fd,
+                                 const ip6_addr_t *address)
+{
+    if (l3 == NULL || tun_fd < 0 || address == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(l3, 0, sizeof(*l3));
+    l3->tun_fd = tun_fd;
+
+    if (netif_add_noaddr(&l3->netif, l3, tcp_shift_l3_tun_netif_init,
+                         tcp_shift_l3_tun_input) == NULL) {
+        l3->tun_fd = -1;
+        errno = EIO;
+        return -1;
+    }
+
+    netif_ip6_addr_set(&l3->netif, 0, address);
+    netif_ip6_addr_set_state(&l3->netif, 0, IP6_ADDR_PREFERRED);
+    tcp_shift_l3_tun_finish_attach(l3);
     return 0;
 }
 
