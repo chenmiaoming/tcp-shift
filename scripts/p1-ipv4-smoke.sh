@@ -19,13 +19,13 @@ WAN_HOST_CIDR=${TCP_SHIFT_P1_WAN_HOST_CIDR:-198.51.100.1/24}
 WAN_CLIENT_IP=${TCP_SHIFT_P1_WAN_CLIENT_IP:-198.51.100.2}
 WAN_CLIENT_CIDR=${TCP_SHIFT_P1_WAN_CLIENT_CIDR:-198.51.100.2/24}
 NFT_TABLE=${TCP_SHIFT_P1_NFT_TABLE:-tcp_shift_p1_ci}
+IDLE_SECONDS=${TCP_SHIFT_P1_IDLE_SECONDS:-2}
+IDLE_WAIT_MAX=${TCP_SHIFT_P1_IDLE_WAIT_MAX:-32}
 PID=
 OLD_FORWARD=
 FORWARD_RULES=0
 
 mkdir -p "$OUT"
-: > "$OUT/runtime.stdout"
-: > "$OUT/runtime.stderr"
 
 capture_state()
 {
@@ -74,13 +74,19 @@ cleanup_network()
     set -e
 }
 
+stop_runtime()
+{
+    if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
+        kill -TERM "$PID"
+        wait "$PID"
+    fi
+    PID=
+}
+
 cleanup()
 {
     set +e
-    if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
-        kill -TERM "$PID" 2>/dev/null
-        wait "$PID" 2>/dev/null
-    fi
+    stop_runtime
     capture_state
     cleanup_network
     if ip link show "$TUN_NAME" >/dev/null 2>&1; then
@@ -88,6 +94,56 @@ cleanup()
     fi
 }
 trap cleanup EXIT HUP INT TERM
+
+wait_runtime_ready()
+{
+    stdout_file=$1
+    stderr_file=$2
+    ready=0
+    i=0
+
+    while [ "$i" -lt 100 ]; do
+        if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
+           ip -4 addr show dev "$TUN_NAME" | grep -F "$HOST_CIDR" >/dev/null 2>&1 &&
+           grep -F "tcp-shift-p1: ready tun=$TUN_NAME" "$stdout_file" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$PID" 2>/dev/null; then
+            cat "$stdout_file" >&2 || true
+            cat "$stderr_file" >&2 || true
+            echo "P1 runtime exited before configuring TUN" >&2
+            exit 1
+        fi
+        i=$((i + 1))
+        sleep 0.05
+    done
+
+    [ "$ready" -eq 1 ] || {
+        echo "timed out waiting for product-owned TUN configuration" >&2
+        exit 1
+    }
+}
+
+start_runtime()
+{
+    stdout_file=$1
+    stderr_file=$2
+
+    : > "$stdout_file"
+    : > "$stderr_file"
+    "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" "$TCP_PORT" \
+        > "$stdout_file" 2> "$stderr_file" &
+    PID=$!
+    wait_runtime_ready "$stdout_file" "$stderr_file"
+}
+
+extract_counter()
+{
+    name=$1
+    file=$2
+    sed -n "s/.*$name=\\([0-9][0-9]*\\).*/\\1/p" "$file" | tail -n 1
+}
 
 [ -x "$BINARY" ] || {
     echo "missing P1 binary: $BINARY" >&2
@@ -98,33 +154,48 @@ trap cleanup EXIT HUP INT TERM
     exit 1
 }
 
-"$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" "$TCP_PORT" \
-    > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
-PID=$!
+# Idle qualification is a separate process so its counters are not polluted by
+# the later ICMP/TCP traffic. lwIP's own timer deadlines are expected wakeups;
+# the gate rejects a high-frequency polling loop and any idle EPOLLOUT activity.
+start_runtime "$OUT/idle.stdout" "$OUT/idle.stderr"
+sleep "$IDLE_SECONDS"
+stop_runtime
+cat "$OUT/idle.stdout"
+cat "$OUT/idle.stderr" >&2
 
-ready=0
-i=0
-while [ "$i" -lt 100 ]; do
-    if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
-       ip -4 addr show dev "$TUN_NAME" | grep -F "$HOST_CIDR" >/dev/null 2>&1 &&
-       grep -F "tcp-shift-p1: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-    if ! kill -0 "$PID" 2>/dev/null; then
-        cat "$OUT/runtime.stdout" >&2 || true
-        cat "$OUT/runtime.stderr" >&2 || true
-        echo "P1 runtime exited before configuring TUN" >&2
-        exit 1
-    fi
-    i=$((i + 1))
-    sleep 0.05
-done
-[ "$ready" -eq 1 ] || {
-    echo "timed out waiting for product-owned TUN configuration" >&2
+idle_wait_calls=$(extract_counter loop_wait_calls "$OUT/idle.stderr")
+idle_timeout_wakeups=$(extract_counter loop_timeout_wakeups "$OUT/idle.stderr")
+idle_ready_wakeups=$(extract_counter loop_ready_wakeups "$OUT/idle.stderr")
+idle_writable_wakeups=$(extract_counter loop_tun_writable_wakeups "$OUT/idle.stderr")
+
+[ -n "$idle_wait_calls" ] && [ -n "$idle_timeout_wakeups" ] &&
+[ -n "$idle_ready_wakeups" ] && [ -n "$idle_writable_wakeups" ] || {
+    echo "missing idle event-loop counters" >&2
+    exit 1
+}
+[ "$idle_wait_calls" -gt 0 ] || {
+    echo "idle loop recorded no waits" >&2
+    exit 1
+}
+[ "$idle_wait_calls" -le "$IDLE_WAIT_MAX" ] || {
+    echo "idle loop exceeded wait-call ceiling: $idle_wait_calls > $IDLE_WAIT_MAX" >&2
+    exit 1
+}
+[ "$idle_writable_wakeups" -eq 0 ] || {
+    echo "idle loop observed unexpected TUN writable wakeups: $idle_writable_wakeups" >&2
     exit 1
 }
 
+printf 'idle_seconds=%s wait_calls=%s timeout_wakeups=%s ready_wakeups=%s writable_wakeups=%s\n' \
+    "$IDLE_SECONDS" "$idle_wait_calls" "$idle_timeout_wakeups" \
+    "$idle_ready_wakeups" "$idle_writable_wakeups" | tee "$OUT/idle-summary.txt"
+
+if ip link show "$TUN_NAME" >/dev/null 2>&1; then
+    echo "nonpersistent TUN survived idle runtime exit" >&2
+    exit 1
+fi
+
+start_runtime "$OUT/runtime.stdout" "$OUT/runtime.stderr"
 capture_state
 ping -n -c 3 -W 1 "$LWIP_IP" | tee "$OUT/ping.txt"
 
@@ -202,10 +273,7 @@ grep -F "src=$WAN_CLIENT_IP dst=$WAN_HOST_IP" "$OUT/conntrack-after-dnat.txt" >/
 grep -F "src=$LWIP_IP dst=$WAN_CLIENT_IP" "$OUT/conntrack-after-dnat.txt" >/dev/null
 capture_state
 
-kill -TERM "$PID"
-wait "$PID"
-PID=
-
+stop_runtime
 cat "$OUT/runtime.stdout"
 cat "$OUT/runtime.stderr" >&2
 
@@ -234,4 +302,4 @@ if sudo nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "P1 IPv4 direct and DNAT TCP smoke passed"
+echo "P1 IPv4 idle/direct/DNAT smoke passed"
