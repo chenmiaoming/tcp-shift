@@ -60,9 +60,11 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1a now has retained behavioral evidence on GitHub Actions: a real nonpersistent L3 TUN carries IPv4 ICMP through lwIP (3/3 echo replies) and a host TCP `connect()` reaches an lwIP raw-API listener and triggers `tcp_accept`. The event loop is epoll-driven from lwIP timer deadlines, and TUN write backpressure is bounded by a whole-packet FIFO.
+P0 remains the unprivileged reproducible initialization artifact. P1a now has retained behavioral evidence on GitHub Actions for the IPv4 packet path: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; an isolated client namespace reaches the lwIP listener through IPv4 DNAT/conntrack; the event loop is driven by epoll and lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 boundaries are qualified; and a deliberately invalid ICMP checksum is dropped while a valid one is answered.
 
-P1a is not complete yet: DNAT/public routing, transactional host lifecycle, explicit idle-wakeup measurement, and queue-pressure/failure-path qualification remain. P1b IPv6 follows before P2 bridge development.
+The latest complete P1a packet-path qualification is `lwIP P1 IPv4 TUN` run `34744304038` on commit `153ebaa348c28465dafc793d4f820fa355280252`. The same commit also passed P0 and upstream-provenance workflows.
+
+P1a is not yet a production ingress implementation. The remaining IPv4 work is product-owned, transactional narrow nftables DNAT lifecycle and failure cleanup; the current DNAT rule and forwarding exceptions are CI harness resources used to prove the data path. After that boundary is owned and qualified, P1b adds IPv6-only operation before P2 bridge development.
 
 Start here for project state:
 
@@ -72,4 +74,4 @@ Start here for project state:
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
 - [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state and evidence.
 
-> Status: P1a IPv4 L3 TUN bring-up. Do not use on production traffic.
+> Status: P1a IPv4 L3 TUN packet path qualified; product-owned ingress lifecycle still in progress. Do not use on production traffic.
