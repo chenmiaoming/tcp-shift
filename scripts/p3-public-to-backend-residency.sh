@@ -252,14 +252,11 @@ sample_process idle
 wait_for_line "$OUT/client.stdout" "client-send-started=$FLOW_COUNT" 'P3 active senders started'
 
 # Sample while sendall() calls are intentionally unable to finish because the
-# backend has not consumed data. This is the state whose residency matters.
+# backend has not consumed data. Server-side Recv-Q is retained only as an
+# observation: on loopback the blocked bytes may remain charged to the sender
+# rather than appearing in the accepted server socket's receive queue.
 sleep 0.5
 sample_process active-public-to-backend
-active_recvq=$(backend_recvq_bytes)
-[ "$active_recvq" -gt 0 ] || {
-    echo "blocked backend has no queued bytes at active sample" >&2
-    exit 1
-}
 
 : > "$RELEASE_FILE"
 if ! wait "$CLIENT_PID"; then
@@ -326,12 +323,15 @@ idle = rows["idle"]
 active = rows["active-public-to-backend"]
 drained = rows["drained"]
 flows = int(active["flows"])
+active_pss_delta = int(active["pss_kb"]) - int(idle["pss_kb"])
+if active_pss_delta <= 0:
+    raise SystemExit(f"active public-to-backend sample did not increase PSS: {active_pss_delta} KiB")
 summary = {
     "flows": flows,
     "idle_pss_kb": int(idle["pss_kb"]),
     "active_pss_kb": int(active["pss_kb"]),
-    "active_pss_delta_kb": int(active["pss_kb"]) - int(idle["pss_kb"]),
-    "active_pss_delta_kb_per_flow": (int(active["pss_kb"]) - int(idle["pss_kb"])) / flows,
+    "active_pss_delta_kb": active_pss_delta,
+    "active_pss_delta_kb_per_flow": active_pss_delta / flows,
     "idle_private_dirty_kb": int(idle["private_dirty_kb"]),
     "active_private_dirty_kb": int(active["private_dirty_kb"]),
     "active_private_dirty_delta_kb": int(active["private_dirty_kb"]) - int(idle["private_dirty_kb"]),
