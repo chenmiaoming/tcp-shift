@@ -22,7 +22,7 @@ The public and backend TCP legs remain distinct. Congestion control belongs to t
 - L3 TUN, not TAP/Ethernet, for the current product path.
 - One mutable owner for lwIP state; no per-flow forwarding threads.
 - `NO_SYS=1`; no lwIP TCP/IP thread, socket API, or netconn API.
-- IPv4 is the bring-up path, but IPv6-only operation is a product requirement and follows immediately in P1b.
+- IPv6-only operation is a product requirement, not an optional compatibility add-on.
 - Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate source modules.
 - The future CC core is pure C and independently buildable; library separation does not imply process separation.
 - Do not patch congestion control before packet path, bridge, shutdown behavior, and memory accounting are observable.
@@ -34,24 +34,28 @@ Exit evidence includes exact upstream pinning, clean reproducible fetch, an IPv4
 
 The initial Linux baseline intentionally uses libc allocation (`MEM_LIBC_MALLOC` and `MEMP_MEM_MALLOC`) so host RSS reflects demand.
 
-## P1a: IPv4 L3 TUN
+## P1a: IPv4 L3 TUN and ingress lifecycle — complete
 
-Implement a custom lwIP netif backed by one nonblocking `IFF_TUN | IFF_NO_PI` fd.
+The IPv4 implementation uses one nonblocking `IFF_TUN | IFF_NO_PI` fd:
 
 ```text
 RX: TUN read -> packet pbuf -> ip4_input -> TCP/ICMP
 TX: lwIP ip4 output -> netif output -> whole-packet TUN write
 ```
 
-The event loop integrates `sys_timeouts_sleeptime()` / `sys_check_timeouts()` rather than polling on a fixed timer. Temporary writable interest is armed only after a TUN write returns `EAGAIN`, with a bounded whole-packet retry queue.
+The event loop integrates `sys_timeouts_sleeptime()` / `sys_check_timeouts()` rather than polling on a fixed timer. Writable interest is armed only after backpressure and the whole-packet retry queue is bounded to 64 packets / 96 KiB.
 
-Exit criteria: ICMP echo, TCP SYN/SYN-ACK to a minimal listener, checksum/MTU validation, transactional host cleanup, and no periodic busy wakeup.
+The host lifecycle owns TUN configuration and one exact-match IPv4 nftables DNAT table. The nft batch is checked read-only before mutation, installed atomically with exclusive table creation, and removed before TUN teardown. Existing resources are rejected rather than adopted. Global IPv4 forwarding and broad host forwarding policy remain operator-managed prerequisites.
 
-## P1b: IPv6 L3 TUN
+Packet semantics and lifecycle are retained in CI. Run `34744304038` qualified ICMP/TCP, DNAT/conntrack, idle wakeups, backpressure, MTU, oversize RX, and checksum behavior. Run `34763055040` qualified product-owned ingress: disabled-forwarding preflight without sysctl mutation, exclusive collision rejection, a real namespace connection through product DNAT into lwIP, SIGTERM cleanup, and preservation of unrelated nftables state.
 
-Extend the same L3 adapter with IPv6; do not create a second runtime. Add IPv6 address configuration, `output_ip6`, `ip6_input`, ICMPv6, TCP, and host-side IPv6 netfilter/routing rules.
+P1a exit criteria are therefore satisfied. The active milestone is P1b.
 
-Exit criteria include IPv6-only operation, Packet Too Big/PMTU behavior, extension-header-safe L4 matching, and explicit diagnosis of unavailable TUN/forwarding/conntrack/NAT/container capabilities.
+## P1b: IPv6 L3 TUN — active
+
+Extend the same L3 adapter and lifecycle rather than creating a second runtime. Required work includes IPv6 lwIP source/config enablement, static host/TUN addressing, IPv6 RX dispatch, `netif->output_ip6`, ICMPv6, TCP, product-owned exact IPv6 ingress, and host prerequisite diagnostics.
+
+Exit criteria include IPv6-only operation, TCP SYN/SYN-ACK/accept, ICMPv6 echo, Packet Too Big/PMTU behavior, extension-header-safe L4 matching, bounded event-loop/backpressure behavior unchanged from P1a, and deterministic cleanup. CI must distinguish a tcp-shift defect from unavailable TUN/IPv6 forwarding/conntrack/NAT/container privileges.
 
 ## P2: dual-stack TCP listener and backend bridge
 

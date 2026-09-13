@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "host/ifconfig.h"
+#include "host/nft_ingress.h"
 #include "host/tun.h"
 #include "lwip/init.h"
 #include "lwip/ip4_addr.h"
@@ -13,6 +14,7 @@
 
 #define TCP_SHIFT_P1_DEFAULT_PORT 18080U
 #define TCP_SHIFT_P1_MTU 1500U
+#define TCP_SHIFT_P1_NFT_TABLE "tcp_shift_p1"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -50,8 +52,10 @@ static int parse_port(const char *text, uint16_t *port)
 static void usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> [listen-port]\n"
-            "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 18080\n",
+            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
+            "[listen-port [public-ipv4]]\n"
+            "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
+            "18080 198.51.100.1\n",
             program, program);
 }
 
@@ -61,26 +65,39 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_probe_listener listener;
+    struct tcp_shift_nft_ingress ingress;
     ip4_addr_t address;
     ip4_addr_t netmask;
     ip4_addr_t gateway;
+    ip4_addr_t public_address;
+    const char *public_ipv4 = NULL;
     uint16_t listen_port = TCP_SHIFT_P1_DEFAULT_PORT;
     int listener_started = 0;
+    int loop_started = 0;
+    int forwarding;
     int status = EXIT_FAILURE;
 
     tun.fd = -1;
     loop.epoll_fd = -1;
     listener.pcb = NULL;
+    ingress.table_name[0] = '\0';
+    ingress.installed = 0;
 
-    if (argc != 5 && argc != 6) {
+    if (argc != 5 && argc != 6 && argc != 7) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
     if (parse_ipv4(argv[2], &address) < 0 ||
         parse_ipv4(argv[3], &netmask) < 0 ||
         parse_ipv4(argv[4], &gateway) < 0 ||
-        (argc == 6 && parse_port(argv[5], &listen_port) < 0)) {
+        (argc >= 6 && parse_port(argv[5], &listen_port) < 0)) {
         return EXIT_FAILURE;
+    }
+    if (argc == 7) {
+        if (parse_ipv4(argv[6], &public_address) < 0) {
+            return EXIT_FAILURE;
+        }
+        public_ipv4 = argv[6];
     }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
@@ -114,10 +131,40 @@ int main(int argc, char **argv)
         perror("initialize lwIP event loop");
         goto out_listener;
     }
+    loop_started = 1;
 
-    printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u tcp-port=%u\n",
-           tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
-           (unsigned)listen_port);
+    if (public_ipv4 != NULL) {
+        forwarding = tcp_shift_host_ipv4_forwarding_enabled();
+        if (forwarding < 0) {
+            perror("read net.ipv4.ip_forward");
+            goto out_loop;
+        }
+        if (forwarding == 0) {
+            fprintf(stderr,
+                    "tcp-shift-p1: IPv4 forwarding is disabled; "
+                    "configure net.ipv4.ip_forward=1 before public ingress\n");
+            goto out_loop;
+        }
+        if (tcp_shift_nft_ingress_install_ipv4(&ingress,
+                                               TCP_SHIFT_P1_NFT_TABLE,
+                                               public_ipv4, listen_port,
+                                               argv[2], listen_port) < 0) {
+            perror("install nft ingress");
+            goto out_loop;
+        }
+    }
+
+    if (public_ipv4 != NULL) {
+        printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
+               "mtu=%u tcp-port=%u public-ipv4=%s nft-table=%s\n",
+               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)listen_port, public_ipv4, ingress.table_name);
+    } else {
+        printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
+               "mtu=%u tcp-port=%u\n",
+               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)listen_port);
+    }
     fflush(stdout);
 
     status = EXIT_SUCCESS;
@@ -152,7 +199,14 @@ int main(int argc, char **argv)
             (unsigned long long)loop.tun_readable_wakeups,
             (unsigned long long)loop.tun_writable_wakeups);
 
-    tcp_shift_lwip_loop_close(&loop);
+out_loop:
+    if (ingress.installed != 0 && tcp_shift_nft_ingress_remove(&ingress) < 0) {
+        perror("remove nft ingress");
+        status = EXIT_FAILURE;
+    }
+    if (loop_started != 0) {
+        tcp_shift_lwip_loop_close(&loop);
+    }
 out_listener:
     if (listener_started != 0) {
         tcp_shift_probe_listener_stop(&listener);

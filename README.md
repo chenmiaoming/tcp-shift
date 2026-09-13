@@ -29,7 +29,7 @@ single-owner userspace bridge
 
 The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket.
 
-The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is the first packet-path bring-up, but IPv6-only operation is a product requirement and follows immediately after IPv4 rather than as a late optional feature.
+The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is qualified first; IPv6-only operation is a product requirement and is the active next milestone rather than a late optional feature.
 
 ## Module direction
 
@@ -60,11 +60,13 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1a now has retained behavioral evidence on GitHub Actions for the IPv4 packet path: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; an isolated client namespace reaches the lwIP listener through IPv4 DNAT/conntrack; the event loop is driven by epoll and lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 boundaries are qualified; and a deliberately invalid ICMP checksum is dropped while a valid one is answered.
+P0 remains the unprivileged reproducible initialization artifact. P1a IPv4 is now runner-qualified end to end on GitHub Actions: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; epoll is driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 and ICMP checksum behavior are qualified; and namespace traffic reaches lwIP through DNAT/conntrack.
 
-The latest complete P1a packet-path qualification is `lwIP P1 IPv4 TUN` run `34744304038` on commit `153ebaa348c28465dafc793d4f820fa355280252`. The same commit also passed P0 and upstream-provenance workflows.
+P1a also owns its IPv4 ingress resource rather than relying on the test harness. `src/host/nft_ingress.*` performs a read-only `nft -c` validation, then atomically creates one exclusive `ip tcp_shift_p1` table containing an exact public-address + TCP-port DNAT rule. Existing/stale table collisions are rejected rather than adopted. `net.ipv4.ip_forward` and broad host forwarding policy remain operator-managed prerequisites; tcp-shift diagnoses but does not rewrite them. On SIGTERM or startup rollback, tcp-shift deletes only its owned table before closing the nonpersistent TUN.
 
-P1a is not yet a production ingress implementation. The remaining IPv4 work is product-owned, transactional narrow nftables DNAT lifecycle and failure cleanup; the current DNAT rule and forwarding exceptions are CI harness resources used to prove the data path. After that boundary is owned and qualified, P1b adds IPv6-only operation before P2 bridge development.
+The retained product-owned lifecycle evidence is `lwIP P1 IPv4 TUN` run `34763055040`: forwarding-disabled preflight passed without sysctl mutation, exclusive table-collision rejection passed, a namespace client connected through product-owned DNAT at `198.51.101.1:18081`, signal cleanup removed the TUN/table, and an unrelated nftables table was unchanged.
+
+This is GitHub-runner qualification, not yet provider/OpenVZ qualification. The active milestone is P1b IPv6: extend the same L3/runtime/lifecycle design to IPv6-only operation, ICMPv6/TCP, exact IPv6 ingress, and Packet Too Big/PMTU qualification before P2 backend-bridge work begins.
 
 Start here for project state:
 
@@ -74,4 +76,4 @@ Start here for project state:
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
 - [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state and evidence.
 
-> Status: P1a IPv4 L3 TUN packet path qualified; product-owned ingress lifecycle still in progress. Do not use on production traffic.
+> Status: P1a IPv4 runner-qualified; P1b IPv6 in progress. Do not use on production traffic.

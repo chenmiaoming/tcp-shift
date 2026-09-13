@@ -39,7 +39,7 @@ The production direction is routed L3 TUN plus narrow DNAT/conntrack rules. TUN 
 
 TAP/Ethernet is not part of the current design. Physical ARP/NDP stays with the outer Linux network stack. The TUN boundary carries complete IPv4 or IPv6 packets only.
 
-P1 starts with IPv4 because it is the simplest packet-path qualification. IPv6 follows immediately in P1b and is a first-class product requirement, not a late optional feature. The same L3 adapter will gain an IPv6 output callback and IPv6 input path; the bridge and congestion-control layers must remain address-family agnostic.
+P1a qualifies IPv4. P1b extends the same L3 adapter/runtime to IPv6 and is a first-class product requirement, not a late optional feature. Bridge and congestion-control layers must remain address-family agnostic.
 
 ## Process model versus module model
 
@@ -55,7 +55,9 @@ bridge/               public-stream <-> host-backend forwarding
 cc/                   generic congestion-control core
 ```
 
-A future root helper may own TUN/netfilter setup and pass a TUN fd to an unprivileged runtime. That would be a process-boundary change only; it must not be required to make the congestion-control code portable.
+The temporary public-ingress P1 executable currently runs with root privileges because `src/host/nft_ingress.*` briefly execs the system `nft` command during setup and cleanup. The established packet datapath itself remains the single lwIP owner and does not invoke nftables after setup.
+
+A future root helper may own TUN/netfilter setup and pass a TUN fd to an unprivileged runtime. That would be a process-boundary hardening change only; it is not required for congestion-control portability.
 
 ## Congestion-control portability boundary
 
@@ -69,51 +71,55 @@ Linux-specific pacing uses a runtime scheduler. An embedded port may use an RTOS
 
 The runtime uses `NO_SYS=1` and the callback/raw TCP API. There is no lwIP socket API, netconn layer, tcpip worker thread, or per-flow forwarding thread. One event loop owns all mutable lwIP state.
 
-The current P1 event loop uses epoll readiness and derives its blocking timeout from `sys_timeouts_sleeptime()`, followed by `sys_check_timeouts()`. It does not use a fixed polling tick. TUN EPOLLOUT is armed only while the bounded whole-packet TX queue is non-empty. Backend socket readiness and later pacing deadlines will join the same mutable owner.
+The P1 event loop uses epoll readiness and derives its blocking timeout from `sys_timeouts_sleeptime()`, followed by `sys_check_timeouts()`. It does not use a fixed polling tick. TUN EPOLLOUT is armed only while the bounded whole-packet TX queue is non-empty. Backend socket readiness and later pacing deadlines will join the same mutable owner.
 
 ## P1 implementation boundary
 
-P1 currently contains independently compiled host, L3, runtime, and probe modules:
+P1 contains independently compiled host, L3, runtime, and probe modules:
 
-- `src/host/tun.*`: Linux-only acquisition/closing of a nonpersistent `IFF_TUN | IFF_NO_PI` fd;
-- `src/host/ifconfig.*`: Linux host-side IPv4 MTU/address/link-up configuration for that TUN;
-- `src/lwip/l3_tun.*`: IPv4 lwIP netif attachment, one-packet receive injection, complete-packet transmit, and a bounded TUN backpressure queue;
-- `src/runtime/lwip_loop.*`: epoll ownership, TUN read/write readiness, RX work budget, and lwIP timeout integration;
+- `src/host/tun.*`: acquisition/closing of a nonpersistent `IFF_TUN | IFF_NO_PI` fd;
+- `src/host/ifconfig.*`: Linux host-side IPv4 MTU/address/link-up configuration;
+- `src/host/nft_ingress.*`: product-owned exact-match nftables ingress acquisition, prerequisite checks, collision rejection, and cleanup;
+- `src/lwip/l3_tun.*`: lwIP L3 netif attachment, one-packet receive injection, complete-packet transmit, and bounded TUN backpressure;
+- `src/runtime/lwip_loop.*`: epoll ownership, TUN readiness, RX work budget, and lwIP timeout integration;
 - `src/lwip/probe_listener.*`: temporary raw-API listener used only to qualify P1 TCP ownership;
-- `tcp-shift-p1`: temporary bring-up executable used before the final CLI/lifecycle layer exists.
+- `tcp-shift-p1`: temporary bring-up/lifecycle executable used before the final CLI exists.
 
 The TUN TX queue holds at most 64 packets and 96 KiB. On `EAGAIN`, the adapter takes a pbuf reference and transfers responsibility to this queue; queue exhaustion returns `ERR_MEM`. Because TUN is packet-oriented, partial/stream-split packet transmission is prohibited.
 
-The temporary P1 executable now owns TUN creation plus host-side IPv4 MTU/address/up configuration. Because the TUN is nonpersistent, closing its fd is the transaction rollback boundary: the interface, address, and connected route disappear together. Product-owned netfilter rule installation is not implemented yet.
+### IPv4 host-resource ownership
 
-## P1 IPv4 evidence
+The temporary P1 executable owns TUN creation, IPv4 MTU/address/up configuration, and optionally one public IPv4 DNAT resource. TUN is nonpersistent, so closing its fd removes its address and connected route.
 
-The CI packet path now proves both direct TUN-subnet traffic and a simulated external DNAT path.
+Public ingress uses a dedicated nftables table named `ip tcp_shift_p1`. Before mutation, the host module validates the complete ruleset with `nft -c -f -`. Installation sends the same batch as one transaction and begins with `create table`, so an existing/stale resource or a race fails rather than being adopted. The table contains only a PREROUTING NAT chain and an exact `ip daddr <public-ip> tcp dport <port> dnat to <lwip-ip>:<port>` rule.
 
-Run `34743049605` used a separate network namespace as the external client. Traffic followed:
+The module locates `nft` only at fixed system paths and execs it directly; it does not invoke a shell or permanently link libnftables into the low-memory runtime. The nft child exists only during setup/cleanup.
 
-```text
-client netns 198.51.100.2
-    -> veth
-    -> host 198.51.100.1:18080
-    -> nftables PREROUTING DNAT
-    -> 10.231.0.2:18080 on TUN
-    -> lwIP TCP
-```
+`net.ipv4.ip_forward` and surrounding broad host `FORWARD` policy are operator-managed prerequisites. tcp-shift reads and diagnoses the forwarding sysctl but never enables it or rewrites unrelated forwarding policy. Cleanup is reverse acquisition order: delete the table recorded as owned by this process, then tear down the event loop/lwIP state and finally close the TUN. A table that existed before startup is never considered owned.
 
-The direct and DNAT TCP connects both completed. Runtime counters were:
+## P1a IPv4 evidence
+
+The packet-path qualification in run `34744304038` proves direct ICMP/TCP, DNAT/conntrack, bounded idle wakeups, bounded TX backpressure, nonfatal oversize RX, MTU 1500/1501 behavior, and invalid/valid ICMP checksum handling.
+
+The product-owned ingress lifecycle was then qualified in run `34763055040`. The lifecycle gate proved:
 
 ```text
-rx_packets=12 tx_packets=7 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=2 tcp_rx_bytes=0 tcp_errors=0
+forwarding_disabled_preflight=ok
+exclusive_collision_rejection=ok
+product DNAT connected 198.51.101.1:18081
+signal_cleanup=ok unrelated_ruleset_unchanged=ok
+P1 product-owned nft ingress lifecycle passed
 ```
 
-The workflow also checked conntrack tuples and verified cleanup of the nonpersistent TUN, test namespace, veth pair, nftables table, and temporary forwarding rules.
+The live product-owned flow terminated in lwIP and reported `tcp_accepts=1`, `tcp_errors=0`. A disabled `net.ipv4.ip_forward` caused startup failure without changing the sysctl or leaking the TUN/table. A pre-existing `tcp_shift_p1` table caused startup rejection and remained intact. SIGTERM removed the product table and TUN, while a separate unrelated nftables table was byte-for-byte unchanged.
 
-GitHub-hosted runners have Docker's IPv4 `FORWARD` chain set to policy `DROP`. The CI harness therefore inserts two temporary interface/IP/port-specific ACCEPT rules and removes them afterward. Those rules are a runner prerequisite, not product firewall behavior. A production lifecycle must install only the narrow forwarding/NAT permissions it owns and restore them deterministically.
+GitHub-hosted runners have Docker's IPv4 `FORWARD` policy set to `DROP`. CI therefore owns two exact interface/IP/port-specific ACCEPT exceptions around the lifecycle test. Those exceptions are runner scaffolding and are deliberately outside product ownership.
+
+P1a IPv4 is complete by its current exit criteria. The active transport milestone is P1b IPv6.
 
 ## IPv6 requirements
 
-IPv6-only operation is a product gate. P1b must cover IPv6 TUN addressing, `output_ip6`, ICMPv6, TCP SYN/SYN-ACK, Packet Too Big/PMTU behavior, extension-header-safe netfilter matching, and cleanup. Host capability checks must distinguish lwIP support from container restrictions such as unavailable TUN, forwarding, conntrack/NAT, or `CAP_NET_ADMIN`.
+IPv6-only operation is a product gate. P1b must cover IPv6 TUN addressing, `output_ip6`, IPv6 packet input, ICMPv6, TCP SYN/SYN-ACK, exact product-owned IPv6 ingress, Packet Too Big/PMTU behavior, extension-header-safe L4 matching, and cleanup. Host capability checks must distinguish lwIP support from container restrictions such as unavailable TUN, forwarding, conntrack/NAT, or `CAP_NET_ADMIN`.
 
 The backend remains IPv4 loopback initially. Public IPv6 does not require the application backend to be IPv6.
 
@@ -121,7 +127,7 @@ The backend remains IPv4 loopback initially. Public IPv6 does not require the ap
 
 Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them. CI records idle and loaded memory, repeated load/drain floors, and CPU under explicit workloads. A one-time RSS decrease is not sufficient evidence against long-lived allocator or lifecycle growth.
 
-The P1 TUN retry queue has explicit packet and byte ceilings so temporary host write backpressure cannot become an unbounded memory path. P1a still needs an explicit queue-pressure test and an idle-wakeup bound before its event-loop behavior is considered qualified.
+P1a has mechanical bounds and evidence for its event loop and TUN retry queue: at most 64 queued packets / 96 KiB, real `EAGAIN` FIFO qualification, and a two-second idle gate with zero writable wakeups and a deliberately loose ceiling of 32 total waits. Future milestones add flow and BDP residency accounting rather than weakening these fixed bounds.
 
 ## Documentation as project memory
 
