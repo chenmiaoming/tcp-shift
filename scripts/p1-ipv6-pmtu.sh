@@ -195,9 +195,11 @@ ip6tables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
 FORWARD_RULES=1
 
 # Before any PTB feedback, the TUN MTU is 1500, so the IPv6 SYN-ACK should
-# advertise the normal 1440-byte TCP MSS.
+# advertise the normal 1440-byte TCP MSS. tcpdump prints SYN MSS options in the
+# stable form "mss N]" when this is the last option, so use a literal match and
+# avoid shell/ERE character-class ambiguity in this qualification gate.
 capture_synack "$OUT/synack-before.txt" "$OUT/connect-before.txt"
-grep -E 'mss 1440([,\]])' "$OUT/synack-before.txt" >/dev/null || {
+grep -F 'mss 1440]' "$OUT/synack-before.txt" >/dev/null || {
     cat "$OUT/synack-before.txt" >&2
     echo "baseline IPv6 MSS was not 1440" >&2
     exit 1
@@ -236,7 +238,7 @@ grep -E 'mtu 1280|mtu 1280,' "$OUT/ptb-wire.txt" >/dev/null
 # 1280 - 40-byte IPv6 - 20-byte TCP = 1220 bytes.
 sleep 0.1
 capture_synack "$OUT/synack-after.txt" "$OUT/connect-after.txt"
-grep -E "mss $EXPECTED_MSS([,\]])" "$OUT/synack-after.txt" >/dev/null || {
+grep -F "mss $EXPECTED_MSS]" "$OUT/synack-after.txt" >/dev/null || {
     cat "$OUT/ptb-wire.txt" >&2 || true
     cat "$OUT/synack-after.txt" >&2 || true
     echo "lwIP did not apply learned IPv6 PMTU to subsequent TCP MSS" >&2
