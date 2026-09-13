@@ -45,10 +45,10 @@ P1 starts with IPv4 because it is the simplest packet-path qualification. IPv6 f
 
 The current implementation is one Linux process with one mutable lwIP owner. This keeps the first working runtime small and avoids IPC before there is a concrete privilege-separation requirement.
 
-Source boundaries are nevertheless strict:
+Source boundaries are strict:
 
 ```text
-host/                 Linux TUN/netfilter/route/lifecycle integration
+host/                 Linux TUN/interface/netfilter/route/lifecycle integration
 runtime/              event loop and process lifecycle
 lwip/                 lwIP L3/TCP integration and transport adapter
 bridge/               public-stream <-> host-backend forwarding
@@ -73,16 +73,43 @@ The current P1 event loop uses epoll readiness and derives its blocking timeout 
 
 ## P1 implementation boundary
 
-P1 currently contains independently compiled host, L3, and runtime modules:
+P1 currently contains independently compiled host, L3, runtime, and probe modules:
 
 - `src/host/tun.*`: Linux-only acquisition/closing of a nonpersistent `IFF_TUN | IFF_NO_PI` fd;
+- `src/host/ifconfig.*`: Linux host-side IPv4 MTU/address/link-up configuration for that TUN;
 - `src/lwip/l3_tun.*`: IPv4 lwIP netif attachment, one-packet receive injection, complete-packet transmit, and a bounded TUN backpressure queue;
 - `src/runtime/lwip_loop.*`: epoll ownership, TUN read/write readiness, RX work budget, and lwIP timeout integration;
+- `src/lwip/probe_listener.*`: temporary raw-API listener used only to qualify P1 TCP ownership;
 - `tcp-shift-p1`: temporary bring-up executable used before the final CLI/lifecycle layer exists.
 
 The TUN TX queue holds at most 64 packets and 96 KiB. On `EAGAIN`, the adapter takes a pbuf reference and transfers responsibility to this queue; queue exhaustion returns `ERR_MEM`. Because TUN is packet-oriented, partial/stream-split packet transmission is prohibited.
 
-This is still P1 bring-up, not the product runtime. Host address/route/firewall mutation is not yet owned transactionally, and privileged packet-path CI has not yet proven ICMP/TCP behavior.
+The temporary P1 executable now owns TUN creation plus host-side IPv4 MTU/address/up configuration. Because the TUN is nonpersistent, closing its fd is the transaction rollback boundary: the interface, address, and connected route disappear together. Product-owned netfilter rule installation is not implemented yet.
+
+## P1 IPv4 evidence
+
+The CI packet path now proves both direct TUN-subnet traffic and a simulated external DNAT path.
+
+Run `34743049605` used a separate network namespace as the external client. Traffic followed:
+
+```text
+client netns 198.51.100.2
+    -> veth
+    -> host 198.51.100.1:18080
+    -> nftables PREROUTING DNAT
+    -> 10.231.0.2:18080 on TUN
+    -> lwIP TCP
+```
+
+The direct and DNAT TCP connects both completed. Runtime counters were:
+
+```text
+rx_packets=12 tx_packets=7 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=2 tcp_rx_bytes=0 tcp_errors=0
+```
+
+The workflow also checked conntrack tuples and verified cleanup of the nonpersistent TUN, test namespace, veth pair, nftables table, and temporary forwarding rules.
+
+GitHub-hosted runners have Docker's IPv4 `FORWARD` chain set to policy `DROP`. The CI harness therefore inserts two temporary interface/IP/port-specific ACCEPT rules and removes them afterward. Those rules are a runner prerequisite, not product firewall behavior. A production lifecycle must install only the narrow forwarding/NAT permissions it owns and restore them deterministically.
 
 ## IPv6 requirements
 
@@ -94,7 +121,7 @@ The backend remains IPv4 loopback initially. Public IPv6 does not require the ap
 
 Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them. CI records idle and loaded memory, repeated load/drain floors, and CPU under explicit workloads. A one-time RSS decrease is not sufficient evidence against long-lived allocator or lifecycle growth.
 
-The P1 TUN retry queue has explicit packet and byte ceilings so temporary host write backpressure cannot become an unbounded memory path.
+The P1 TUN retry queue has explicit packet and byte ceilings so temporary host write backpressure cannot become an unbounded memory path. P1a still needs an explicit queue-pressure test and an idle-wakeup bound before its event-loop behavior is considered qualified.
 
 ## Documentation as project memory
 
