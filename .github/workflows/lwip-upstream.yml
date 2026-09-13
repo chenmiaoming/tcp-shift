@@ -1,0 +1,52 @@
+name: lwIP upstream provenance
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-upstream.yml'
+      - '.lwip-baseline'
+      - 'scripts/fetch-lwip.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Validate provenance script
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          grep -Eq '^LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip\.git$' .lwip-baseline
+          grep -Eq '^LWIP_COMMIT=[0-9a-f]{40}$' .lwip-baseline
+
+      - name: Fetch exact lwIP baseline
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Verify exact checkout
+        run: |
+          . ./.lwip-baseline
+          test "$(git -C .deps/lwip rev-parse HEAD)" = "$LWIP_COMMIT"
+          git -C .deps/lwip diff --exit-code
+          git -C .deps/lwip status --porcelain | test ! -s /dev/stdin
+
+      - name: Show provenance
+        run: |
+          cat .build/upstream.env
+          cat .build/lwip-critical.sha256
+
+      - name: Upload upstream provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwip-upstream-provenance
+          path: |
+            .build/upstream.env
+            .build/lwip-critical.sha256
+          if-no-files-found: error
