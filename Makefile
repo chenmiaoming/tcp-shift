@@ -1,7 +1,7 @@
 .PHONY: fetch configure build clean distclean
 
 fetch:
-	./scripts/fetch-lwip.sh
+	sh ./scripts/fetch-lwip.sh
 
 configure: fetch
 	cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
