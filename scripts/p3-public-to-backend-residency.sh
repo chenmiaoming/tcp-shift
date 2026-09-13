@@ -199,7 +199,7 @@ PID=$!
 wait_for_line "$OUT/runtime.stdout" "tcp-shift-p2: ready tun=$TUN_NAME" 'P3 active runtime readiness'
 
 ip netns exec "$CLIENT_NS" python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOW_COUNT" \
-    "$PAYLOAD_BYTES" "$START_FILE" "$RELEASE_FILE" \
+    "$PAYLOAD_BYTES" "$START_FILE" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY' &
 import concurrent.futures
 import os
@@ -212,7 +212,6 @@ port = int(sys.argv[2])
 count = int(sys.argv[3])
 payload_bytes = int(sys.argv[4])
 start_file = sys.argv[5]
-release_file = sys.argv[6]
 payload = bytes(((i * 67 + 13) & 0xFF) for i in range(payload_bytes))
 sockets = []
 for _ in range(count):
@@ -230,10 +229,10 @@ def send_one(sock):
     return payload_bytes
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=count) as executor:
-    sent = list(executor.map(send_one, sockets))
+    futures = [executor.submit(send_one, sock) for sock in sockets]
+    print(f"client-send-started={len(futures)}", flush=True)
+    sent = [future.result() for future in futures]
 print(f"client-sent={len(sent)} total_bytes={sum(sent)}", flush=True)
-while not os.path.exists(release_file):
-    time.sleep(0.02)
 for sock in sockets:
     while True:
         data = sock.recv(8192)
@@ -250,10 +249,10 @@ wait_for_backend_count "$FLOW_COUNT"
 sample_process idle
 
 : > "$START_FILE"
-wait_for_line "$OUT/client.stdout" "client-sent=$FLOW_COUNT total_bytes=$TOTAL_BYTES" 'P3 active clients sent'
+wait_for_line "$OUT/client.stdout" "client-send-started=$FLOW_COUNT" 'P3 active senders started'
 
-# Give the local path time to fill the backend receive/socket queues and force
-# the bridge's nonblocking write path into real EAGAIN before sampling.
+# Sample while sendall() calls are intentionally unable to finish because the
+# backend has not consumed data. This is the state whose residency matters.
 sleep 0.5
 sample_process active-public-to-backend
 active_recvq=$(backend_recvq_bytes)
@@ -305,6 +304,8 @@ write_blocked=$(grep -Eo 'bridge_backend_write_blocked_events=[0-9]+' "$OUT/runt
     exit 1
 }
 
+grep -F "client-sent=$FLOW_COUNT total_bytes=$TOTAL_BYTES" "$OUT/client.stdout" >/dev/null
+grep -F "client-drained=$FLOW_COUNT" "$OUT/client.stdout" >/dev/null
 grep -F "backend-drained=$FLOW_COUNT total_bytes=$TOTAL_BYTES" "$OUT/backend.stdout" >/dev/null
 grep -F "bridge_accepts=$FLOW_COUNT bridge_backend_connects=$FLOW_COUNT bridge_public_to_backend_bytes=$TOTAL_BYTES bridge_backend_to_public_bytes=0 bridge_active_flows=0" "$OUT/runtime.stderr" >/dev/null
 grep -F 'bridge_backend_failures=0 bridge_public_errors=0' "$OUT/runtime.stderr" >/dev/null
