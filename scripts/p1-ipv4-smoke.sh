@@ -199,6 +199,29 @@ start_runtime "$OUT/runtime.stdout" "$OUT/runtime.stderr"
 capture_state
 ping -n -c 3 -W 1 "$LWIP_IP" | tee "$OUT/ping.txt"
 
+# 1472 bytes of ICMP payload + 8-byte ICMP header + 20-byte IPv4 header is
+# exactly the configured 1500-byte MTU and must traverse lwIP without fragment.
+ping -n -c 1 -W 1 -M do -s 1472 "$LWIP_IP" | tee "$OUT/mtu-1500.txt"
+
+# One byte beyond the configured MTU must be rejected locally with DF set. This
+# proves the host-facing interface and lwIP netif agree on the same boundary.
+if ping -n -c 1 -W 1 -M do -s 1473 "$LWIP_IP" \
+    > "$OUT/mtu-over.txt" 2>&1; then
+    cat "$OUT/mtu-over.txt" >&2
+    echo "over-MTU DF ping unexpectedly succeeded" >&2
+    exit 1
+fi
+cat "$OUT/mtu-over.txt"
+grep -Ei 'message too long|mtu' "$OUT/mtu-over.txt" >/dev/null
+
+# Send one deliberately bad ICMP checksum and one correct checksum through the
+# same TUN route. lwIP must ignore the bad echo request, answer the valid one,
+# and remain alive for the later TCP/DNAT qualification.
+sudo python3 "$ROOT/scripts/p1-ipv4-checksum.py" "$HOST_IP" "$LWIP_IP" \
+    | tee "$OUT/checksum.txt"
+grep -F 'icmp_checksum_bad_reply=none icmp_checksum_good_reply=received' \
+    "$OUT/checksum.txt" >/dev/null
+
 python3 - "$LWIP_IP" "$TCP_PORT" > "$OUT/tcp-direct-connect.txt" <<'PY'
 import socket
 import sys
@@ -279,6 +302,7 @@ cat "$OUT/runtime.stderr" >&2
 
 grep -F "tcp-shift-p1: ready tun=$TUN_NAME host-ipv4=$HOST_IP" "$OUT/runtime.stdout" >/dev/null
 grep -Eq 'rx_packets=[1-9][0-9]*' "$OUT/runtime.stderr"
+grep -Eq 'rx_errors=0' "$OUT/runtime.stderr"
 grep -Eq 'tx_packets=[1-9][0-9]*' "$OUT/runtime.stderr"
 grep -Eq 'tcp_accepts=([2-9]|[1-9][0-9]+)' "$OUT/runtime.stderr"
 
@@ -302,4 +326,4 @@ if sudo nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "P1 IPv4 idle/direct/DNAT smoke passed"
+echo "P1 IPv4 idle/MTU/checksum/direct/DNAT smoke passed"
