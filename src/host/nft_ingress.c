@@ -111,7 +111,8 @@ static int tcp_shift_run_nft_batch(const char *batch, int check_only)
     if (input == NULL) {
         return -1;
     }
-    if (fputs(batch, input) == EOF || fflush(input) != 0 || fseek(input, 0L, SEEK_SET) != 0) {
+    if (fputs(batch, input) == EOF || fflush(input) != 0 ||
+        fseek(input, 0L, SEEK_SET) != 0) {
         saved_errno = errno;
         fclose(input);
         errno = saved_errno;
@@ -146,7 +147,6 @@ int tcp_shift_host_ipv4_forwarding_enabled(void)
 {
     FILE *file;
     int value;
-    int saved_errno;
 
     file = fopen("/proc/sys/net/ipv4/ip_forward", "r");
     if (file == NULL) {
@@ -154,9 +154,8 @@ int tcp_shift_host_ipv4_forwarding_enabled(void)
     }
     value = fgetc(file);
     if (value == EOF) {
-        saved_errno = ferror(file) != 0 ? errno : EIO;
         fclose(file);
-        errno = saved_errno;
+        errno = EIO;
         return -1;
     }
     if (fclose(file) != 0) {
@@ -174,7 +173,6 @@ int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
 {
     char batch[TCP_SHIFT_NFT_BATCH_MAX];
     int length;
-    int saved_errno;
 
     if (ingress == NULL || public_port == 0U || target_port == 0U) {
         errno = EINVAL;
@@ -211,15 +209,7 @@ int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
         return -1;
     }
 
-    if (snprintf(ingress->table_name, sizeof(ingress->table_name), "%s",
-                 table_name) >= (int)sizeof(ingress->table_name)) {
-        saved_errno = EOVERFLOW;
-        (void)tcp_shift_run_nft_batch("delete table ip tcp_shift_p1\n", 0);
-        ingress->table_name[0] = '\0';
-        ingress->installed = 0;
-        errno = saved_errno;
-        return -1;
-    }
+    memcpy(ingress->table_name, table_name, strlen(table_name) + 1U);
     ingress->installed = 1;
     return 0;
 }
