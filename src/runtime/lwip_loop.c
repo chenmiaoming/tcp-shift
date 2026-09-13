@@ -109,16 +109,22 @@ int tcp_shift_lwip_loop_run_once(struct tcp_shift_lwip_loop *loop)
         return -1;
     }
 
+    loop->wait_calls++;
     ready = epoll_wait(loop->epoll_fd, &event, 1,
                        tcp_shift_lwip_loop_timeout_ms());
     if (ready < 0) {
         if (errno == EINTR) {
+            loop->eintr_wakeups++;
             return 0;
         }
         return -1;
     }
 
-    if (ready > 0) {
+    if (ready == 0) {
+        loop->timeout_wakeups++;
+    } else {
+        loop->ready_wakeups++;
+
         if ((event.events & (EPOLLERR | EPOLLHUP)) != 0U) {
             errno = EIO;
             return -1;
@@ -127,6 +133,7 @@ int tcp_shift_lwip_loop_run_once(struct tcp_shift_lwip_loop *loop)
         if ((event.events & EPOLLIN) != 0U) {
             unsigned budget;
 
+            loop->tun_readable_wakeups++;
             for (budget = 0; budget < TCP_SHIFT_TUN_RX_BUDGET; budget++) {
                 int result = tcp_shift_l3_tun_rx_once(loop->l3);
 
@@ -139,9 +146,11 @@ int tcp_shift_lwip_loop_run_once(struct tcp_shift_lwip_loop *loop)
             }
         }
 
-        if ((event.events & EPOLLOUT) != 0U &&
-            tcp_shift_l3_tun_flush_tx(loop->l3) < 0) {
-            return -1;
+        if ((event.events & EPOLLOUT) != 0U) {
+            loop->tun_writable_wakeups++;
+            if (tcp_shift_l3_tun_flush_tx(loop->l3) < 0) {
+                return -1;
+            }
         }
     }
 
