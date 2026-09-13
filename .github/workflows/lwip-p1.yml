@@ -45,7 +45,8 @@ jobs:
             iputils-ping \
             libcap2-bin \
             nftables \
-            python3
+            python3 \
+            tcpdump
 
       - name: Validate smoke harness
         run: |
@@ -56,6 +57,7 @@ jobs:
           test -c /dev/net/tun
           sudo nft list ruleset > /dev/null
           sudo iptables -w -S FORWARD > /dev/null
+          tcpdump --version
 
       - name: Build pinned P1 runtime and contracts
         run: |
