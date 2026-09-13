@@ -93,6 +93,13 @@ target_include_directories(tcp_shift_probe PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_probe PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_bridge STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_bridge PUBLIC tcp_shift_runtime tcp_shift_lwip)
+
 add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -133,6 +140,32 @@ target_link_libraries(tcp-shift-p1-ipv6 PRIVATE
     tcp_shift_probe
 )
 target_link_options(tcp-shift-p1-ipv6 PRIVATE -Wl,--gc-sections)
+
+# P2 has temporary address-family-specific bring-up entrypoints, but both link
+# the same bridge/runtime implementation and the same IPv4 loopback backend.
+add_executable(tcp-shift-p2 src/p2_main.c src/platform.c)
+target_include_directories(tcp-shift-p2 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p2 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p2 PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge
+)
+target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
+
+add_executable(tcp-shift-p2-ipv6 src/p2_ipv6_main.c src/platform.c)
+target_include_directories(tcp-shift-p2-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p2-ipv6 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p2-ipv6 PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge
+)
+target_link_options(tcp-shift-p2-ipv6 PRIVATE -Wl,--gc-sections)
 
 add_executable(tcp-shift-p1-backpressure-contract
     src/tests/l3_tun_backpressure_test.c

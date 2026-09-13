@@ -6,7 +6,7 @@
 
 1. **Pin and prove upstream provenance.** A normal product build consumes one exact lwIP commit. CI records that commit and hashes TCP files whose behavior matters to the project.
 2. **Validate contracts before behavior.** Shell syntax, baseline format, compile-time lwIP options, and source-surface boundaries fail before network tests.
-3. **Reuse exact artifacts once a milestone has a stable artifact boundary.** P0 builds once and smoke-tests the same artifact on another runner. P1 still builds its temporary lifecycle binaries inside the privileged job; release-oriented milestones should move toward explicit artifact handoff.
+3. **Reuse exact artifacts once a milestone has a stable artifact boundary.** P0 builds once and smoke-tests the same artifact on another runner. P1/P2 still build milestone bring-up binaries inside privileged jobs; later release-oriented milestones should move toward explicit artifact handoff.
 4. **Make the product surface mechanical.** Source expansion is deliberate and milestone-qualified rather than inherited from broad upstream build targets.
 5. **Preserve diagnostics on failure.** Provenance, source manifests, symbols, ELF metadata, memory samples, packet captures, routes, counters, firewall state, conntrack state, and milestone reports are retained where applicable.
 6. **Separate pinned qualification from moving-upstream compatibility.** A scheduled canary tests current lwIP independently of the pinned production baseline.
@@ -49,6 +49,60 @@ The final IPv6 PMTU gate creates a routed asymmetric MTU path. Both client veth 
 
 P1 diagnostics retain capability state, packet contracts, host/namespace addresses and routes, ping/MTU output, checksum output, tcpdump text, connect output, nftables/iptables state, conntrack state, lifecycle evidence, extension-header evidence, egress-route state, PTB wire capture, and before/after SYN-ACK captures.
 
+### `lwip-p2.yml`
+
+P2 qualifies the actual public-stream-to-loopback bridge while keeping P0 and the entire P1 workflow as separate regression gates on the same PR.
+
+The P2 job builds the IPv4 and IPv6 bring-up runtimes against the pinned lwIP baseline, grants only `cap_net_admin=ep` to the IPv4 bring-up binary for TUN configuration, and runs a sequence of deterministic bridge contracts. The backend is always an ordinary `AF_INET` listener at `127.0.0.1`.
+
+The retained P2 gate set is:
+
+- IPv4 128-KiB bidirectional echo with natural flow teardown;
+- 1-MiB delayed-peer backpressure that must hit both backend `EAGAIN` and lwIP send-memory pressure while public pending pbuf residency stays at or below the 32-KiB receive window;
+- backend-first half-close with a deliberate 0.5-second open public write direction and a wait-count ceiling to reject level-triggered RDHUP spin;
+- backend connect refusal followed by a successful fresh flow on the same listener;
+- public RST, backend RST, then a healthy third flow in the same runtime;
+- eight simultaneously established flows with self-identifying payloads so backend accept order cannot be mistaken for client creation order;
+- SIGTERM while a flow is active, requiring explicit bridge cleanup before process exit;
+- 64 sequential connect/drain/reuse flows with warm-up/mid/final VmRSS samples and no sustained RSS ratchet;
+- IPv6 public ingress through the same bridge state machine to the same IPv4 loopback backend.
+
+P2 diagnostics retain all client/backend/runtime stdout/stderr plus summaries for each gate. The latest behavior run is `34769960275`, on head `601a49648610513d98173e3e3add722326591ffc`.
+
+The blocked-peer evidence included:
+
+```text
+bridge_peak_pending_public_bytes=32768
+bridge_backend_write_blocked_events=172
+bridge_backend_read_blocked_events=357
+bridge_backend_socket_sndbuf_bytes=32768
+bridge_backend_socket_rcvbuf_bytes=32768
+```
+
+The active-shutdown gate retained:
+
+```text
+pre_stop_active_flows=1
+shutdown_bridge_active_flows=0
+shutdown_bridge_pending_public_bytes=0
+client_close=ok
+backend_close=ok
+tun_cleanup=ok
+```
+
+The sequential-reuse gate retained:
+
+```text
+flows=64
+rss_warmup_kb=1800
+rss_mid_kb=1800
+rss_final_kb=1800
+rss_allowance_kb=1024
+bridge_reuse_no_ratcheting=ok
+```
+
+That VmRSS result is only a lifecycle/no-ratcheting gate. It must not be reused as the P3 per-connection memory baseline.
+
 ## Retained P1 evidence
 
 ### IPv4 progression
@@ -89,15 +143,23 @@ Before the L3 adapter fix, the same valid PTB reached lwIP but a subsequent SYN-
 
 P1 dual-stack packet/lifecycle qualification is complete on GitHub-hosted runners. This does not prove that every OpenVZ/VPS provider exposes the required TUN, IPv4/IPv6 forwarding, nftables, conntrack, and capabilities; provider-specific qualification remains separate.
 
+## P2 completion evidence
+
+Behavior head `601a49648610513d98173e3e3add722326591ffc` completed successfully in all three relevant workflows:
+
+- P0 `34769960299`;
+- full P1 regression `34769960302`;
+- P2 bridge `34769960275`.
+
+The P2 artifact for run `34769960275` retains 72 diagnostic files covering the bridge gate set.
+
 ## Milestone CI growth
 
-### P2: stream bridge lifecycle — active next
-
-Add public-stream/backend qualification for bidirectional payload integrity, partial I/O, bounded backpressure in both directions, half-close, reset, backend-connect failure, deterministic shutdown, and fresh-flow reuse. The job must assert zero live bridge objects after teardown. Public IPv4 and IPv6 must exercise the same bridge implementation; the backend can remain `AF_INET` `127.0.0.1`.
-
-### P3: memory and capacity
+### P3: memory and capacity — active next
 
 Introduce staged connection counts chosen for 32/64/128-MiB target hosts. Record ready/idle RSS, PSS/private dirty, established-idle and active-flow residency, verified traffic, peak/post-drain floors, and repeated load/drain rounds in one long-lived process. A single fast RSS drop is not sufficient evidence by itself.
+
+Use `/proc/<pid>/smaps_rollup` where available so PSS/private dirty can distinguish allocator/process growth from shared mappings. Keep public-flow counts, backend socket state, and traffic residency explicit beside each memory sample. Initial observations should remain reports until enough repeated runs exist to justify hard thresholds.
 
 ### P4-P6: congestion control, sampler, and pacing
 

@@ -27,9 +27,9 @@ single-owner userspace bridge
 127.0.0.1 backend
 ```
 
-The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket. Public IPv6 therefore does not require an IPv6-capable application backend: P2 will initially connect accepted IPv4 or IPv6 public streams to `127.0.0.1`.
+The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket. Public IPv6 therefore does not require an IPv6-capable application backend: the same bridge accepts IPv4 or IPv6 public streams and connects them to `127.0.0.1`.
 
-The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. The same L3 adapter and event-loop owner now qualify both IPv4 and IPv6.
+The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. The same L3 adapter and event-loop owner qualify both IPv4 and IPv6.
 
 ## Module direction
 
@@ -41,7 +41,7 @@ A separate privileged helper process is a possible later security boundary, not 
 
 ## Congestion-control plan
 
-The first milestones are a correct dual-stack lwIP endpoint, bridge, shutdown behavior, and memory accounting. After that:
+The packet path and stream bridge are now runner-qualified. Before modifying congestion control, the next milestone establishes the actual memory/capacity envelope for 32/64/128-MiB targets. After that:
 
 1. introduce a platform-independent CC interface;
 2. establish high-resolution transport timestamps and per-segment delivery accounting;
@@ -60,7 +60,7 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1 is now runner-qualified for both public address families on GitHub Actions.
+P0 remains the unprivileged reproducible initialization artifact. P1 is runner-qualified for both public address families on GitHub Actions.
 
 P1a IPv4 proves a real nonpersistent L3 TUN carrying ICMP and TCP through lwIP; epoll driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure bounded to 64 packets / 96 KiB with FIFO ordering; nonfatal oversized RX drops; MTU 1500/1501 and ICMP checksum behavior; namespace DNAT/conntrack; and product-owned exact IPv4 nftables ingress with prerequisite, collision, rollback, signal-cleanup, and unrelated-ruleset preservation gates.
 
@@ -71,9 +71,25 @@ ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
 P1b routed IPv6 Packet Too Big/PMTU qualification passed
 ```
 
-A pure L3 TUN bypasses the Ethernet ND path that normally creates lwIP IPv6 destination-cache entries. `src/lwip/l3_tun.c` therefore seeds/refreshes lwIP's existing fixed ND6 destination cache before IPv6 output; it does not allocate a second PMTU table or start neighbor discovery. Upstream `nd6_input()` still owns PTB updates and upstream TCP MSS calculation consumes the learned PMTU.
+P2 now replaces the probe-only listener with a real public-stream-to-loopback bridge. IPv4 and IPv6 public flows share one bridge state machine and both connect to an ordinary nonblocking `127.0.0.1` backend socket. The bridge keeps public-to-backend bytes in lwIP pbufs until the backend accepts them and consumes backend bytes only after `tcp_write()` accepts them into lwIP, so backpressure is tied to transport windows rather than unbounded userspace buffers.
 
-This is GitHub-runner qualification, not yet provider/OpenVZ qualification. The active milestone is now P2: replace the temporary probe listener with the real bounded public-stream-to-`127.0.0.1` backend bridge while preserving the P1 packet/lifecycle gates.
+Behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, the full P1 regression run `34769960302`, and P2 run `34769960275`. P2 qualifies 128-KiB IPv4 and IPv6 bidirectional integrity, a 1-MiB blocked-peer gate, backend-first half-close without RDHUP spin, backend refusal recovery, public/backend reset recovery, eight simultaneous flows, explicit cleanup with an active flow, and 64 sequential reuse flows.
+
+Retained P2 memory/backpressure observations include:
+
+```text
+bridge_peak_pending_public_bytes=32768
+bridge_backend_socket_sndbuf_bytes=32768
+bridge_backend_socket_rcvbuf_bytes=32768
+rss_warmup_kb=1800
+rss_mid_kb=1800
+rss_final_kb=1800
+bridge_reuse_no_ratcheting=ok
+```
+
+Those RSS values are only a P2 lifecycle/no-ratcheting gate, not the product capacity baseline. P3 is now the active milestone: measure idle RSS/PSS/private dirty, incremental established-flow memory, controlled active-flow residency, repeated load/drain floors, connection-count capacity, and CPU for 32/64/128-MiB targets.
+
+This remains GitHub-runner qualification, not yet provider/OpenVZ qualification.
 
 Start here for project state:
 
@@ -81,6 +97,7 @@ Start here for project state:
 - [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
-- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — completed P1 packet-path state and evidence.
+- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — completed P1 packet-path state and evidence;
+- [`docs/milestones/p2-bridge.md`](docs/milestones/p2-bridge.md) — completed P2 bridge state and evidence.
 
-> Status: P1 dual-stack packet path runner-qualified; P2 backend bridge next. Do not use on production traffic.
+> Status: P0/P1/P2 runner-qualified; P3 memory/capacity baseline next. Do not use on production traffic.

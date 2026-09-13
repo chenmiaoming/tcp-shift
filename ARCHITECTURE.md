@@ -31,7 +31,7 @@ host netfilter/routing -> L3 TUN -> lwIP TCP listener
                                   nginx/app
 ```
 
-Congestion control for the public connection belongs to lwIP/tcp-shift. Congestion control on the loopback backend is outside the public-side contract. Public IPv6 does not imply an IPv6 backend: the initial bridge target is deliberately `127.0.0.1` for both public families.
+Congestion control for the public connection belongs to lwIP/tcp-shift. Congestion control on the loopback backend is outside the public-side contract. Public IPv6 does not imply an IPv6 backend: the current bridge target is deliberately `127.0.0.1` for both public families.
 
 ## Packet path
 
@@ -39,11 +39,11 @@ The production direction is routed L3 TUN plus narrow DNAT/conntrack rules. TUN 
 
 TAP/Ethernet is not part of the current design. Physical ARP/NDP stays with the outer Linux network stack. The TUN boundary carries complete IPv4 or IPv6 packets only.
 
-P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. Bridge and congestion-control layers must remain address-family agnostic.
+P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. P2 now qualifies the same public families through one address-family-independent bridge state machine.
 
 ## Process model versus module model
 
-The current implementation is one Linux process with one mutable lwIP owner. This keeps the first working runtime small and avoids IPC before there is a concrete privilege-separation requirement.
+The current implementation is one Linux process with one mutable lwIP owner. This keeps the runtime small and avoids IPC before there is a concrete privilege-separation requirement.
 
 Source boundaries are strict:
 
@@ -55,7 +55,9 @@ bridge/               public-stream <-> host-backend forwarding
 cc/                   generic congestion-control core
 ```
 
-The temporary public-ingress P1 executable currently runs with root privileges because `src/host/nft_ingress.*` briefly execs the system `nft` command during setup and cleanup. The established packet datapath itself remains the single lwIP owner and does not invoke nftables after setup.
+The temporary public-ingress P1 executable runs with root privileges because `src/host/nft_ingress.*` briefly execs the system `nft` command during setup and cleanup. The established packet datapath itself remains the single lwIP owner and does not invoke nftables after setup.
+
+The P2 qualification executables intentionally exercise bridge behavior on directly addressed TUN endpoints, so they need TUN administration but do not own public nftables ingress. Product integration can later combine the already-qualified host ingress lifecycle and bridge without merging their source responsibilities.
 
 A future root helper may own TUN/netfilter setup and pass a TUN fd to an unprivileged runtime. That would be a process-boundary hardening change only; it is not required for congestion-control portability.
 
@@ -71,9 +73,11 @@ Linux-specific pacing uses a runtime scheduler. An embedded port may use an RTOS
 
 The runtime uses `NO_SYS=1` and the callback/raw TCP API. There is no lwIP socket API, netconn layer, tcpip worker thread, or per-flow forwarding thread. One event loop owns all mutable lwIP state.
 
-The P1 event loop uses epoll readiness and derives its blocking timeout from `sys_timeouts_sleeptime()`, followed by `sys_check_timeouts()`. It does not use a fixed polling tick. TUN EPOLLOUT is armed only while the bounded whole-packet TX queue is non-empty. Backend socket readiness and later pacing deadlines will join the same mutable owner.
+The event loop uses epoll readiness and derives its blocking timeout from `sys_timeouts_sleeptime()`, followed by `sys_check_timeouts()`. It does not use a fixed polling tick. TUN EPOLLOUT is armed only while the bounded whole-packet TX queue is non-empty.
 
-## P1 implementation boundary
+P2 generalizes the same loop with caller-owned fd watcher objects for backend sockets. The loop intentionally consumes one ready fd per `epoll_wait`; a watcher callback may therefore unregister and free its own enclosing flow without leaving another event from the current batch pointing at freed memory. Backend readiness, TUN readiness, lwIP timers, and future pacing deadlines all remain under one mutable owner.
+
+## P1 packet/lifecycle implementation boundary
 
 P1 contains independently compiled host, L3, runtime, and probe modules:
 
@@ -81,11 +85,29 @@ P1 contains independently compiled host, L3, runtime, and probe modules:
 - `src/host/ifconfig.*` and `ifconfig_ipv6.*`: Linux host-side static L3 configuration;
 - `src/host/nft_ingress.*`: family-aware product-owned exact-match nftables ingress acquisition, prerequisite checks, collision rejection, and cleanup;
 - `src/lwip/l3_tun.*`: one lwIP L3 netif for IPv4/IPv6 attachment, receive dispatch, complete-packet transmit, bounded TUN backpressure, and IPv6 PMTU destination-cache integration;
-- `src/runtime/lwip_loop.*`: epoll ownership, TUN readiness, RX work budget, and lwIP timeout integration;
-- `src/lwip/probe_listener.*`: temporary raw-API listener used only to qualify P1 TCP ownership;
-- `tcp-shift-p1` / `tcp-shift-p1-ipv6`: temporary bring-up/lifecycle executables used before the final CLI exists.
+- `src/runtime/lwip_loop.*`: epoll ownership, TUN/backend watcher readiness, RX work budget, and lwIP timeout integration;
+- `src/lwip/probe_listener.*`: temporary raw-API listener retained only for P1 qualification;
+- `tcp-shift-p1` / `tcp-shift-p1-ipv6`: temporary packet/lifecycle bring-up executables.
 
 The TUN TX queue holds at most 64 packets and 96 KiB. On `EAGAIN`, the adapter takes a pbuf reference and transfers responsibility to this queue; queue exhaustion returns `ERR_MEM`. Because TUN is packet-oriented, partial/stream-split packet transmission is prohibited.
+
+## P2 bridge implementation boundary
+
+`src/bridge/bridge.*` is the current public-stream/backend bridge. A successful public lwIP accept allocates one bridge flow control object and opens one nonblocking `AF_INET` socket to `127.0.0.1:<backend-port>`.
+
+Public IPv4 and IPv6 listeners call the same bridge implementation. The backend stays IPv4 loopback even for an IPv6 public connection, preserving the architectural separation between the public transport and application-facing local transport.
+
+The bridge adds no fixed application-data direction buffer.
+
+Public-to-backend bytes remain in lwIP-delivered pbufs until the backend `writev()` commits them. `tcp_recved()` advances only by committed bytes. On host-socket `EAGAIN`, the flow retains the pbuf and arms backend `EPOLLOUT`, so the lwIP receive window provides bounded pressure rather than allowing an unbounded userspace queue.
+
+Backend-to-public uses a 4-KiB stack scratch buffer and `MSG_PEEK`. Bytes are removed from the host socket only after `tcp_write(..., TCP_WRITE_FLAG_COPY)` accepts the same bytes into lwIP. If the lwIP send path returns `ERR_MEM` or has no send buffer, backend readable interest is suppressed and later resumed by `tcp_sent`/`tcp_poll`.
+
+Backend sockets request 16-KiB send and receive buffers. Linux reports 32 KiB for each on the current qualification runner. These kernel buffers are deliberately small and explicitly observed so a passing backpressure test cannot be explained by a large loopback socket absorbing the workload.
+
+EOF is directional. Public EOF becomes backend `SHUT_WR` after queued public bytes drain. Backend EOF becomes lwIP transmit shutdown while the public receive direction may remain open. Because `EPOLLRDHUP` is level-triggered, the backend watcher is removed when no useful event remains and is re-added only when later write/read progress requires it; this prevents half-close readiness spin.
+
+Flow failure is isolated. Backend refusal/reset or a public reset releases only that flow. Listener/runtime state remains reusable for later accepts. `tcp_shift_bridge_stop()` explicitly aborts active flows and clears pending residency before process/TUN teardown.
 
 ## Host-resource ownership
 
@@ -109,34 +131,27 @@ A pure L3 TUN output callback bypasses lwIP's Ethernet next-hop path. That path 
 
 Run `34767386662` proves a routed MTU reduction from 1500 to 1280 changes a subsequent IPv6 SYN-ACK MSS from 1440 to 1220 while all IPv4 and other IPv6 regression gates stay green.
 
-## P1 evidence and completion state
+## Qualification state
 
 IPv4 packet-path run `34744304038` proves direct ICMP/TCP, DNAT/conntrack, bounded idle wakeups, bounded TX backpressure, nonfatal oversize RX, MTU 1500/1501 behavior, and invalid/valid ICMP checksum handling. Product-owned IPv4 ingress lifecycle run `34763055040` proves forwarding preflight, exclusive ownership, exact DNAT, cleanup, rollback, and unrelated-firewall preservation.
 
-P1b behavior head `6a9d82feb1f3faead580f560ae1d076999a64b0f` passed both P0 and P1 workflows. P1 run `34767386662` additionally proves direct IPv6 ICMP/TCP, IPv6 MTU behavior, product-owned exact IPv6 ingress/conntrack, extension-header-safe matching, deterministic cleanup, and routed PTB/PMTU adaptation:
+P1b behavior head `6a9d82feb1f3faead580f560ae1d076999a64b0f` and run `34767386662` additionally prove direct IPv6 ICMP/TCP, IPv6 MTU behavior, product-owned exact IPv6 ingress/conntrack, extension-header-safe matching, deterministic cleanup, and routed PTB/PMTU adaptation.
 
-```text
-ipv6_forwarding_disabled_preflight=ok
-ipv6_exclusive_collision_rejection=ok
-ipv6_extension_header_dnat=ok
-product IPv6 DNAT connected [2001:db8:101::1]:18083
-ipv6_signal_cleanup=ok unrelated_ruleset_unchanged=ok
-ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
-```
+P2 behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, the full P1 regression run `34769960302`, and P2 run `34769960275`.
 
-P1 dual-stack packet/lifecycle qualification is complete on GitHub-hosted runners. This is not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, or capability surface. Provider qualification remains separate.
+P2 runner evidence now covers IPv4 and IPv6 public-stream integrity to an IPv4 loopback backend, 1-MiB bounded bidirectional backpressure, both half-close directions, backend refusal recovery, public/backend resets, eight concurrent flows, active-flow process shutdown, and 64 sequential reuse flows without VmRSS ratcheting. The retained reuse samples were 1800 KiB after warm-up, 32 flows, and 64 flows.
 
-## P2 bridge boundary
-
-The next milestone replaces the temporary probe listener with the real public-stream/backend bridge. Public IPv4 and IPv6 must share one bridge state machine; the backend leg initially uses only an ordinary nonblocking `AF_INET` socket to `127.0.0.1`.
-
-P2 must make partial I/O, bounded bidirectional buffering, backpressure, EOF/half-close, reset/backend failure, and deterministic cleanup explicit before congestion-control work begins.
+This is GitHub-runner qualification, not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, or capability surface. Provider qualification remains separate.
 
 ## Memory and CPU model
 
-Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them. CI records idle and loaded memory, repeated load/drain floors, and CPU under explicit workloads. A one-time RSS decrease is not sufficient evidence against long-lived allocator or lifecycle growth.
+Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them.
 
-P1 has mechanical bounds and evidence for its event loop and TUN retry queue: at most 64 queued packets / 96 KiB, real `EAGAIN` FIFO qualification, and a two-second idle gate with zero writable wakeups and a deliberately loose ceiling of 32 total waits. IPv6 PMTU integration reuses lwIP's already-allocated fixed destination cache rather than introducing another fixed table. Future milestones add flow and BDP residency accounting rather than weakening these fixed bounds.
+P1 has mechanical bounds for its event loop and TUN retry queue: at most 64 queued packets / 96 KiB, real `EAGAIN` FIFO qualification, and a two-second idle gate with zero writable wakeups and a deliberately loose ceiling of 32 total waits. IPv6 PMTU integration reuses lwIP's already-allocated fixed destination cache rather than introducing another fixed table.
+
+P2 adds bridge-level accounting for active/peak flow objects, current/peak public pbuf residency, blocked-read/write events, and actual backend socket buffer sizes. Its 64-flow reuse gate is specifically a lifecycle/no-ratcheting check; it is not the product's per-connection memory number.
+
+P3 is the active next milestone. It must measure ready/idle RSS, PSS, private dirty, established-idle incremental cost, active-flow residency at controlled inflight data, repeated load/drain floors, and CPU under explicit workloads for 32/64/128-MiB targets. Those measurements decide whether there is enough headroom to proceed to the generic CC and later BBR machinery.
 
 ## Documentation as project memory
 

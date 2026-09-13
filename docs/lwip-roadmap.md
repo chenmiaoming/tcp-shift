@@ -73,26 +73,56 @@ P1b routed IPv6 Packet Too Big/PMTU qualification passed
 
 P1 as a whole is therefore runner-qualified for both address families without regressing the IPv4 gates. Provider/OpenVZ capability qualification remains a separate deployment task.
 
-## P2: dual-stack TCP listener and backend bridge — active next milestone
+## P2: dual-stack TCP listener and backend bridge — complete
 
-Replace the P1 probe listener with the actual bridge. Use lwIP raw TCP callbacks (`tcp_accept`, `tcp_recv`, `tcp_sent`, `tcp_err`, `tcp_poll`) on the public side and ordinary nonblocking `AF_INET` host sockets targeting `127.0.0.1` on the backend side. Public IPv4 and IPv6 share the same flow/bridge state machine; the backend does not need IPv6 support.
+P2 replaces the P1 probe listener with the real bridge. Public IPv4 and IPv6 both use lwIP raw TCP callbacks and the same address-family-independent flow state machine. Every accepted public flow connects through an ordinary nonblocking `AF_INET` host socket to `127.0.0.1:<backend-port>`.
 
-Each flow should own only control metadata while idle. Direction buffers are demand allocated and globally budgeted. Backpressure stops reads or delays `tcp_recved()` instead of allowing unbounded buffering.
+The bridge adds no fixed application-data direction buffer. Public-to-backend data remains in lwIP pbufs until `writev()` commits it, and `tcp_recved()` advances only for committed bytes. Backend-to-public uses bounded stack scratch plus `MSG_PEEK`, consuming host-socket bytes only after `tcp_write(..., TCP_WRITE_FLAG_COPY)` accepts them. Backend readable interest is suppressed while lwIP send memory is blocked.
 
-The first implementation increments are:
+P2 also qualifies EOF/half-close ordering, backend refusal, public/backend reset recovery, explicit shutdown with active flows, and simultaneous-flow teardown. A discovered level-triggered `EPOLLRDHUP` spin hazard was fixed by removing backend watchers when no useful read/write interest remains and re-arming them only when progress requires it.
 
-1. one accepted lwIP flow -> nonblocking `127.0.0.1:<backend-port>` connect;
-2. bounded public-to-backend forwarding with partial host writes and lwIP receive-window backpressure;
-3. bounded backend-to-public forwarding with partial `tcp_write`/`tcp_output` and `tcp_sent` accounting;
-4. EOF/half-close/reset/backend-connect-failure semantics;
-5. deterministic teardown and flow-object accounting;
-6. IPv4 and IPv6 public ingress using exactly the same bridge code.
+Behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, full P1 run `34769960302`, and P2 run `34769960275`. Retained P2 evidence includes:
 
-Exit criteria include bidirectional integrity under partial I/O, bounded residency under a blocked peer in either direction, half-close/reset semantics, backend failure behavior, deterministic teardown with zero active bridge objects, and repeated connect/drain/reuse without RSS ratcheting.
+```text
+# blocked-peer 1 MiB gate
+bridge_peak_pending_public_bytes=32768
+bridge_backend_write_blocked_events=172
+bridge_backend_read_blocked_events=357
+bridge_backend_socket_sndbuf_bytes=32768
+bridge_backend_socket_rcvbuf_bytes=32768
 
-## P3: memory/capacity baseline
+# eight simultaneous flows
+bridge_accepts=8
+bridge_backend_connects=8
+bridge_peak_active_flows=8
+bridge_active_flows=0
+
+# active-flow process shutdown
+pre_stop_active_flows=1
+shutdown_bridge_active_flows=0
+shutdown_bridge_pending_public_bytes=0
+
+# 64 sequential reuse flows
+rss_warmup_kb=1800
+rss_mid_kb=1800
+rss_final_kb=1800
+bridge_reuse_no_ratcheting=ok
+```
+
+The reuse RSS result is a lifecycle/no-ratcheting gate, not a connection-capacity claim. Exact established-flow memory cost is intentionally measured in P3.
+
+## P3: memory/capacity baseline — active next milestone
 
 Measure idle RSS/PSS/private dirty, incremental memory per idle established connection, active-flow residency at fixed in-flight data, peak/post-drain floors, and CPU under idle/small-packet loads. Test stages are chosen for 32/64/128-MiB target hosts.
+
+P3 should distinguish at least four memory contributors instead of collapsing them into one RSS number:
+
+1. fixed process/lwIP/runtime cost;
+2. per-public-flow lwIP PCB/segment/pbuf/control cost;
+3. per-backend-flow Linux socket/kernel cost where observable from the host;
+4. application data residency caused by configured TCP windows and controlled inflight traffic.
+
+The first P3 increment should establish a long-lived measurement harness with `/proc/<pid>/smaps_rollup` plus process RSS, explicit connection-count stages, a stable idle-established state, and repeated load/drain rounds. Capacity thresholds must come from those measurements before being promoted to hard product limits.
 
 ## P4: generic congestion-control library boundary
 
