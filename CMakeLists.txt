@@ -18,7 +18,7 @@ set(LWIP_INCLUDE_DIRS
 )
 
 # Filelists generates lwip/init.h. Its broad library targets remain
-# EXCLUDE_FROM_ALL; tcp-shift links only the explicit P0 source allowlist below.
+# EXCLUDE_FROM_ALL; tcp-shift links only the explicit source allowlist below.
 include("${LWIP_DIR}/src/Filelists.cmake")
 
 set(TCP_SHIFT_LWIP_SRCS
@@ -39,6 +39,12 @@ set(TCP_SHIFT_LWIP_SRCS
     "${LWIP_DIR}/src/core/ipv4/ip4.c"
     "${LWIP_DIR}/src/core/ipv4/ip4_addr.c"
     "${LWIP_DIR}/src/core/ipv4/ip4_frag.c"
+    "${LWIP_DIR}/src/core/ipv6/icmp6.c"
+    "${LWIP_DIR}/src/core/ipv6/inet6.c"
+    "${LWIP_DIR}/src/core/ipv6/ip6.c"
+    "${LWIP_DIR}/src/core/ipv6/ip6_addr.c"
+    "${LWIP_DIR}/src/core/ipv6/ip6_frag.c"
+    "${LWIP_DIR}/src/core/ipv6/nd6.c"
 )
 
 add_library(tcp_shift_lwip STATIC ${TCP_SHIFT_LWIP_SRCS})
@@ -83,7 +89,8 @@ add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-# P0 remains an unprivileged reproducible initialization artifact.
+# P0 remains an unprivileged reproducible initialization artifact. From P1b
+# onward its source/config contract follows the actual dual-stack product core.
 add_executable(tcp-shift src/main.c src/platform.c)
 target_include_directories(tcp-shift PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift PRIVATE
@@ -93,9 +100,8 @@ target_compile_options(tcp-shift PRIVATE
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
-# Temporary P1 bring-up executable. It owns TUN setup and, when a public IPv4
-# is supplied, one exact-match nftables DNAT table. This remains a development
-# entrypoint; the final CLI and any future privilege helper come later.
+# Temporary P1 bring-up executable. IPv4 lifecycle behavior remains qualified;
+# P1b extends the same libraries rather than introducing a parallel stack.
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
 target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1 PRIVATE
@@ -110,9 +116,6 @@ target_link_libraries(tcp-shift-p1 PRIVATE
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)
 
 # Deterministic, unprivileged contracts for the production L3 packet path.
-# SOCK_DGRAM socketpairs preserve packet boundaries without adding runtime test
-# hooks: the TX contract fills the real send buffer to EAGAIN; the RX contract
-# injects an over-MTU datagram and requires a nonfatal packet drop.
 add_executable(tcp-shift-p1-backpressure-contract
     src/tests/l3_tun_backpressure_test.c
     src/platform.c
