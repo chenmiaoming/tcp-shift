@@ -1,0 +1,118 @@
+name: lwIP P0
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p0.yml'
+      - 'CMakeLists.txt'
+      - 'Makefile'
+      - 'src/**'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/validate-p0.sh'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P0 build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            cmake \
+            git \
+            time
+
+      - name: Validate scripts and baseline syntax
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/validate-p0.sh
+          grep -Eq '^LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip\.git$' .lwip-baseline
+          grep -Eq '^LWIP_COMMIT=[0-9a-f]{40}$' .lwip-baseline
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Show upstream provenance
+        run: |
+          cat .build/upstream.env
+          cat .build/lwip-critical.sha256
+
+      - name: Build the constrained P0 surface
+        run: |
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --parallel
+
+      - name: Enforce config, source-surface, binary, and RSS gates
+        run: sh scripts/validate-p0.sh
+
+      - name: Stage reusable P0 runtime artifact
+        run: |
+          mkdir -p .build/p0-artifact
+          cp .build/tcp-shift .build/p0-artifact/tcp-shift
+          (cd .build/p0-artifact && sha256sum tcp-shift > tcp-shift.sha256)
+
+      - name: Upload P0 runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p0-runtime
+          path: .build/p0-artifact
+          if-no-files-found: error
+
+      - name: Upload P0 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p0-diagnostics
+          path: |
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/compile_commands.json
+            .build/CMakeFiles/tcp_shift_lwip.dir/build.make
+            .build/CMakeCache.txt
+            .build/p0-report.json
+            .build/p0-smoke.txt
+            .build/p0-maxrss-kib.txt
+            .build/p0-symbols.txt
+            .build/p0-elf-header.txt
+            .build/p0-size.txt
+          if-no-files-found: warn
+
+  artifact-smoke:
+    needs: build-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download exact P0 runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: tcp-shift-p0-runtime
+          path: runtime
+
+      - name: Verify and execute the staged runtime
+        run: |
+          cd runtime
+          sha256sum --check tcp-shift.sha256
+          chmod u+x tcp-shift
+          output=$(./tcp-shift)
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -F 'tcp-shift: lwIP '

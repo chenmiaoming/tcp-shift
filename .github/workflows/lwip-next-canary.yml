@@ -1,0 +1,62 @@
+name: lwIP next canary
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  current-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install canary dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            cmake \
+            git \
+            time
+
+      - name: Validate local test harness
+        run: sh -n scripts/validate-p0.sh
+
+      - name: Fetch current lwIP master
+        run: |
+          mkdir -p .deps .build
+          git clone --depth=1 https://github.com/lwip-tcpip/lwip.git .deps/lwip
+          commit=$(git -C .deps/lwip rev-parse HEAD)
+          printf 'LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip.git\nLWIP_ACTUAL_COMMIT=%s\n' "$commit" > .build/upstream.env
+          cat .build/upstream.env
+
+      - name: Build against current upstream
+        run: |
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --parallel
+
+      - name: Run the same P0 contracts against current upstream
+        run: sh scripts/validate-p0.sh
+
+      - name: Upload canary diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwip-next-canary
+          path: |
+            .build/upstream.env
+            .build/compile_commands.json
+            .build/p0-report.json
+            .build/p0-smoke.txt
+            .build/p0-maxrss-kib.txt
+            .build/p0-symbols.txt
+            .build/p0-elf-header.txt
+            .build/p0-size.txt
+          if-no-files-found: warn
