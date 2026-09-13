@@ -60,13 +60,13 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1a IPv4 is now qualified end to end on GitHub Actions: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; epoll is driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 and ICMP checksum behavior are qualified; and namespace traffic reaches lwIP through DNAT/conntrack.
+P0 remains the unprivileged reproducible initialization artifact. P1a IPv4 is now runner-qualified end to end on GitHub Actions: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; epoll is driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 and ICMP checksum behavior are qualified; and namespace traffic reaches lwIP through DNAT/conntrack.
 
 P1a also owns its IPv4 ingress resource rather than relying on the test harness. `src/host/nft_ingress.*` performs a read-only `nft -c` validation, then atomically creates one exclusive `ip tcp_shift_p1` table containing an exact public-address + TCP-port DNAT rule. Existing/stale table collisions are rejected rather than adopted. `net.ipv4.ip_forward` and broad host forwarding policy remain operator-managed prerequisites; tcp-shift diagnoses but does not rewrite them. On SIGTERM or startup rollback, tcp-shift deletes only its owned table before closing the nonpersistent TUN.
 
 The retained product-owned lifecycle evidence is `lwIP P1 IPv4 TUN` run `34763055040`: forwarding-disabled preflight passed without sysctl mutation, exclusive table-collision rejection passed, a namespace client connected through product-owned DNAT at `198.51.101.1:18081`, signal cleanup removed the TUN/table, and an unrelated nftables table was unchanged.
 
-The active milestone is now P1b IPv6: extend the same L3/runtime/lifecycle design to IPv6-only operation, ICMPv6/TCP, exact IPv6 ingress, and Packet Too Big/PMTU qualification before P2 backend-bridge work begins.
+This is GitHub-runner qualification, not yet provider/OpenVZ qualification. The active milestone is P1b IPv6: extend the same L3/runtime/lifecycle design to IPv6-only operation, ICMPv6/TCP, exact IPv6 ingress, and Packet Too Big/PMTU qualification before P2 backend-bridge work begins.
 
 Start here for project state:
 
@@ -76,4 +76,4 @@ Start here for project state:
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
 - [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state and evidence.
 
-> Status: P1a IPv4 complete; P1b IPv6 in progress. Do not use on production traffic.
+> Status: P1a IPv4 runner-qualified; P1b IPv6 in progress. Do not use on production traffic.
