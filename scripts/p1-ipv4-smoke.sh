@@ -214,11 +214,27 @@ fi
 cat "$OUT/mtu-over.txt"
 grep -Ei 'message too long|mtu' "$OUT/mtu-over.txt" >/dev/null
 
-# Send one deliberately bad ICMP checksum and one correct checksum through the
-# same TUN route. lwIP must ignore the bad echo request, answer the valid one,
-# and remain alive for the later TCP/DNAT qualification.
+# Capture the exact two echo requests on the TUN while the checksum probe runs.
+# tcpdump reports the on-wire ICMP checksum, allowing a failed gate to separate
+# packet construction/routing from lwIP checksum handling.
+sudo timeout 4 tcpdump -U -i "$TUN_NAME" -c 2 -nn -vvv -XX \
+    "icmp and src host $HOST_IP and dst host $LWIP_IP" \
+    > "$OUT/checksum-wire.txt" 2>&1 &
+TCPDUMP_PID=$!
+sleep 0.15
+set +e
 sudo python3 "$ROOT/scripts/p1-ipv4-checksum.py" "$HOST_IP" "$LWIP_IP" \
-    | tee "$OUT/checksum.txt"
+    > "$OUT/checksum.txt" 2> "$OUT/checksum.stderr"
+CHECKSUM_RC=$?
+set -e
+wait "$TCPDUMP_PID" || true
+cat "$OUT/checksum.txt"
+cat "$OUT/checksum.stderr" >&2
+cat "$OUT/checksum-wire.txt" >&2
+if [ "$CHECKSUM_RC" -ne 0 ]; then
+    echo "ICMP checksum probe failed; retained software and wire diagnostics above" >&2
+    exit "$CHECKSUM_RC"
+fi
 grep -F 'icmp_checksum_bad_reply=none icmp_checksum_good_reply=received' \
     "$OUT/checksum.txt" >/dev/null
 
