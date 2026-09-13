@@ -45,6 +45,7 @@ static err_t tcp_shift_bridge_public_sent(void *arg,
                                           u16_t len);
 static err_t tcp_shift_bridge_public_poll(void *arg, struct tcp_pcb *pcb);
 static void tcp_shift_bridge_public_error(void *arg, err_t err);
+static int tcp_shift_bridge_backend_ready(void *arg, uint32_t events);
 
 static void tcp_shift_bridge_flow_set_callbacks(
     struct tcp_shift_bridge_flow *flow)
@@ -163,7 +164,8 @@ static int tcp_shift_bridge_configure_backend_socket(
                    &actual, &actual_length) < 0) {
         return -1;
     }
-    if (actual > 0 && (uint32_t)actual > flow->bridge->backend_socket_sndbuf_bytes) {
+    if (actual > 0 &&
+        (uint32_t)actual > flow->bridge->backend_socket_sndbuf_bytes) {
         flow->bridge->backend_socket_sndbuf_bytes = (uint32_t)actual;
     }
 
@@ -173,7 +175,8 @@ static int tcp_shift_bridge_configure_backend_socket(
                    &actual, &actual_length) < 0) {
         return -1;
     }
-    if (actual > 0 && (uint32_t)actual > flow->bridge->backend_socket_rcvbuf_bytes) {
+    if (actual > 0 &&
+        (uint32_t)actual > flow->bridge->backend_socket_rcvbuf_bytes) {
         flow->bridge->backend_socket_rcvbuf_bytes = (uint32_t)actual;
     }
     return 0;
@@ -182,15 +185,17 @@ static int tcp_shift_bridge_configure_backend_socket(
 static uint32_t tcp_shift_bridge_backend_events(
     const struct tcp_shift_bridge_flow *flow)
 {
-    uint32_t events;
+    uint32_t events = 0U;
 
     if (flow->backend_connecting != 0U) {
         return EPOLLOUT;
     }
 
-    events = EPOLLRDHUP;
+    /* EPOLLRDHUP is level-triggered. Once EOF is known, or while lwIP send
+     * memory intentionally blocks backend reads, leaving RDHUP armed would
+     * cause a readiness spin. tcp_sent/tcp_poll re-arm reads after progress. */
     if (flow->backend_eof == 0U && flow->backend_read_blocked == 0U) {
-        events |= EPOLLIN;
+        events |= EPOLLIN | EPOLLRDHUP;
     }
     if (flow->public_rx != NULL) {
         events |= EPOLLOUT;
@@ -201,12 +206,23 @@ static uint32_t tcp_shift_bridge_backend_events(
 static int tcp_shift_bridge_sync_backend_watch(
     struct tcp_shift_bridge_flow *flow)
 {
-    uint32_t events;
+    uint32_t events = tcp_shift_bridge_backend_events(flow);
 
-    if (flow->backend_watch.registered == 0U) {
+    if (events == 0U) {
+        if (flow->backend_watch.registered != 0U) {
+            return tcp_shift_lwip_loop_watch_remove(flow->bridge->loop,
+                                                    &flow->backend_watch);
+        }
         return 0;
     }
-    events = tcp_shift_bridge_backend_events(flow);
+
+    if (flow->backend_watch.registered == 0U) {
+        return tcp_shift_lwip_loop_watch_add(flow->bridge->loop,
+                                             &flow->backend_watch,
+                                             flow->backend_fd, events,
+                                             tcp_shift_bridge_backend_ready,
+                                             flow);
+    }
     return tcp_shift_lwip_loop_watch_mod(flow->bridge->loop,
                                          &flow->backend_watch, events);
 }
