@@ -38,12 +38,14 @@ do
         fail "required lwIP source not compiled: $required"
 done
 
-# IPv6 is explicit, but the L3 TUN profile still excludes Ethernet, DHCP6/MLD,
-# sequential APIs and unrelated network-interface families.
+# IPv6 is explicit, but the low-memory L3 TUN profile excludes Ethernet,
+# dynamic address control planes, endpoint fragmentation/reassembly, sequential
+# APIs and unrelated network-interface families.
 for forbidden in \
     '/src/core/ipv6/ethip6.c' \
     '/src/core/ipv6/dhcp6.c' \
     '/src/core/ipv6/mld6.c' \
+    '/src/core/ipv6/ip6_frag.c' \
     '/src/api/' \
     '/src/netif/ppp/' \
     '/src/netif/lowpan6' \
@@ -87,7 +89,7 @@ cat > "$BUILD/p0-report.json" <<EOF
   "binary_limit_bytes": $MAX_BINARY_BYTES,
   "max_rss_kib": $RSS_SAMPLE_KIB,
   "max_rss_limit_kib": $RSS_LIMIT_KIB,
-  "source_surface": "dualstack-tcp-no-sys",
+  "source_surface": "dualstack-tcp-no-sys-no-ipv6-frag",
   "window_scaling": false
 }
 EOF
