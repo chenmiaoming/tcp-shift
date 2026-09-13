@@ -25,13 +25,13 @@ Implemented and compiling under `-Werror`:
 - event-loop telemetry records waits, ready wakes, timeout wakes, EINTR, TUN readable wakes, and TUN writable wakes;
 - EPOLLOUT is armed only while the bounded TUN TX queue is non-empty;
 - `src/lwip/probe_listener.*` installs a minimal raw-API IPv4 TCP listener used only to qualify SYN/SYN-ACK/accept behavior before P2;
-- `tcp-shift-p1` is a temporary privileged bring-up executable that owns TUN, host IPv4 interface configuration, lwIP netif state, timers, and packet I/O.
+- `tcp-shift-p1` is a temporary privileged bring-up executable that owns TUN, host IPv4 interface configuration, lwIP netif state, timers, and packet I/O;
+- `tcp-shift-p1-backpressure-contract` deterministically drives the production `writev`/queue/flush path against a nonblocking packet socket filled to `EAGAIN` without adding a runtime test hook.
 
 The nonpersistent TUN fd is the rollback boundary for host-side address/MTU/connected-route state. If initialization fails or the process exits, closing the fd removes the interface and those dependent resources together.
 
 Still required before P1a exit:
 
-- deterministic failure-path tests for TUN TX queue pressure, FIFO ordering, queue ceilings, and cleanup;
 - production lifecycle ownership for narrow forwarding/NAT rules instead of CI-only harness rules;
 - checksum/MTU boundary qualification beyond the normal 1500-byte smoke path.
 
@@ -117,7 +117,21 @@ The workflow then restarted a fresh process and re-ran the normal packet path. I
 rx_packets=12 tx_packets=7 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=2 tcp_rx_bytes=0 tcp_errors=0 loop_wait_calls=12 loop_ready_wakeups=8 loop_timeout_wakeups=3 loop_eintr_wakeups=1 loop_tun_readable_wakeups=8 loop_tun_writable_wakeups=0
 ```
 
-For commit `3b63669d14fc7cbf40d048e45b729c7950c352d8`, P0 qualification, upstream provenance, and the P1 IPv4 behavior workflow all passed. The measured idle-wakeup requirement is therefore satisfied for the current IPv4 event loop.
+The measured idle-wakeup requirement is therefore satisfied for the current IPv4 event loop.
+
+### Run 34743392756: deterministic TX queue pressure/FIFO contract
+
+The P1 workflow now runs an unprivileged contract executable before granting `CAP_NET_ADMIN`. It uses a nonblocking `AF_UNIX/SOCK_DGRAM` socketpair as a packet-oriented fd, fills the real send buffer to `EAGAIN`, and invokes the same `netif.output -> writev -> queue -> flush` path used by TUN. No test-specific writer is injected into production code.
+
+The contract queued 64 full-MTU 1500-byte packets, reaching a measured peak of 96,000 bytes. The 65th packet was rejected with `ERR_MEM` and incremented the queue-drop counter once. It then drained/flushed the queue across repeated real `EAGAIN` events while verifying every packet sequence number in FIFO order. Finally it recreated backpressure, left two pbufs queued, called detach, and required the queue count/bytes/writable state to return to zero.
+
+Retained output:
+
+```text
+tcp-shift-p1-backpressure: packets=64 peak_bytes=96000 drops=1 tx_packets=64 tx_would_block=17 fifo_order=ok detach_cleanup=ok
+```
+
+The same run then repeated the idle, ICMP, direct TCP, and DNAT TCP behavior gates successfully. For commit `567003d9ff0b1f146e6b5f6a70acddd024d4a753`, P0 qualification, upstream provenance, and P1 IPv4 all passed. The bounded TX backpressure requirement is therefore satisfied for the current queue implementation.
 
 ## Temporary IPv4 bring-up shape
 
@@ -137,7 +151,7 @@ The process creates `ts0`, sets its host-side address to `10.0.0.1`, sets MTU 15
 
 ## P1b: IPv6
 
-Immediately after the remaining IPv4 backpressure/lifecycle/MTU invariants are qualified, extend the same adapter rather than creating a parallel runtime. Required work includes IPv6 address configuration, `netif->output_ip6`, `ip6_input`, ICMPv6, TCP, Packet Too Big/PMTU validation, and extension-header-safe netfilter rules.
+Immediately after the remaining IPv4 host-lifecycle/checksum/MTU invariants are qualified, extend the same adapter rather than creating a parallel runtime. Required work includes IPv6 address configuration, `netif->output_ip6`, `ip6_input`, ICMPv6, TCP, Packet Too Big/PMTU validation, and extension-header-safe netfilter rules.
 
 IPv6-only deployment is an exit requirement because it is common in the low-cost VPS environments the product targets.
 
@@ -151,7 +165,7 @@ The loop derives its sleep deadline from lwIP timers. It does not use a fixed pe
 
 TUN is packet-oriented. A transmit packet is never stream-split across multiple writes. When a nonblocking write returns `EAGAIN`, tcp-shift takes an additional pbuf reference, keeps that whole packet in the bounded FIFO, and returns success to the synchronous lwIP output path because ownership has transferred to the queue. The reference is released only after successful transmit or adapter teardown.
 
-Queue exhaustion is observable through `tx_queue_drops` and returns `ERR_MEM` to lwIP. Unbounded buffering is prohibited.
+Queue exhaustion is observable through `tx_queue_drops` and returns `ERR_MEM` to lwIP. Unbounded buffering is prohibited. Run `34743392756` mechanically proves the packet-count ceiling, byte residency at full MTU, FIFO ordering under repeated EAGAIN/flush cycles, and queued-reference cleanup on detach.
 
 RX allocates only the pbuf required by the received packet after copying from the bounded host read buffer. Later optimization may reduce copies, but correctness and bounded residency come first.
 
