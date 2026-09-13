@@ -1,0 +1,79 @@
+name: lwIP P2 bridge
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p2.yml'
+      - 'CMakeLists.txt'
+      - 'src/bridge/**'
+      - 'src/runtime/**'
+      - 'src/lwip/**'
+      - 'src/host/**'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p2-bridge-smoke.sh'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P2 dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            libcap2-bin \
+            python3
+
+      - name: Validate bridge harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p2-bridge-smoke.sh
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Build pinned P2 runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Grant TUN administration capability
+        run: |
+          sudo setcap cap_net_admin+ep .build/tcp-shift-p2
+          getcap .build/tcp-shift-p2 | tee .build/p2-capability.txt
+          grep -F 'cap_net_admin=ep' .build/p2-capability.txt
+
+      - name: Exercise bidirectional bridge and natural teardown
+        run: sh scripts/p2-bridge-smoke.sh
+
+      - name: Upload P2 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p2-bridge-diagnostics
+          path: |
+            .build/p2-capability.txt
+            .build/p2-bridge-ci
+          if-no-files-found: warn
