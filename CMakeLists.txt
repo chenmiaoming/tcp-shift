@@ -13,6 +13,7 @@ endif()
 
 set(LWIP_INCLUDE_DIRS
     "${LWIP_DIR}/src/include"
+    "${LWIP_DIR}/contrib/ports/unix/port/include"
     "${CMAKE_SOURCE_DIR}/src"
 )
 
