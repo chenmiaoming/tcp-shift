@@ -7,12 +7,12 @@
 #include "host/nft_ingress.h"
 #include "host/tun.h"
 #include "lwip/init.h"
-#include "lwip/ip4_addr.h"
+#include "lwip/ip6_addr.h"
 #include "lwip/l3_tun.h"
 #include "lwip/probe_listener.h"
 #include "runtime/lwip_loop.h"
 
-#define TCP_SHIFT_P1_DEFAULT_PORT 18080U
+#define TCP_SHIFT_P1_IPV6_DEFAULT_PORT 18082U
 #define TCP_SHIFT_P1_MTU 1500U
 #define TCP_SHIFT_P1_NFT_TABLE "tcp_shift_p1"
 
@@ -24,10 +24,10 @@ static void tcp_shift_handle_signal(int signo)
     tcp_shift_stop = 1;
 }
 
-static int parse_ipv4(const char *text, ip4_addr_t *address)
+static int parse_ipv6(const char *text, ip6_addr_t *address)
 {
-    if (ip4addr_aton(text, address) == 0) {
-        fprintf(stderr, "invalid IPv4 address: %s\n", text);
+    if (ip6addr_aton(text, address) == 0) {
+        fprintf(stderr, "invalid IPv6 address: %s\n", text);
         return -1;
     }
     return 0;
@@ -52,10 +52,10 @@ static int parse_port(const char *text, uint16_t *port)
 static void usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "[listen-port [public-ipv4]]\n"
-            "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18080 198.51.100.1\n",
+            "usage: %s <tun-name> <lwip-ipv6> <host-ipv6-cidr> "
+            "[listen-port [public-ipv6]]\n"
+            "example: %s ts6 fd00:198:18::2 fd00:198:18::1/126 "
+            "18082 2001:db8:231::10\n",
             program, program);
 }
 
@@ -66,12 +66,10 @@ int main(int argc, char **argv)
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_probe_listener listener;
     struct tcp_shift_nft_ingress ingress;
-    ip4_addr_t address;
-    ip4_addr_t netmask;
-    ip4_addr_t gateway;
-    ip4_addr_t public_address;
-    const char *public_ipv4 = NULL;
-    uint16_t listen_port = TCP_SHIFT_P1_DEFAULT_PORT;
+    ip6_addr_t address;
+    ip6_addr_t public_address;
+    const char *public_ipv6 = NULL;
+    uint16_t listen_port = TCP_SHIFT_P1_IPV6_DEFAULT_PORT;
     int listener_started = 0;
     int loop_started = 0;
     int forwarding;
@@ -84,21 +82,19 @@ int main(int argc, char **argv)
     ingress.ip_version = 0U;
     ingress.installed = 0;
 
-    if (argc != 5 && argc != 6 && argc != 7) {
+    if (argc != 4 && argc != 5 && argc != 6) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
-    if (parse_ipv4(argv[2], &address) < 0 ||
-        parse_ipv4(argv[3], &netmask) < 0 ||
-        parse_ipv4(argv[4], &gateway) < 0 ||
-        (argc >= 6 && parse_port(argv[5], &listen_port) < 0)) {
+    if (parse_ipv6(argv[2], &address) < 0 ||
+        (argc >= 5 && parse_port(argv[4], &listen_port) < 0)) {
         return EXIT_FAILURE;
     }
-    if (argc == 7) {
-        if (parse_ipv4(argv[6], &public_address) < 0) {
+    if (argc == 6) {
+        if (parse_ipv6(argv[5], &public_address) < 0) {
             return EXIT_FAILURE;
         }
-        public_ipv4 = argv[6];
+        public_ipv6 = argv[5];
     }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
@@ -113,18 +109,17 @@ int main(int argc, char **argv)
         perror("open TUN");
         return EXIT_FAILURE;
     }
-    if (tcp_shift_host_configure_ipv4_tun(tun.ifname, argv[4], argv[3],
+    if (tcp_shift_host_configure_ipv6_tun(tun.ifname, argv[3],
                                           TCP_SHIFT_P1_MTU) < 0) {
-        perror("configure host TUN interface");
+        perror("configure host IPv6 TUN interface");
         goto out_tun;
     }
-    if (tcp_shift_l3_tun_attach_ipv4(&l3, tun.fd, &address, &netmask,
-                                     &gateway) < 0) {
-        perror("attach lwIP TUN netif");
+    if (tcp_shift_l3_tun_attach_ipv6(&l3, tun.fd, &address) < 0) {
+        perror("attach lwIP IPv6 TUN netif");
         goto out_tun;
     }
-    if (tcp_shift_probe_listener_start(&listener, listen_port) < 0) {
-        perror("start lwIP TCP probe listener");
+    if (tcp_shift_probe_listener_start_ipv6(&listener, listen_port) < 0) {
+        perror("start lwIP IPv6 TCP probe listener");
         goto out_l3;
     }
     listener_started = 1;
@@ -134,36 +129,36 @@ int main(int argc, char **argv)
     }
     loop_started = 1;
 
-    if (public_ipv4 != NULL) {
-        forwarding = tcp_shift_host_ipv4_forwarding_enabled();
+    if (public_ipv6 != NULL) {
+        forwarding = tcp_shift_host_ipv6_forwarding_enabled();
         if (forwarding < 0) {
-            perror("read net.ipv4.ip_forward");
+            perror("read net.ipv6.conf.all.forwarding");
             goto out_loop;
         }
         if (forwarding == 0) {
             fprintf(stderr,
-                    "tcp-shift-p1: IPv4 forwarding is disabled; "
-                    "configure net.ipv4.ip_forward=1 before public ingress\n");
+                    "tcp-shift-p1-ipv6: IPv6 forwarding is disabled; "
+                    "configure net.ipv6.conf.all.forwarding=1 before public ingress\n");
             goto out_loop;
         }
-        if (tcp_shift_nft_ingress_install_ipv4(&ingress,
+        if (tcp_shift_nft_ingress_install_ipv6(&ingress,
                                                TCP_SHIFT_P1_NFT_TABLE,
-                                               public_ipv4, listen_port,
+                                               public_ipv6, listen_port,
                                                argv[2], listen_port) < 0) {
-            perror("install nft ingress");
+            perror("install IPv6 nft ingress");
             goto out_loop;
         }
     }
 
-    if (public_ipv4 != NULL) {
-        printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
-               "mtu=%u tcp-port=%u public-ipv4=%s nft-table=%s\n",
-               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
-               (unsigned)listen_port, public_ipv4, ingress.table_name);
+    if (public_ipv6 != NULL) {
+        printf("tcp-shift-p1-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
+               "mtu=%u tcp-port=%u public-ipv6=%s nft-table=%s\n",
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)listen_port, public_ipv6, ingress.table_name);
     } else {
-        printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
+        printf("tcp-shift-p1-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
                "mtu=%u tcp-port=%u\n",
-               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
                (unsigned)listen_port);
     }
     fflush(stdout);
@@ -178,7 +173,7 @@ int main(int argc, char **argv)
     }
 
     fprintf(stderr,
-            "tcp-shift-p1: rx_packets=%llu rx_drops=%llu rx_errors=%llu "
+            "tcp-shift-p1-ipv6: rx_packets=%llu rx_drops=%llu rx_errors=%llu "
             "tx_packets=%llu tx_queue_peak_bytes=%u tx_queue_drops=%llu "
             "tcp_accepts=%llu tcp_rx_bytes=%llu tcp_errors=%llu "
             "loop_wait_calls=%llu loop_ready_wakeups=%llu "
@@ -202,7 +197,7 @@ int main(int argc, char **argv)
 
 out_loop:
     if (ingress.installed != 0 && tcp_shift_nft_ingress_remove(&ingress) < 0) {
-        perror("remove nft ingress");
+        perror("remove IPv6 nft ingress");
         status = EXIT_FAILURE;
     }
     if (loop_started != 0) {

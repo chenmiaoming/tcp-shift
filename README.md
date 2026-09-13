@@ -27,9 +27,9 @@ single-owner userspace bridge
 127.0.0.1 backend
 ```
 
-The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket.
+The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket. Public IPv6 therefore does not require an IPv6-capable application backend: P2 will initially connect accepted IPv4 or IPv6 public streams to `127.0.0.1`.
 
-The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is qualified first; IPv6-only operation is a product requirement and is the active next milestone rather than a late optional feature.
+The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. The same L3 adapter and event-loop owner now qualify both IPv4 and IPv6.
 
 ## Module direction
 
@@ -60,13 +60,20 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1a IPv4 is now runner-qualified end to end on GitHub Actions: a real nonpersistent L3 TUN carries ICMP and TCP through lwIP; epoll is driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure is bounded to 64 packets / 96 KiB with FIFO ordering; oversized RX packets are nonfatal drops; MTU 1500/1501 and ICMP checksum behavior are qualified; and namespace traffic reaches lwIP through DNAT/conntrack.
+P0 remains the unprivileged reproducible initialization artifact. P1 is now runner-qualified for both public address families on GitHub Actions.
 
-P1a also owns its IPv4 ingress resource rather than relying on the test harness. `src/host/nft_ingress.*` performs a read-only `nft -c` validation, then atomically creates one exclusive `ip tcp_shift_p1` table containing an exact public-address + TCP-port DNAT rule. Existing/stale table collisions are rejected rather than adopted. `net.ipv4.ip_forward` and broad host forwarding policy remain operator-managed prerequisites; tcp-shift diagnoses but does not rewrite them. On SIGTERM or startup rollback, tcp-shift deletes only its owned table before closing the nonpersistent TUN.
+P1a IPv4 proves a real nonpersistent L3 TUN carrying ICMP and TCP through lwIP; epoll driven by lwIP timer deadlines without a fixed polling tick; TUN write backpressure bounded to 64 packets / 96 KiB with FIFO ordering; nonfatal oversized RX drops; MTU 1500/1501 and ICMP checksum behavior; namespace DNAT/conntrack; and product-owned exact IPv4 nftables ingress with prerequisite, collision, rollback, signal-cleanup, and unrelated-ruleset preservation gates.
 
-The retained product-owned lifecycle evidence is `lwIP P1 IPv4 TUN` run `34763055040`: forwarding-disabled preflight passed without sysctl mutation, exclusive table-collision rejection passed, a namespace client connected through product-owned DNAT at `198.51.101.1:18081`, signal cleanup removed the TUN/table, and an unrelated nftables table was unchanged.
+P1b extends the same runtime to IPv6 without enabling Ethernet, SLAAC, router solicitation, DHCPv6, MLD, ND6 packet queueing, or IPv6 fragmentation/reassembly. CI proves direct ICMPv6/TCP, 1500/1501 MTU behavior, product-owned exact `ip6` DNAT/conntrack, Hop-by-Hop extension-header-safe TCP matching, IPv6 forwarding prerequisite handling, cleanup, and routed ICMPv6 Packet Too Big learning. The retained PMTU evidence from P1 run `34767386662` is:
 
-This is GitHub-runner qualification, not yet provider/OpenVZ qualification. The active milestone is P1b IPv6: extend the same L3/runtime/lifecycle design to IPv6-only operation, ICMPv6/TCP, exact IPv6 ingress, and Packet Too Big/PMTU qualification before P2 backend-bridge work begins.
+```text
+ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
+P1b routed IPv6 Packet Too Big/PMTU qualification passed
+```
+
+A pure L3 TUN bypasses the Ethernet ND path that normally creates lwIP IPv6 destination-cache entries. `src/lwip/l3_tun.c` therefore seeds/refreshes lwIP's existing fixed ND6 destination cache before IPv6 output; it does not allocate a second PMTU table or start neighbor discovery. Upstream `nd6_input()` still owns PTB updates and upstream TCP MSS calculation consumes the learned PMTU.
+
+This is GitHub-runner qualification, not yet provider/OpenVZ qualification. The active milestone is now P2: replace the temporary probe listener with the real bounded public-stream-to-`127.0.0.1` backend bridge while preserving the P1 packet/lifecycle gates.
 
 Start here for project state:
 
@@ -74,6 +81,6 @@ Start here for project state:
 - [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
-- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state and evidence.
+- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — completed P1 packet-path state and evidence.
 
-> Status: P1a IPv4 runner-qualified; P1b IPv6 in progress. Do not use on production traffic.
+> Status: P1 dual-stack packet path runner-qualified; P2 backend bridge next. Do not use on production traffic.

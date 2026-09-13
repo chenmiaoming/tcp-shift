@@ -15,6 +15,8 @@ struct tcp_shift_probe_listener {
 
 int tcp_shift_probe_listener_start(struct tcp_shift_probe_listener *listener,
                                    uint16_t port);
+int tcp_shift_probe_listener_start_ipv6(struct tcp_shift_probe_listener *listener,
+                                        uint16_t port);
 void tcp_shift_probe_listener_stop(struct tcp_shift_probe_listener *listener);
 
 #endif /* TCP_SHIFT_LWIP_PROBE_LISTENER_H */

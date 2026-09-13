@@ -18,7 +18,7 @@ set(LWIP_INCLUDE_DIRS
 )
 
 # Filelists generates lwip/init.h. Its broad library targets remain
-# EXCLUDE_FROM_ALL; tcp-shift links only the explicit P0 source allowlist below.
+# EXCLUDE_FROM_ALL; tcp-shift links only the explicit source allowlist below.
 include("${LWIP_DIR}/src/Filelists.cmake")
 
 set(TCP_SHIFT_LWIP_SRCS
@@ -39,6 +39,21 @@ set(TCP_SHIFT_LWIP_SRCS
     "${LWIP_DIR}/src/core/ipv4/ip4.c"
     "${LWIP_DIR}/src/core/ipv4/ip4_addr.c"
     "${LWIP_DIR}/src/core/ipv4/ip4_frag.c"
+    "${LWIP_DIR}/src/core/ipv6/icmp6.c"
+    "${LWIP_DIR}/src/core/ipv6/inet6.c"
+    "${LWIP_DIR}/src/core/ipv6/ip6.c"
+    "${LWIP_DIR}/src/core/ipv6/ip6_addr.c"
+    "${LWIP_DIR}/src/core/ipv6/nd6.c"
+)
+
+# The pinned lwIP ND6 unit leaves two otherwise useful diagnostics unused when
+# tcp-shift deliberately disables RS/SLAAC. Keep the warnings visible, but do
+# not let only those two upstream diagnostics become build errors. Project code
+# and every other warning in the lwIP allowlist remain under -Werror.
+set_source_files_properties(
+    "${LWIP_DIR}/src/core/ipv6/nd6.c"
+    PROPERTIES COMPILE_OPTIONS
+        "-Wno-error=unused-parameter;-Wno-error=unused-variable"
 )
 
 add_library(tcp_shift_lwip STATIC ${TCP_SHIFT_LWIP_SRCS})
@@ -48,11 +63,10 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
-# Linux host integration is deliberately separate from the lwIP transport code.
-# This is a source/library boundary, not a process boundary.
 add_library(tcp_shift_host STATIC
     src/host/tun.c
     src/host/ifconfig.c
+    src/host/ifconfig_ipv6.c
     src/host/nft_ingress.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -83,7 +97,6 @@ add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-# P0 remains an unprivileged reproducible initialization artifact.
 add_executable(tcp-shift src/main.c src/platform.c)
 target_include_directories(tcp-shift PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift PRIVATE
@@ -93,9 +106,6 @@ target_compile_options(tcp-shift PRIVATE
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
-# Temporary P1 bring-up executable. It owns TUN setup and, when a public IPv4
-# is supplied, one exact-match nftables DNAT table. This remains a development
-# entrypoint; the final CLI and any future privilege helper come later.
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
 target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1 PRIVATE
@@ -109,10 +119,21 @@ target_link_libraries(tcp-shift-p1 PRIVATE
 )
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)
 
-# Deterministic, unprivileged contracts for the production L3 packet path.
-# SOCK_DGRAM socketpairs preserve packet boundaries without adding runtime test
-# hooks: the TX contract fills the real send buffer to EAGAIN; the RX contract
-# injects an over-MTU datagram and requires a nonfatal packet drop.
+# P1b IPv6-only bring-up reuses the same host/L3/runtime/probe libraries. It is
+# intentionally a temporary qualification entrypoint, not a second datapath.
+add_executable(tcp-shift-p1-ipv6 src/p1_ipv6_main.c src/platform.c)
+target_include_directories(tcp-shift-p1-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p1-ipv6 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p1-ipv6 PRIVATE
+    tcp_shift_host
+    tcp_shift_runtime
+    tcp_shift_probe
+)
+target_link_options(tcp-shift-p1-ipv6 PRIVATE -Wl,--gc-sections)
+
 add_executable(tcp-shift-p1-backpressure-contract
     src/tests/l3_tun_backpressure_test.c
     src/platform.c
@@ -136,3 +157,13 @@ target_compile_options(tcp-shift-p1-rx-contract PRIVATE
 )
 target_link_libraries(tcp-shift-p1-rx-contract PRIVATE tcp_shift_l3)
 target_link_options(tcp-shift-p1-rx-contract PRIVATE -Wl,--gc-sections)
+
+# CI-only raw packet generator. It proves that the IPv6 nft ingress rule matches
+# TCP after a Hop-by-Hop extension header and that DNAT routes that packet into
+# the same TUN/lwIP datapath. It is not linked into a product runtime.
+add_executable(tcp-shift-p1-ipv6-ext-header-probe
+    src/tests/ipv6_extension_header_probe.c
+)
+target_compile_options(tcp-shift-p1-ipv6-ext-header-probe PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)

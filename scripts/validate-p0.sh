@@ -29,14 +29,23 @@ for required in \
     '/src/core/tcp.c' \
     '/src/core/tcp_in.c' \
     '/src/core/tcp_out.c' \
-    '/src/core/ipv4/ip4.c'
+    '/src/core/ipv4/ip4.c' \
+    '/src/core/ipv6/ip6.c' \
+    '/src/core/ipv6/icmp6.c' \
+    '/src/core/ipv6/nd6.c'
 do
     grep -F "$required" "$TARGET_MANIFEST" >/dev/null || \
         fail "required lwIP source not compiled: $required"
 done
 
+# IPv6 is explicit, but the low-memory L3 TUN profile excludes Ethernet,
+# dynamic address control planes, endpoint fragmentation/reassembly, sequential
+# APIs and unrelated network-interface families.
 for forbidden in \
-    '/src/core/ipv6/' \
+    '/src/core/ipv6/ethip6.c' \
+    '/src/core/ipv6/dhcp6.c' \
+    '/src/core/ipv6/mld6.c' \
+    '/src/core/ipv6/ip6_frag.c' \
     '/src/api/' \
     '/src/netif/ppp/' \
     '/src/netif/lowpan6' \
@@ -80,7 +89,7 @@ cat > "$BUILD/p0-report.json" <<EOF
   "binary_limit_bytes": $MAX_BINARY_BYTES,
   "max_rss_kib": $RSS_SAMPLE_KIB,
   "max_rss_limit_kib": $RSS_LIMIT_KIB,
-  "source_surface": "ipv4-tcp-no-sys",
+  "source_surface": "dualstack-tcp-no-sys-no-ipv6-frag",
   "window_scaling": false
 }
 EOF

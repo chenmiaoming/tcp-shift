@@ -73,14 +73,17 @@ static err_t tcp_shift_probe_accept(void *arg,
     return ERR_OK;
 }
 
-int tcp_shift_probe_listener_start(struct tcp_shift_probe_listener *listener,
-                                   uint16_t port)
+static int tcp_shift_probe_listener_start_type(
+    struct tcp_shift_probe_listener *listener,
+    uint16_t port,
+    u8_t ip_type,
+    const ip_addr_t *bind_address)
 {
     struct tcp_pcb *pcb;
     struct tcp_pcb *listening;
     err_t err;
 
-    if (listener == NULL || port == 0U) {
+    if (listener == NULL || port == 0U || bind_address == NULL) {
         errno = EINVAL;
         return -1;
     }
@@ -88,13 +91,13 @@ int tcp_shift_probe_listener_start(struct tcp_shift_probe_listener *listener,
     memset(listener, 0, sizeof(*listener));
     listener->port = port;
 
-    pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    pcb = tcp_new_ip_type(ip_type);
     if (pcb == NULL) {
         errno = ENOMEM;
         return -1;
     }
 
-    err = tcp_bind(pcb, IP_ANY_TYPE, port);
+    err = tcp_bind(pcb, bind_address, port);
     if (err != ERR_OK) {
         tcp_abort(pcb);
         errno = EADDRINUSE;
@@ -114,6 +117,20 @@ int tcp_shift_probe_listener_start(struct tcp_shift_probe_listener *listener,
     tcp_arg(listening, listener);
     tcp_accept(listening, tcp_shift_probe_accept);
     return 0;
+}
+
+int tcp_shift_probe_listener_start(struct tcp_shift_probe_listener *listener,
+                                   uint16_t port)
+{
+    return tcp_shift_probe_listener_start_type(listener, port, IPADDR_TYPE_V4,
+                                                IP4_ADDR_ANY);
+}
+
+int tcp_shift_probe_listener_start_ipv6(struct tcp_shift_probe_listener *listener,
+                                        uint16_t port)
+{
+    return tcp_shift_probe_listener_start_type(listener, port, IPADDR_TYPE_V6,
+                                                IP6_ADDR_ANY);
 }
 
 void tcp_shift_probe_listener_stop(struct tcp_shift_probe_listener *listener)
