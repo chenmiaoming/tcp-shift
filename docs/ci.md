@@ -84,7 +84,7 @@ The test deliberately set `net.ipv4.ip_forward=0` in the harness and proved tcp-
 
 The P1 diagnostic artifact for this run was `tcp-shift-p1-ipv4-diagnostics`, artifact ID `10319408011`.
 
-P1a IPv4 is complete by the current gate policy. Remaining P1 work is P1b IPv6: IPv6 source/config expansion, IPv6-only TUN addressing, ICMPv6/TCP, exact product-owned IPv6 ingress, Packet Too Big/PMTU, extension-header-safe matching, capability diagnostics, and cleanup while retaining all IPv4 regression gates.
+P1a IPv4 is runner-qualified and complete by the current P1a gate policy. This is not evidence that every OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, and conntrack privileges; provider-specific qualification remains separate. Remaining P1 implementation is P1b IPv6: IPv6 source/config expansion, IPv6-only TUN addressing, ICMPv6/TCP, exact product-owned IPv6 ingress, Packet Too Big/PMTU, extension-header-safe matching, capability diagnostics, and cleanup while retaining all IPv4 regression gates.
 
 ## Milestone CI growth
 
