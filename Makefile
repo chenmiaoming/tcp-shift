@@ -1,4 +1,4 @@
-.PHONY: fetch configure build clean distclean
+.PHONY: fetch configure build validate clean distclean
 
 fetch:
 	sh ./scripts/fetch-lwip.sh
@@ -8,6 +8,9 @@ configure: fetch
 
 build: configure
 	cmake --build .build --parallel
+
+validate: build
+	sh ./scripts/validate-p0.sh
 
 clean:
 	rm -rf .build
