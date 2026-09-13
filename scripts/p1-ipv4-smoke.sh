@@ -10,6 +10,7 @@ LWIP_IP=${TCP_SHIFT_P1_LWIP_IP:-10.231.0.2}
 HOST_CIDR=${TCP_SHIFT_P1_HOST_CIDR:-10.231.0.1/30}
 NETMASK=${TCP_SHIFT_P1_NETMASK:-255.255.255.252}
 GATEWAY=${TCP_SHIFT_P1_GATEWAY:-10.231.0.1}
+TCP_PORT=${TCP_SHIFT_P1_TCP_PORT:-18080}
 PID=
 
 mkdir -p "$OUT"
@@ -46,7 +47,7 @@ trap cleanup EXIT HUP INT TERM
     exit 1
 }
 
-"$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$GATEWAY" \
+"$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$GATEWAY" "$TCP_PORT" \
     > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 PID=$!
 
@@ -77,6 +78,20 @@ capture_state
 
 ping -n -c 3 -W 1 "$LWIP_IP" | tee "$OUT/ping.txt"
 
+python3 - "$LWIP_IP" "$TCP_PORT" > "$OUT/tcp-connect.txt" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+with socket.create_connection((host, port), timeout=2.0):
+    pass
+print(f"connected {host}:{port}")
+PY
+cat "$OUT/tcp-connect.txt"
+
+# Give the FIN/ACK exchange one event-loop turn before collecting counters.
+sleep 0.1
 kill -TERM "$PID"
 wait "$PID"
 PID=
@@ -87,10 +102,11 @@ cat "$OUT/runtime.stderr" >&2
 grep -F "tcp-shift-p1: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null
 grep -Eq 'rx_packets=[1-9][0-9]*' "$OUT/runtime.stderr"
 grep -Eq 'tx_packets=[1-9][0-9]*' "$OUT/runtime.stderr"
+grep -Eq 'tcp_accepts=[1-9][0-9]*' "$OUT/runtime.stderr"
 
 if ip link show "$TUN_NAME" >/dev/null 2>&1; then
     echo "nonpersistent TUN survived runtime exit" >&2
     exit 1
 fi
 
-echo "P1 IPv4 TUN smoke passed"
+echo "P1 IPv4 ICMP/TCP TUN smoke passed"

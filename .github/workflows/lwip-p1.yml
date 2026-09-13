@@ -40,7 +40,8 @@ jobs:
             git \
             iproute2 \
             iputils-ping \
-            libcap2-bin
+            libcap2-bin \
+            python3
 
       - name: Validate smoke harness
         run: |
@@ -61,7 +62,7 @@ jobs:
           getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
           grep -F 'cap_net_admin=ep' .build/p1-capability.txt
 
-      - name: Exercise IPv4 packets through lwIP
+      - name: Exercise IPv4 ICMP and TCP through lwIP
         run: sh scripts/p1-ipv4-smoke.sh
 
       - name: Upload P1 diagnostics

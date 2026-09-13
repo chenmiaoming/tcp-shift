@@ -70,6 +70,13 @@ target_include_directories(tcp_shift_runtime PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3)
 
+add_library(tcp_shift_probe STATIC
+    src/lwip/probe_listener.c
+)
+target_include_directories(tcp_shift_probe PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_probe PUBLIC tcp_shift_lwip)
+
 add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -92,5 +99,9 @@ target_compile_options(tcp-shift-p1 PRIVATE
     -Wall -Wextra -Wpedantic -Werror
     -ffunction-sections -fdata-sections
 )
-target_link_libraries(tcp-shift-p1 PRIVATE tcp_shift_host tcp_shift_runtime)
+target_link_libraries(tcp-shift-p1 PRIVATE
+    tcp_shift_host
+    tcp_shift_runtime
+    tcp_shift_probe
+)
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)

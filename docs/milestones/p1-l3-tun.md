@@ -22,27 +22,41 @@ Implemented and compiling under `-Werror`:
 - once a packet is queued, subsequent packets queue behind it so TUN packet order is preserved;
 - `src/runtime/lwip_loop.*` uses epoll and `sys_timeouts_sleeptime()` / `sys_check_timeouts()`; there is no fixed polling tick;
 - EPOLLOUT is armed only while the bounded TUN TX queue is non-empty;
+- `src/lwip/probe_listener.*` installs a minimal raw-API IPv4 TCP listener used only to qualify SYN/SYN-ACK/accept behavior before P2;
 - `tcp-shift-p1` is a temporary privileged bring-up executable that owns TUN, lwIP netif state, timers and packet I/O while host address/route setup remains external.
 
 Still required before P1a exit:
 
-- transactional host-side address/MTU/route setup and cleanup;
-- minimal lwIP TCP listener for SYN/SYN-ACK qualification;
-- privileged ICMP/TCP packet-path CI and retained packet captures;
+- transactional host-side address/MTU/route setup and cleanup in the product lifecycle layer;
 - explicit idle-wakeup measurement;
-- failure-path tests for queue pressure and host resource cleanup.
+- failure-path tests for queue pressure and host resource cleanup;
+- DNAT/conntrack packet-path qualification rather than only direct TUN subnet traffic.
 
 The adapter currently assumes a 1500-byte TUN MTU and rejects larger received packets. Host configuration must set the same MTU before behavioral qualification.
+
+## First retained IPv4 evidence
+
+GitHub Actions workflow `lwIP P1 IPv4 TUN`, run `34740740077`, passed on Ubuntu 24.04.5 using the pinned lwIP baseline.
+
+The test granted only `cap_net_admin=ep` to the temporary `tcp-shift-p1` executable, created nonpersistent TUN `tsp1ci0`, configured host `10.231.0.1/30`, and sent ICMP directly to lwIP `10.231.0.2`. All 3 echo requests received replies with 0% loss. The runtime reported:
+
+```text
+rx_packets=4 tx_packets=3 tx_queue_peak_bytes=0 tx_queue_drops=0
+```
+
+The test then verified that the TUN device disappeared after the runtime exited. Diagnostics retained interface, route and link state plus runtime output. This evidence proves the direct IPv4 L3 TUN + lwIP ICMP path and nonpersistent-fd cleanup. It does **not** yet prove DNAT, public-address routing, TCP, queue-pressure behavior, or idle wakeup bounds.
+
+The current CI extends this same workflow with a real host TCP `connect()` to the lwIP probe listener and requires `tcp_accepts > 0`; that TCP evidence is recorded only after the updated workflow passes.
 
 ## Manual IPv4 bring-up shape
 
 The temporary runtime accepts:
 
 ```text
-tcp-shift-p1 <tun-name> <lwip-ipv4> <netmask> <gateway>
+tcp-shift-p1 <tun-name> <lwip-ipv4> <netmask> <gateway> [listen-port]
 ```
 
-A test supervisor can start `tcp-shift-p1 ts0 10.0.0.2 255.255.255.252 10.0.0.1`, wait for `ts0`, configure the host side as `10.0.0.1/30` with MTU 1500, and then ping `10.0.0.2`. This is a development harness, not the final product CLI.
+A test supervisor can start `tcp-shift-p1 ts0 10.0.0.2 255.255.255.252 10.0.0.1 18080`, wait for `ts0`, configure the host side as `10.0.0.1/30` with MTU 1500, then ping `10.0.0.2` and connect to `10.0.0.2:18080`. This is a development harness, not the final product CLI.
 
 ## P1b: IPv6
 
@@ -70,7 +84,7 @@ P1 is complete only when CI or retained privileged test evidence proves both add
 
 - interface acquisition/configuration and cleanup;
 - ICMP/ICMPv6 echo through lwIP;
-- TCP SYN/SYN-ACK reaches a minimal lwIP listener;
+- TCP SYN/SYN-ACK and accept at a minimal lwIP listener;
 - checksums and MTU behavior;
 - IPv6 Packet Too Big/PMTU behavior;
 - no permanent writable polling;
@@ -81,4 +95,4 @@ Packet captures, interface/routing state, runtime counters, and logs should be r
 
 ## Deferred to P2
 
-P1 does not connect accepted TCP streams to an application backend. Raw TCP callbacks for payload forwarding, host loopback sockets, partial stream I/O, half-close/reset semantics, and connection lifecycle belong to P2.
+P1 does not connect accepted TCP streams to an application backend. The probe listener intentionally discards received payload and closes normally when the peer closes. Production raw TCP callback ownership, host loopback sockets, partial stream I/O, half-close/reset semantics, and connection lifecycle belong to P2.
