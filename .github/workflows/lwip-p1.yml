@@ -1,0 +1,75 @@
+name: lwIP P1 IPv4 TUN
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p1.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p1-ipv4-smoke.sh'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipv4-tun-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P1 dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iputils-ping \
+            libcap2-bin
+
+      - name: Validate smoke harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p1-ipv4-smoke.sh
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Build pinned P1 runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p1 --parallel
+
+      - name: Grant only TUN setup capability to the bring-up binary
+        run: |
+          sudo setcap cap_net_admin+ep .build/tcp-shift-p1
+          getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
+          grep -F 'cap_net_admin=ep' .build/p1-capability.txt
+
+      - name: Exercise IPv4 packets through lwIP
+        run: sh scripts/p1-ipv4-smoke.sh
+
+      - name: Upload P1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p1-ipv4-diagnostics
+          path: |
+            .build/p1-capability.txt
+            .build/p1-ci
+          if-no-files-found: warn
