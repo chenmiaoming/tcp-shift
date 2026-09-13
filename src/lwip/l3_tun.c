@@ -11,10 +11,68 @@
 #include "lwip/ip6.h"
 #include "lwip/ip6_addr.h"
 #include "lwip/pbuf.h"
+#include "lwip/priv/nd6_priv.h"
 
 #define TCP_SHIFT_L3_TUN_MAX_IOV 64U
 #define TCP_SHIFT_L3_TUN_RX_BUFFER 2048U
 #define TCP_SHIFT_IP_VERSION_SHIFT 4U
+
+/*
+ * lwIP normally creates ND6 destination-cache entries while resolving a
+ * link-layer next hop. A pure L3 TUN output callback deliberately bypasses that
+ * Ethernet/ND path, but the native ICMPv6 Packet Too Big handler will only
+ * update PMTU for a destination that is already present in this cache.
+ *
+ * Seed the existing lwIP cache without starting neighbor discovery. This adds
+ * no second PMTU table and no extra fixed memory: the destination_cache[] array
+ * is already part of the pinned lwIP IPv6 core. Keep the same empty-first,
+ * oldest-entry replacement policy used by nd6.c. Once seeded, upstream
+ * nd6_input() owns PTB updates and tcp_eff_send_mss_netif() consumes them.
+ */
+static void tcp_shift_l3_tun_track_ipv6_destination(
+    struct netif *netif,
+    const ip6_addr_t *destination)
+{
+    struct nd6_destination_cache_entry *entry;
+    unsigned selected = LWIP_ND6_NUM_DESTINATIONS;
+    unsigned i;
+    u32_t oldest_age = 0U;
+
+    if (netif == NULL || destination == NULL || ip6_addr_isany(destination) ||
+        ip6_addr_ismulticast(destination)) {
+        return;
+    }
+
+    for (i = 0U; i < LWIP_ND6_NUM_DESTINATIONS; i++) {
+        entry = &destination_cache[i];
+        if (ip6_addr_eq(&entry->destination_addr, destination)) {
+            entry->age = 0U;
+            return;
+        }
+        if (ip6_addr_isany(&entry->destination_addr)) {
+            selected = i;
+            break;
+        }
+    }
+
+    if (selected == LWIP_ND6_NUM_DESTINATIONS) {
+        selected = 0U;
+        oldest_age = destination_cache[0].age;
+        for (i = 1U; i < LWIP_ND6_NUM_DESTINATIONS; i++) {
+            if (destination_cache[i].age > oldest_age) {
+                oldest_age = destination_cache[i].age;
+                selected = i;
+            }
+        }
+    }
+
+    entry = &destination_cache[selected];
+    memset(entry, 0, sizeof(*entry));
+    ip6_addr_set(&entry->destination_addr, destination);
+    ip6_addr_set(&entry->next_hop_addr, destination);
+    entry->pmtu = netif->mtu;
+    entry->age = 0U;
+}
 
 static int tcp_shift_l3_tun_write_packet(struct tcp_shift_l3_tun *l3,
                                          struct pbuf *p)
@@ -138,7 +196,7 @@ static err_t tcp_shift_l3_tun_output_ipv6(struct netif *netif,
                                            struct pbuf *p,
                                            const ip6_addr_t *destination)
 {
-    (void)destination;
+    tcp_shift_l3_tun_track_ipv6_destination(netif, destination);
     return tcp_shift_l3_tun_output_packet(netif, p);
 }
 
