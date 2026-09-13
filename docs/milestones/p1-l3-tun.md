@@ -1,6 +1,6 @@
 # P1: dual-stack L3 TUN packet path
 
-Status: **P1a IPv4 complete; P1b IPv6 is next**.
+Status: **P1a IPv4 runner-qualified; P1b IPv6 is next**.
 
 ## Goal
 
@@ -10,7 +10,7 @@ Create the smallest correct packet boundary between Linux TUN and lwIP. P1 does 
 
 The public TCP connection must terminate inside lwIP. A normal host TCP relay such as stock rinetd would terminate TCP in the outer kernel and therefore would not solve the congestion-control ownership problem. Raw physical-interface approaches introduce L2/NDP/ARP ownership and host-kernel packet competition before the transport path is proven. L3 TUN keeps that boundary explicit and testable.
 
-## P1a implementation state — complete
+## P1a implementation state — complete on the GitHub runner
 
 The qualified IPv4 implementation contains:
 
@@ -68,7 +68,9 @@ P1 product-owned nft ingress lifecycle passed
 
 The live public flow reached lwIP with `tcp_accepts=1`, `tcp_errors=0`. The gate also proved three lifecycle invariants separately: with `ip_forward=0`, startup failed without changing the sysctl and left no TUN/table; when the product table name was already occupied, startup failed without adopting or deleting that resource; after normal public traffic, SIGTERM removed product TUN/table while the serialized unrelated nft table had the same SHA-256 before and after.
 
-These results close all current P1a exit criteria: interface ownership/cleanup, ICMP, TCP accept, DNAT/conntrack, checksum/MTU, bounded idle wakeups, bounded TX backpressure, startup rollback, stale-resource collision rejection, signal cleanup, and unrelated-firewall preservation.
+These results close all current P1a runner exit criteria: interface ownership/cleanup, ICMP, TCP accept, DNAT/conntrack, checksum/MTU, bounded idle wakeups, bounded TX backpressure, startup rollback, stale-resource collision rejection, signal cleanup, and unrelated-firewall preservation.
+
+This is not yet evidence that every target OpenVZ/VPS provider permits the required TUN, forwarding, nftables, conntrack, and namespace-equivalent operations. Provider qualification is a separate deployment task and must not be inferred from the runner result.
 
 ## Temporary IPv4 bring-up shape
 
@@ -116,7 +118,7 @@ P1 as a whole is complete only when retained evidence proves both address famili
 - bounded TX backpressure;
 - no leaked TUN, route, firewall, namespace, or test resources after success and forced failure paths.
 
-P1a satisfies the IPv4 half of this contract. P1b must now satisfy the IPv6 half without regressing the IPv4 evidence.
+P1a satisfies the IPv4 half of this contract on the GitHub runner. P1b must satisfy the IPv6 half without regressing IPv4.
 
 ## Deferred to P2
 
