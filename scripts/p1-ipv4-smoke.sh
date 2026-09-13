@@ -16,10 +16,12 @@ WAN_HOST_IF=${TCP_SHIFT_P1_WAN_HOST_IF:-tsp1wan0}
 WAN_NS_IF=${TCP_SHIFT_P1_WAN_NS_IF:-tsp1wan1}
 WAN_HOST_IP=${TCP_SHIFT_P1_WAN_HOST_IP:-198.51.100.1}
 WAN_HOST_CIDR=${TCP_SHIFT_P1_WAN_HOST_CIDR:-198.51.100.1/24}
+WAN_CLIENT_IP=${TCP_SHIFT_P1_WAN_CLIENT_IP:-198.51.100.2}
 WAN_CLIENT_CIDR=${TCP_SHIFT_P1_WAN_CLIENT_CIDR:-198.51.100.2/24}
 NFT_TABLE=${TCP_SHIFT_P1_NFT_TABLE:-tcp_shift_p1_ci}
 PID=
 OLD_FORWARD=
+FORWARD_RULES=0
 
 mkdir -p "$OUT"
 : > "$OUT/runtime.stdout"
@@ -31,6 +33,7 @@ capture_state()
     ip route show table all > "$OUT/ip-route.txt" 2>&1 || true
     ip -s link show > "$OUT/ip-link.txt" 2>&1 || true
     sudo nft list ruleset > "$OUT/nft-ruleset.txt" 2>&1 || true
+    sudo iptables-save > "$OUT/iptables-save.txt" 2>&1 || true
     sudo conntrack -L -p tcp > "$OUT/conntrack-tcp.txt" 2>&1 || true
     if sudo ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
         sudo ip -n "$NS_NAME" -d addr show > "$OUT/netns-addr.txt" 2>&1 || true
@@ -38,9 +41,23 @@ capture_state()
     fi
 }
 
+remove_forward_rules()
+{
+    if [ "$FORWARD_RULES" -eq 1 ]; then
+        sudo iptables -w -D FORWARD -i "$WAN_HOST_IF" -o "$TUN_NAME" \
+            -p tcp -d "$LWIP_IP" --dport "$TCP_PORT" -j ACCEPT \
+            >/dev/null 2>&1 || true
+        sudo iptables -w -D FORWARD -i "$TUN_NAME" -o "$WAN_HOST_IF" \
+            -p tcp -s "$LWIP_IP" --sport "$TCP_PORT" -j ACCEPT \
+            >/dev/null 2>&1 || true
+        FORWARD_RULES=0
+    fi
+}
+
 cleanup_network()
 {
     set +e
+    remove_forward_rules
     if sudo nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
         sudo nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
     fi
@@ -144,9 +161,20 @@ table ip $NFT_TABLE {
 }
 EOF
 
+# GitHub-hosted runners carry Docker's iptables-nft FORWARD policy=DROP.
+# Insert only the two exact directions needed by this isolated test and remove
+# them before exit. This is a harness prerequisite, not product firewall code.
+sudo iptables -w -I FORWARD 1 -i "$WAN_HOST_IF" -o "$TUN_NAME" \
+    -p tcp -d "$LWIP_IP" --dport "$TCP_PORT" -j ACCEPT
+sudo iptables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
+    -p tcp -s "$LWIP_IP" --sport "$TCP_PORT" -j ACCEPT
+FORWARD_RULES=1
+
 sudo nft list table ip "$NFT_TABLE" > "$OUT/nft-dnat.txt"
-sudo ip netns exec "$NS_NAME" python3 - "$WAN_HOST_IP" "$TCP_PORT" \
-    > "$OUT/tcp-dnat-connect.txt" <<'PY'
+sudo iptables -w -S FORWARD > "$OUT/iptables-forward.txt"
+
+if ! sudo ip netns exec "$NS_NAME" python3 - "$WAN_HOST_IP" "$TCP_PORT" \
+    > "$OUT/tcp-dnat-connect.txt" 2> "$OUT/tcp-dnat-connect.stderr" <<'PY'
 import socket
 import sys
 
@@ -156,10 +184,24 @@ with socket.create_connection((host, port), timeout=2.0):
     pass
 print(f"DNAT connected {host}:{port}")
 PY
+then
+    capture_state
+    echo "DNAT connection failed; retained diagnostics follow" >&2
+    cat "$OUT/tcp-dnat-connect.stderr" >&2 || true
+    cat "$OUT/iptables-forward.txt" >&2 || true
+    cat "$OUT/nft-dnat.txt" >&2 || true
+    grep -E "198\\.51\\.100|10\\.231\\.0\\.2" "$OUT/conntrack-tcp.txt" >&2 || true
+    cat "$OUT/runtime.stderr" >&2 || true
+    exit 1
+fi
 cat "$OUT/tcp-dnat-connect.txt"
 
 sleep 0.1
+sudo conntrack -L -p tcp > "$OUT/conntrack-after-dnat.txt" 2>&1 || true
+grep -F "src=$WAN_CLIENT_IP dst=$WAN_HOST_IP" "$OUT/conntrack-after-dnat.txt" >/dev/null
+grep -F "src=$LWIP_IP dst=$WAN_CLIENT_IP" "$OUT/conntrack-after-dnat.txt" >/dev/null
 capture_state
+
 kill -TERM "$PID"
 wait "$PID"
 PID=
