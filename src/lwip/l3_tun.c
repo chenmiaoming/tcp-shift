@@ -211,38 +211,37 @@ int tcp_shift_l3_tun_rx_once(struct tcp_shift_l3_tun *l3)
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return 0;
         }
+        l3->rx_errors++;
         return -1;
     }
     if (length == 0) {
         return 0;
     }
 
+    /* A bad packet is not a process-fatal host I/O failure. Consume/drop it
+     * and let the single-owner loop continue servicing subsequent traffic. */
     if ((size_t)length > l3->netif.mtu) {
         l3->rx_drops++;
-        errno = EMSGSIZE;
-        return -1;
+        return 1;
     }
 
     p = pbuf_alloc(PBUF_RAW, (u16_t)length, PBUF_RAM);
     if (p == NULL) {
         l3->rx_drops++;
-        errno = ENOMEM;
-        return -1;
+        return 1;
     }
 
     if (pbuf_take(p, packet, (u16_t)length) != ERR_OK) {
         pbuf_free(p);
         l3->rx_drops++;
-        errno = ENOMEM;
-        return -1;
+        return 1;
     }
 
     err = l3->netif.input(p, &l3->netif);
     if (err != ERR_OK) {
         pbuf_free(p);
         l3->rx_drops++;
-        errno = EIO;
-        return -1;
+        return 1;
     }
 
     l3->rx_packets++;
