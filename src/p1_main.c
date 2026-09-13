@@ -81,6 +81,7 @@ int main(int argc, char **argv)
     loop.epoll_fd = -1;
     listener.pcb = NULL;
     ingress.table_name[0] = '\0';
+    ingress.ip_version = 0U;
     ingress.installed = 0;
 
     if (argc != 5 && argc != 6 && argc != 7) {
