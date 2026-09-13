@@ -13,6 +13,7 @@ on:
       - 'scripts/p1-ipv4-checksum.py'
       - 'scripts/p1-nft-lifecycle.sh'
       - 'scripts/p1-ipv6-smoke.sh'
+      - 'scripts/p1-ipv6-nft-lifecycle.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -29,7 +30,7 @@ concurrency:
 jobs:
   l3-tun-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Checkout tcp-shift
         uses: actions/checkout@v4
@@ -56,11 +57,13 @@ jobs:
           sh -n scripts/p1-ipv4-smoke.sh
           sh -n scripts/p1-nft-lifecycle.sh
           sh -n scripts/p1-ipv6-smoke.sh
+          sh -n scripts/p1-ipv6-nft-lifecycle.sh
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
           sudo nft list ruleset > /dev/null
           sudo iptables -w -S FORWARD > /dev/null
+          sudo ip6tables -w -S FORWARD > /dev/null
           tcpdump --version
 
       - name: Build pinned P1 runtimes and contracts
@@ -106,6 +109,11 @@ jobs:
           sudo env TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
             sh scripts/p1-ipv6-smoke.sh
 
+      - name: Exercise product-owned IPv6 nft ingress lifecycle
+        run: |
+          sudo env TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
+            sh scripts/p1-ipv6-nft-lifecycle.sh
+
       - name: Upload P1 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -118,4 +126,5 @@ jobs:
             .build/p1-ci
             .build/p1-nft-ci
             .build/p1-ipv6-ci
+            .build/p1-ipv6-nft-ci
           if-no-files-found: warn
