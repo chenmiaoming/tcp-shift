@@ -1,4 +1,4 @@
-name: lwIP P1 IPv4 TUN
+name: lwIP P1 L3 TUN
 
 on:
   pull_request:
@@ -12,6 +12,7 @@ on:
       - 'scripts/p1-ipv4-smoke.sh'
       - 'scripts/p1-ipv4-checksum.py'
       - 'scripts/p1-nft-lifecycle.sh'
+      - 'scripts/p1-ipv6-smoke.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -26,9 +27,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ipv4-tun-smoke:
+  l3-tun-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout tcp-shift
         uses: actions/checkout@v4
@@ -54,6 +55,7 @@ jobs:
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p1-ipv4-smoke.sh
           sh -n scripts/p1-nft-lifecycle.sh
+          sh -n scripts/p1-ipv6-smoke.sh
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
@@ -61,12 +63,13 @@ jobs:
           sudo iptables -w -S FORWARD > /dev/null
           tcpdump --version
 
-      - name: Build pinned P1 runtime and contracts
+      - name: Build pinned P1 runtimes and contracts
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target \
             tcp-shift-p1 \
+            tcp-shift-p1-ipv6 \
             tcp-shift-p1-backpressure-contract \
             tcp-shift-p1-rx-contract \
             --parallel
@@ -83,30 +86,36 @@ jobs:
           grep -F 'mtu=1500 oversize=1501 rx_drops=1 rx_errors=0 runtime_survives_drop=ok' \
             .build/p1-rx-contract.txt
 
-      - name: Grant network-admin capability for packet-path smoke
+      - name: Grant network-admin capability for IPv4 packet-path smoke
         run: |
           sudo setcap cap_net_admin+ep .build/tcp-shift-p1
           getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
           grep -F 'cap_net_admin=ep' .build/p1-capability.txt
 
-      - name: Exercise idle, MTU, checksum, direct, and harness-DNAT IPv4
+      - name: Exercise IPv4 packet-path regression
         run: sh scripts/p1-ipv4-smoke.sh
 
-      - name: Exercise product-owned nft ingress lifecycle
+      - name: Exercise product-owned IPv4 nft ingress lifecycle
         run: |
           sudo setcap -r .build/tcp-shift-p1
           sudo env TCP_SHIFT_P1_BINARY="$PWD/.build/tcp-shift-p1" \
             sh scripts/p1-nft-lifecycle.sh
 
+      - name: Exercise direct IPv6-only TUN path
+        run: |
+          sudo env TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
+            sh scripts/p1-ipv6-smoke.sh
+
       - name: Upload P1 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tcp-shift-p1-ipv4-diagnostics
+          name: tcp-shift-p1-l3-diagnostics
           path: |
             .build/p1-capability.txt
             .build/p1-backpressure.txt
             .build/p1-rx-contract.txt
             .build/p1-ci
             .build/p1-nft-ci
+            .build/p1-ipv6-ci
           if-no-files-found: warn
