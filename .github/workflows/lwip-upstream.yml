@@ -35,7 +35,7 @@ jobs:
           . ./.lwip-baseline
           test "$(git -C .deps/lwip rev-parse HEAD)" = "$LWIP_COMMIT"
           git -C .deps/lwip diff --exit-code
-          git -C .deps/lwip status --porcelain | test ! -s /dev/stdin
+          test -z "$(git -C .deps/lwip status --porcelain)"
 
       - name: Show provenance
         run: |
