@@ -53,6 +53,7 @@ target_compile_options(tcp_shift_lwip PRIVATE
 add_library(tcp_shift_host STATIC
     src/host/tun.c
     src/host/ifconfig.c
+    src/host/nft_ingress.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -92,9 +93,9 @@ target_compile_options(tcp-shift PRIVATE
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
-# Temporary P1 bring-up executable. It now owns TUN creation plus the host-side
-# IPv4 address/MTU/link state. DNAT/firewall ownership remains outside this
-# temporary entrypoint until its lifecycle contract is proven separately.
+# Temporary P1 bring-up executable. It owns TUN setup and, when a public IPv4
+# is supplied, one exact-match nftables DNAT table. This remains a development
+# entrypoint; the final CLI and any future privilege helper come later.
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
 target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1 PRIVATE
