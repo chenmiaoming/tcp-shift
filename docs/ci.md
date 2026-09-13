@@ -7,7 +7,7 @@
 1. **Pin and prove upstream provenance.** A normal product build consumes one exact lwIP commit. CI records that commit and hashes the TCP files whose behavior matters most to the project.
 2. **Validate contracts before behavior.** Shell syntax, baseline format, compile-time lwIP options, and source-surface boundaries fail before network tests are attempted.
 3. **Build the runtime once.** The primary build job produces the candidate `tcp-shift` executable. Later jobs must download and test that exact artifact rather than rebuilding a possibly different binary.
-4. **Make the product surface mechanical.** P0 has an explicit IPv4/TCP source allowlist. IPv6, socket/netconn, PPP, 6LoWPAN, and Unix `sys_arch.c` are forbidden until a milestone deliberately adds them.
+4. **Make the product surface mechanical.** P0 has an explicit IPv4/TCP source allowlist. IPv6, socket/netconn, PPP, 6LoWPAN, and Unix `sys_arch.c` are forbidden from the P0 lwIP core until a milestone deliberately adds them.
 5. **Preserve diagnostics on failure.** Provenance, source manifests, symbol lists, ELF metadata, memory samples, and milestone reports are uploaded with `if: always()` where applicable.
 6. **Separate pinned qualification from moving-upstream compatibility.** A scheduled canary tests current lwIP independently of the pinned release baseline. Canary breakage does not silently change the production dependency.
 7. **Promote observations to gates deliberately.** Memory, CPU, throughput, and capacity thresholds are introduced from measured baselines and named workloads, not guessed limits.
@@ -26,13 +26,15 @@ The `build-contract` job is the P0 qualification job. It:
 
 - validates local scripts and baseline syntax;
 - fetches the pinned upstream source;
-- builds with warnings as errors;
+- builds all currently declared project libraries with warnings as errors;
 - compiles and runs the project-local lwIP configuration contract;
 - verifies the actual `tcp_shift_lwip` target source manifest rather than the global CMake compile database;
-- rejects forbidden socket/netconn/UDP symbols from the final executable;
+- rejects forbidden socket/netconn/UDP symbols from the final P0 executable;
 - enforces binary-size and idle-RSS ceilings;
 - emits `tcp-shift.p0.v1` JSON evidence;
 - uploads the candidate runtime and diagnostics.
+
+The current build also compiles the first P1 source modules, `tcp_shift_host` and `tcp_shift_l3`, under `-Werror`. This is only a compile-time qualification boundary. Those libraries are intentionally not linked into the P0 smoke executable yet, and their successful compilation must not be interpreted as P1 packet-path completion.
 
 The `artifact-smoke` job runs on a separate runner. It downloads the exact runtime artifact produced by `build-contract`, verifies its checksum, and executes it. This catches accidental dependencies on the original build tree.
 
@@ -52,17 +54,23 @@ The weekly canary checks the same P0 build and contracts against current upstrea
 
 CI grows with the implementation rather than front-loading tests for features that do not exist yet.
 
-### P1: L3 TUN ingress
+### P1: dual-stack L3 TUN ingress
 
-Add a privileged packet-path job that consumes the built runtime artifact and verifies:
+P1 is currently **in progress**. The source modules compile under the existing build-contract job; behavioral qualification has not started yet.
 
-- TUN ownership/setup and cleanup;
-- ICMP echo through lwIP;
-- TCP SYN/SYN-ACK packet flow;
+The dedicated privileged packet-path job must consume the built runtime artifact and verify:
+
+- TUN ownership/setup and transactional cleanup;
+- IPv4 ICMP echo through lwIP;
+- IPv4 TCP SYN/SYN-ACK packet flow;
 - IPv4 checksum and MTU behavior;
-- bounded idle wakeups with no fixed-rate polling.
+- IPv6 ICMPv6 and TCP packet flow after P1b lands;
+- IPv6 Packet Too Big/PMTU behavior;
+- extension-header-safe IPv6 netfilter matching;
+- bounded idle wakeups with no fixed-rate polling;
+- temporary EPOLLOUT interest only while a bounded whole-packet TX retry queue is non-empty.
 
-Always retain packet captures, runtime logs, and interface/routing state on failure.
+Always retain packet captures, runtime counters/logs, and interface/routing/firewall state on failure. A green compile-only P1 library build is not sufficient evidence for any of these claims.
 
 ### P2: stream bridge lifecycle
 
