@@ -16,6 +16,7 @@ on:
       - 'scripts/fetch-lwip.sh'
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p2-ipv6-bridge-smoke.sh'
+      - 'scripts/p2-backpressure-smoke.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -53,6 +54,7 @@ jobs:
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p2-bridge-smoke.sh
           sh -n scripts/p2-ipv6-bridge-smoke.sh
+          sh -n scripts/p2-backpressure-smoke.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
@@ -74,6 +76,9 @@ jobs:
       - name: Exercise IPv4 public bridge and natural teardown
         run: sh scripts/p2-bridge-smoke.sh
 
+      - name: Enforce deterministic bidirectional bridge backpressure
+        run: sh scripts/p2-backpressure-smoke.sh
+
       - name: Exercise IPv6 public bridge to IPv4 loopback backend
         run: |
           sudo env TCP_SHIFT_P2_IPV6_BINARY="$PWD/.build/tcp-shift-p2-ipv6" \
@@ -87,5 +92,6 @@ jobs:
           path: |
             .build/p2-capability.txt
             .build/p2-bridge-ci
+            .build/p2-backpressure-ci
             .build/p2-ipv6-bridge-ci
           if-no-files-found: warn
