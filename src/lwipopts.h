@@ -6,19 +6,34 @@
 #define SYS_LIGHTWEIGHT_PROT 0
 #define LWIP_TIMERS 1
 
-/* P0 is deliberately a routed L3 IPv4/TCP endpoint only. */
+/* Routed L3 dual-stack TCP endpoint. */
 #define LWIP_IPV4 1
-#define LWIP_IPV6 0
+#define LWIP_IPV6 1
 #define LWIP_TCP 1
 #define LWIP_UDP 0
 #define LWIP_RAW 0
 #define LWIP_ICMP 1
+#define LWIP_ICMP6 1
 #define LWIP_IGMP 0
 #define LWIP_DHCP 0
 #define LWIP_AUTOIP 0
 #define LWIP_DNS 0
 #define LWIP_ETHERNET 0
 #define LWIP_ARP 0
+
+/* P1b uses statically configured L3 IPv6 addresses. Do not pay for Ethernet-
+ * oriented multicast/autoconfiguration control planes that are not part of the
+ * TUN design. ND6 remains compiled because lwIP IPv6 timers/ICMP6 depend on it. */
+#define LWIP_IPV6_DHCP6 0
+#define LWIP_IPV6_AUTOCONFIG 0
+#define LWIP_IPV6_SEND_ROUTER_SOLICIT 0
+#define LWIP_IPV6_ADDRESS_LIFETIMES 0
+#define LWIP_IPV6_MLD 0
+#define LWIP_ND6_QUEUEING 0
+#define LWIP_ND6_ALLOW_RA_UPDATES 0
+#define LWIP_IPV6_FORWARD 0
+#define LWIP_IPV6_FRAG 1
+#define LWIP_IPV6_REASS 1
 
 /* Do not pay for lwIP's sequential/socket APIs. */
 #define LWIP_NETCONN 0
@@ -30,9 +45,9 @@
 #define MEM_ALIGNMENT 8
 
 /*
- * Keep P0 within lwIP's native 16-bit window fields. Window scaling is a later
- * transport milestone and must be introduced together with explicit memory and
- * high-BDP tests rather than by silently overflowing these fields.
+ * Keep the current transport within lwIP's native 16-bit window fields.
+ * Window scaling is a later transport milestone and must be introduced together
+ * with explicit memory and high-BDP tests.
  */
 #define LWIP_WND_SCALE 0
 #define TCP_MSS 1460
