@@ -32,7 +32,7 @@ Checks the same P0 contracts weekly against current upstream lwIP `master` witho
 
 This is the privileged P1 packet-path workflow. It builds `tcp-shift-p1` from pinned lwIP and grants only `cap_net_admin=ep` to that temporary binary. The binary itself creates the nonpersistent TUN and configures the host-side IPv4 address, MTU, and link-up state; the CI script does not configure the product TUN for it.
 
-The test then exercises two paths:
+The behavior job first runs a separate idle-only process and then a fresh active process. The idle phase measures event-loop wakeup causes without mixing in packet-test traffic. The active phase exercises both:
 
 ```text
 direct host -> TUN -> lwIP
@@ -51,25 +51,25 @@ client network namespace
 
 The namespace path uses normal Linux forwarding and conntrack. GitHub-hosted runners carry Docker's IPv4 `FORWARD` policy `DROP`, so the harness inserts exactly two temporary forwarding ACCEPT rules scoped to the test interfaces, lwIP address, and TCP port. They are deleted during cleanup. This is runner scaffolding and must not be mistaken for product firewall ownership.
 
-Diagnostics currently retain capability state, runtime stdout/stderr, host and namespace addresses/routes/link counters, ICMP output, direct/DNAT TCP-connect output, nftables rules, iptables state, and conntrack state.
+Diagnostics currently retain capability state, runtime stdout/stderr, idle-wakeup summary, host and namespace addresses/routes/link counters, ICMP output, direct/DNAT TCP-connect output, nftables rules, iptables state, and conntrack state.
 
 Retained evidence:
 
 - run `34740740077`: direct IPv4 ICMP passed 3/3 with 0% loss; runtime `rx_packets=4`, `tx_packets=3`, no TX queue use/drops; TUN disappeared after exit;
 - run `34740867645`: direct IPv4 TCP `connect()` completed and lwIP raw API reported `tcp_accepts=1`, `tcp_errors=0`, `rx_packets=8`, `tx_packets=5`;
 - run `34742949259`: first DNAT attempt failed because the runner's Docker-managed IPv4 `FORWARD` chain had policy `DROP`; retained nftables, route, conntrack, and runtime diagnostics identified the environment prerequisite rather than a lwIP failure;
-- run `34743049605`: after adding exact temporary forwarding rules, both direct and DNAT TCP connections completed. Runtime reported `rx_packets=12`, `tx_packets=7`, `tcp_accepts=2`, `tcp_errors=0`, no TX queue use/drops. The harness also required conntrack evidence for the external original tuple and the lwIP reply tuple and verified cleanup of the TUN, namespace, veth, nftables table, temporary forwarding rules, and forwarding sysctl state.
+- run `34743049605`: after adding exact temporary forwarding rules, both direct and DNAT TCP connections completed. Runtime reported `rx_packets=12`, `tx_packets=7`, `tcp_accepts=2`, `tcp_errors=0`, no TX queue use/drops. The harness required conntrack evidence and verified cleanup of TUN/test networking/firewall state;
+- run `34743203062`: a separate two-second idle process recorded only 4 `epoll_wait` calls: 2 lwIP timer timeouts, 1 TUN-readable wakeup during bring-up, and 1 EINTR from termination. Idle `loop_tun_writable_wakeups=0`. A deliberately loose initial ceiling of 32 waits in two seconds is enforced to catch a fixed-rate/busy polling regression. The fresh active process then repeated ICMP 3/3 plus direct and DNAT TCP successfully and retained the same `rx_packets=12`, `tx_packets=7`, `tcp_accepts=2`, `tcp_errors=0` packet-path result.
 
-For commit `4d3141499cfd1624f6a15552d509edf73a30e11a`, `lwIP P0`, `lwIP upstream provenance`, and `lwIP P1 IPv4 TUN` all passed.
+For commit `3b63669d14fc7cbf40d048e45b729c7950c352d8`, `lwIP P0`, `lwIP upstream provenance`, and `lwIP P1 IPv4 TUN` all passed.
 
-This now proves product-owned IPv4 TUN setup, direct ICMP/TCP, and a routed DNAT/conntrack TCP path into lwIP on the CI runner. It does not yet prove production firewall-rule ownership, queue-pressure behavior, idle-wakeup bounds, MTU edge cases, or IPv6.
+This now proves product-owned IPv4 TUN setup, bounded idle event-loop wakeups, direct ICMP/TCP, and a routed DNAT/conntrack TCP path into lwIP on the CI runner. It does not yet prove production firewall-rule ownership, forced TX queue-pressure behavior, MTU edge cases, or IPv6.
 
 ## Remaining P1 gates
 
 P1a still needs:
 
-- explicit idle-wakeup measurement showing no busy polling beyond lwIP timer deadlines;
-- forced TUN TX backpressure/queue-ceiling behavior and cleanup;
+- deterministic forced TUN TX backpressure, FIFO ordering, queue-ceiling behavior, and cleanup;
 - checksum/MTU edge cases;
 - production lifecycle ownership for narrow NAT/forwarding rules rather than CI-only harness rules.
 
