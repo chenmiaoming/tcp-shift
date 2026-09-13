@@ -14,6 +14,7 @@ on:
       - 'scripts/p1-nft-lifecycle.sh'
       - 'scripts/p1-ipv6-smoke.sh'
       - 'scripts/p1-ipv6-nft-lifecycle.sh'
+      - 'scripts/p1-ipv6-pmtu.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -58,6 +59,7 @@ jobs:
           sh -n scripts/p1-nft-lifecycle.sh
           sh -n scripts/p1-ipv6-smoke.sh
           sh -n scripts/p1-ipv6-nft-lifecycle.sh
+          sh -n scripts/p1-ipv6-pmtu.sh
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
@@ -117,6 +119,11 @@ jobs:
             TCP_SHIFT_P1_IPV6_EXT_PROBE="$PWD/.build/tcp-shift-p1-ipv6-ext-header-probe" \
             sh scripts/p1-ipv6-nft-lifecycle.sh
 
+      - name: Exercise routed IPv6 Packet Too Big and PMTU
+        run: |
+          sudo env TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
+            sh scripts/p1-ipv6-pmtu.sh
+
       - name: Upload P1 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -130,4 +137,5 @@ jobs:
             .build/p1-nft-ci
             .build/p1-ipv6-ci
             .build/p1-ipv6-nft-ci
+            .build/p1-ipv6-pmtu-ci
           if-no-files-found: warn
