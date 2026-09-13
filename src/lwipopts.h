@@ -6,7 +6,7 @@
 #define SYS_LIGHTWEIGHT_PROT 0
 #define LWIP_TIMERS 1
 
-/* Start with a routed L3 IPv4/TCP endpoint only. */
+/* P0 is deliberately a routed L3 IPv4/TCP endpoint only. */
 #define LWIP_IPV4 1
 #define LWIP_IPV6 0
 #define LWIP_TCP 1
@@ -17,6 +17,8 @@
 #define LWIP_DHCP 0
 #define LWIP_AUTOIP 0
 #define LWIP_DNS 0
+#define LWIP_ETHERNET 0
+#define LWIP_ARP 0
 
 /* Do not pay for lwIP's sequential/socket APIs. */
 #define LWIP_NETCONN 0
@@ -27,10 +29,15 @@
 #define MEMP_MEM_MALLOC 1
 #define MEM_ALIGNMENT 8
 
-/* Keep the first transport profile conservative; tune only from measurements. */
+/*
+ * Keep P0 within lwIP's native 16-bit window fields. Window scaling is a later
+ * transport milestone and must be introduced together with explicit memory and
+ * high-BDP tests rather than by silently overflowing these fields.
+ */
+#define LWIP_WND_SCALE 0
 #define TCP_MSS 1460
-#define TCP_WND (64 * 1024)
-#define TCP_SND_BUF (64 * 1024)
+#define TCP_WND (32 * 1024)
+#define TCP_SND_BUF (32 * 1024)
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + (TCP_MSS - 1)) / TCP_MSS)
 #define TCP_QUEUE_OOSEQ 1
 
