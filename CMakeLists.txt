@@ -52,6 +52,7 @@ target_compile_options(tcp_shift_lwip PRIVATE
 # This is a source/library boundary, not a process boundary.
 add_library(tcp_shift_host STATIC
     src/host/tun.c
+    src/host/ifconfig.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -91,8 +92,9 @@ target_compile_options(tcp-shift PRIVATE
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
-# Temporary P1 bring-up executable. Host address/route configuration is still
-# external; this executable owns TUN, lwIP netif state, timers and packet I/O.
+# Temporary P1 bring-up executable. It now owns TUN creation plus the host-side
+# IPv4 address/MTU/link state. DNAT/firewall ownership remains outside this
+# temporary entrypoint until its lifecycle contract is proven separately.
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
 target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1 PRIVATE
