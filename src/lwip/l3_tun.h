@@ -5,19 +5,30 @@
 
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
+#include "lwip/pbuf.h"
 
 #define TCP_SHIFT_L3_TUN_MTU 1500U
+#define TCP_SHIFT_L3_TUN_TX_QUEUE_PACKETS 64U
+#define TCP_SHIFT_L3_TUN_TX_QUEUE_BYTES (96U * 1024U)
 
 struct tcp_shift_l3_tun {
     struct netif netif;
     int tun_fd;
     unsigned attached;
+
+    struct pbuf *tx_queue[TCP_SHIFT_L3_TUN_TX_QUEUE_PACKETS];
+    unsigned tx_queue_head;
+    unsigned tx_queue_count;
+    uint32_t tx_queue_bytes;
+    uint32_t tx_queue_peak_bytes;
+
     uint64_t rx_packets;
     uint64_t rx_bytes;
     uint64_t rx_drops;
     uint64_t tx_packets;
     uint64_t tx_bytes;
     uint64_t tx_would_block;
+    uint64_t tx_queue_drops;
     uint64_t tx_errors;
 };
 
@@ -34,5 +45,9 @@ void tcp_shift_l3_tun_detach(struct tcp_shift_l3_tun *l3);
  * host I/O or lwIP input failure.
  */
 int tcp_shift_l3_tun_rx_once(struct tcp_shift_l3_tun *l3);
+
+/* Flush queued whole packets until the queue drains or TUN blocks again. */
+int tcp_shift_l3_tun_flush_tx(struct tcp_shift_l3_tun *l3);
+int tcp_shift_l3_tun_wants_write(const struct tcp_shift_l3_tun *l3);
 
 #endif /* TCP_SHIFT_LWIP_L3_TUN_H */

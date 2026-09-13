@@ -69,18 +69,20 @@ Linux-specific pacing uses a runtime scheduler. An embedded port may use an RTOS
 
 The runtime uses `NO_SYS=1` and the callback/raw TCP API. There is no lwIP socket API, netconn layer, tcpip worker thread, or per-flow forwarding thread. One event loop owns all mutable lwIP state.
 
-The event loop will combine TUN readiness, backend socket readiness, lwIP timeout deadlines, signals, and later pacing deadlines. Writable interest must be armed only after a nonblocking write returns `EAGAIN`; permanent EPOLLOUT interest and fixed-rate polling are prohibited.
+The current P1 event loop uses epoll readiness and derives its blocking timeout from `sys_timeouts_sleeptime()`, followed by `sys_check_timeouts()`. It does not use a fixed polling tick. TUN EPOLLOUT is armed only while the bounded whole-packet TX queue is non-empty. Backend socket readiness and later pacing deadlines will join the same mutable owner.
 
 ## P1 implementation boundary
 
-The first P1 commit introduces two independently compiled modules:
+P1 currently contains independently compiled host, L3, and runtime modules:
 
 - `src/host/tun.*`: Linux-only acquisition/closing of a nonpersistent `IFF_TUN | IFF_NO_PI` fd;
-- `src/lwip/l3_tun.*`: IPv4 lwIP `netif` attachment, one-packet receive injection, and packet-preserving TUN transmit.
+- `src/lwip/l3_tun.*`: IPv4 lwIP netif attachment, one-packet receive injection, complete-packet transmit, and a bounded TUN backpressure queue;
+- `src/runtime/lwip_loop.*`: epoll ownership, TUN read/write readiness, RX work budget, and lwIP timeout integration;
+- `tcp-shift-p1`: temporary bring-up executable used before the final CLI/lifecycle layer exists.
 
-These modules are built under warnings-as-errors but are not yet linked into the unprivileged P0 smoke executable. This preserves the existing reproducible baseline while the event loop, bounded EAGAIN transmit queue, host configuration, and privileged integration tests are added.
+The TUN TX queue holds at most 64 packets and 96 KiB. On `EAGAIN`, the adapter takes a pbuf reference and transfers responsibility to this queue; queue exhaustion returns `ERR_MEM`. Because TUN is packet-oriented, partial/stream-split packet transmission is prohibited.
 
-The current P1 transmit callback reports `ERR_WOULDBLOCK` on TUN `EAGAIN`; it does not yet retain a packet for deferred retry. Therefore this commit is plumbing, not the P1 exit state. Before P1 is called complete, TUN writes must use a bounded whole-packet retry queue and EPOLLOUT must be enabled only while that queue is non-empty.
+This is still P1 bring-up, not the product runtime. Host address/route/firewall mutation is not yet owned transactionally, and privileged packet-path CI has not yet proven ICMP/TCP behavior.
 
 ## IPv6 requirements
 
@@ -91,6 +93,8 @@ The backend remains IPv4 loopback initially. Public IPv6 does not require the ap
 ## Memory and CPU model
 
 Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them. CI records idle and loaded memory, repeated load/drain floors, and CPU under explicit workloads. A one-time RSS decrease is not sufficient evidence against long-lived allocator or lifecycle growth.
+
+The P1 TUN retry queue has explicit packet and byte ceilings so temporary host write backpressure cannot become an unbounded memory path.
 
 ## Documentation as project memory
 

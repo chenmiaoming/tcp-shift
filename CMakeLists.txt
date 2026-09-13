@@ -56,8 +56,6 @@ add_library(tcp_shift_host STATIC
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-# P1 L3 adapter. It is built in CI now, but is not yet linked into the P0 smoke
-# executable until the event loop and privileged integration test exist.
 add_library(tcp_shift_l3 STATIC
     src/lwip/l3_tun.c
 )
@@ -65,10 +63,18 @@ target_include_directories(tcp_shift_l3 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_l3 PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_l3 PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_runtime STATIC
+    src/runtime/lwip_loop.c
+)
+target_include_directories(tcp_shift_runtime PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3)
+
 add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+# P0 remains an unprivileged reproducible initialization artifact.
 add_executable(tcp-shift src/main.c src/platform.c)
 target_include_directories(tcp-shift PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift PRIVATE
@@ -77,3 +83,14 @@ target_compile_options(tcp-shift PRIVATE
 )
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
+
+# Temporary P1 bring-up executable. Host address/route configuration is still
+# external; this executable owns TUN, lwIP netif state, timers and packet I/O.
+add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
+target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p1 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p1 PRIVATE tcp_shift_host tcp_shift_runtime)
+target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)

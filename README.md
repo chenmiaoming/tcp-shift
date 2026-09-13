@@ -60,7 +60,7 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 is green and records a small reproducible initialization baseline. P1 is now in progress: Linux TUN acquisition and the first IPv4 lwIP L3 netif module are compiled, while the existing P0 executable remains unprivileged until the event loop and privileged integration tests are ready.
+P0 remains the unprivileged reproducible initialization artifact. P1a is now actively implemented: Linux TUN acquisition, the IPv4 lwIP L3 netif, a bounded whole-packet TUN retry queue, and an epoll loop driven by lwIP timer deadlines all compile under `-Werror`. A temporary `tcp-shift-p1` bring-up executable exists, but host address/route/firewall ownership and privileged packet-path CI are not complete yet.
 
 Start here for project state:
 
@@ -70,4 +70,4 @@ Start here for project state:
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
 - [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state.
 
-> Status: P1 L3 TUN bring-up. Do not use on production traffic.
+> Status: P1a IPv4 L3 TUN bring-up. Do not use on production traffic.

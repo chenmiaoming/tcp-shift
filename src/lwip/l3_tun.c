@@ -13,21 +13,13 @@
 #define TCP_SHIFT_L3_TUN_MAX_IOV 64U
 #define TCP_SHIFT_L3_TUN_RX_BUFFER 2048U
 
-static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
-                                           struct pbuf *p,
-                                           const ip4_addr_t *destination)
+static int tcp_shift_l3_tun_write_packet(struct tcp_shift_l3_tun *l3,
+                                         struct pbuf *p)
 {
-    struct tcp_shift_l3_tun *l3 = netif->state;
     struct iovec iov[TCP_SHIFT_L3_TUN_MAX_IOV];
     struct pbuf *q;
     size_t iov_count = 0;
     ssize_t written;
-
-    (void)destination;
-
-    if (l3 == NULL || l3->tun_fd < 0 || p == NULL) {
-        return ERR_IF;
-    }
 
     for (q = p; q != NULL; q = q->next) {
         if (q->len == 0U) {
@@ -35,7 +27,8 @@ static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
         }
         if (iov_count == TCP_SHIFT_L3_TUN_MAX_IOV) {
             l3->tx_errors++;
-            return ERR_BUF;
+            errno = EMSGSIZE;
+            return -1;
         }
         iov[iov_count].iov_base = q->payload;
         iov[iov_count].iov_len = q->len;
@@ -43,7 +36,7 @@ static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
     }
 
     if (iov_count == 0U) {
-        return ERR_OK;
+        return 1;
     }
 
     do {
@@ -53,20 +46,85 @@ static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
     if (written < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             l3->tx_would_block++;
-            return ERR_WOULDBLOCK;
+            return 0;
         }
         l3->tx_errors++;
-        return ERR_IF;
+        return -1;
     }
 
     if ((u16_t)written != p->tot_len) {
         l3->tx_errors++;
-        return ERR_IF;
+        errno = EIO;
+        return -1;
     }
 
     l3->tx_packets++;
     l3->tx_bytes += (uint64_t)written;
+    return 1;
+}
+
+static err_t tcp_shift_l3_tun_enqueue(struct tcp_shift_l3_tun *l3,
+                                      struct pbuf *p)
+{
+    unsigned tail;
+    uint32_t packet_bytes = p->tot_len;
+
+    if (l3->tx_queue_count == TCP_SHIFT_L3_TUN_TX_QUEUE_PACKETS ||
+        packet_bytes > TCP_SHIFT_L3_TUN_TX_QUEUE_BYTES - l3->tx_queue_bytes) {
+        l3->tx_queue_drops++;
+        return ERR_MEM;
+    }
+
+    tail = (l3->tx_queue_head + l3->tx_queue_count) %
+           TCP_SHIFT_L3_TUN_TX_QUEUE_PACKETS;
+    pbuf_ref(p);
+    l3->tx_queue[tail] = p;
+    l3->tx_queue_count++;
+    l3->tx_queue_bytes += packet_bytes;
+    if (l3->tx_queue_bytes > l3->tx_queue_peak_bytes) {
+        l3->tx_queue_peak_bytes = l3->tx_queue_bytes;
+    }
     return ERR_OK;
+}
+
+static void tcp_shift_l3_tun_pop_tx(struct tcp_shift_l3_tun *l3)
+{
+    struct pbuf *p = l3->tx_queue[l3->tx_queue_head];
+
+    l3->tx_queue[l3->tx_queue_head] = NULL;
+    l3->tx_queue_head = (l3->tx_queue_head + 1U) %
+                        TCP_SHIFT_L3_TUN_TX_QUEUE_PACKETS;
+    l3->tx_queue_count--;
+    l3->tx_queue_bytes -= p->tot_len;
+    pbuf_free(p);
+}
+
+static err_t tcp_shift_l3_tun_output_ipv4(struct netif *netif,
+                                           struct pbuf *p,
+                                           const ip4_addr_t *destination)
+{
+    struct tcp_shift_l3_tun *l3 = netif->state;
+    int result;
+
+    (void)destination;
+
+    if (l3 == NULL || l3->tun_fd < 0 || p == NULL) {
+        return ERR_IF;
+    }
+
+    /* Preserve packet ordering once one packet is waiting for writability. */
+    if (l3->tx_queue_count != 0U) {
+        return tcp_shift_l3_tun_enqueue(l3, p);
+    }
+
+    result = tcp_shift_l3_tun_write_packet(l3, p);
+    if (result > 0) {
+        return ERR_OK;
+    }
+    if (result == 0) {
+        return tcp_shift_l3_tun_enqueue(l3, p);
+    }
+    return ERR_IF;
 }
 
 static err_t tcp_shift_l3_tun_netif_init(struct netif *netif)
@@ -105,6 +163,7 @@ int tcp_shift_l3_tun_attach_ipv4(struct tcp_shift_l3_tun *l3,
     }
 
     l3->attached = 1U;
+    netif_set_default(&l3->netif);
     netif_set_up(&l3->netif);
     netif_set_link_up(&l3->netif);
     return 0;
@@ -116,7 +175,14 @@ void tcp_shift_l3_tun_detach(struct tcp_shift_l3_tun *l3)
         return;
     }
 
+    while (l3->tx_queue_count != 0U) {
+        tcp_shift_l3_tun_pop_tx(l3);
+    }
+
     if (l3->attached != 0U) {
+        if (netif_default == &l3->netif) {
+            netif_set_default(NULL);
+        }
         netif_set_link_down(&l3->netif);
         netif_set_down(&l3->netif);
         netif_remove(&l3->netif);
@@ -182,4 +248,35 @@ int tcp_shift_l3_tun_rx_once(struct tcp_shift_l3_tun *l3)
     l3->rx_packets++;
     l3->rx_bytes += (uint64_t)length;
     return 1;
+}
+
+int tcp_shift_l3_tun_flush_tx(struct tcp_shift_l3_tun *l3)
+{
+    int flushed = 0;
+
+    if (l3 == NULL || l3->attached == 0U || l3->tun_fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    while (l3->tx_queue_count != 0U) {
+        struct pbuf *p = l3->tx_queue[l3->tx_queue_head];
+        int result = tcp_shift_l3_tun_write_packet(l3, p);
+
+        if (result < 0) {
+            return -1;
+        }
+        if (result == 0) {
+            break;
+        }
+        tcp_shift_l3_tun_pop_tx(l3);
+        flushed++;
+    }
+
+    return flushed;
+}
+
+int tcp_shift_l3_tun_wants_write(const struct tcp_shift_l3_tun *l3)
+{
+    return l3 != NULL && l3->tx_queue_count != 0U;
 }
