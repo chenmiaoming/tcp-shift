@@ -143,7 +143,12 @@ int main(int argc, char **argv)
             "bridge_public_to_backend_bytes=%llu "
             "bridge_backend_to_public_bytes=%llu bridge_active_flows=%llu "
             "bridge_peak_active_flows=%llu bridge_backend_failures=%llu "
-            "bridge_public_errors=%llu loop_wait_calls=%llu "
+            "bridge_public_errors=%llu bridge_pending_public_bytes=%llu "
+            "bridge_peak_pending_public_bytes=%llu "
+            "bridge_backend_write_blocked_events=%llu "
+            "bridge_backend_read_blocked_events=%llu "
+            "bridge_backend_socket_sndbuf_bytes=%u "
+            "bridge_backend_socket_rcvbuf_bytes=%u loop_wait_calls=%llu "
             "loop_ready_wakeups=%llu loop_timeout_wakeups=%llu "
             "loop_eintr_wakeups=%llu loop_tun_readable_wakeups=%llu "
             "loop_tun_writable_wakeups=%llu\n",
@@ -161,6 +166,12 @@ int main(int argc, char **argv)
             (unsigned long long)bridge.peak_active_flows,
             (unsigned long long)bridge.backend_failures,
             (unsigned long long)bridge.public_errors,
+            (unsigned long long)bridge.pending_public_bytes,
+            (unsigned long long)bridge.peak_pending_public_bytes,
+            (unsigned long long)bridge.backend_write_blocked_events,
+            (unsigned long long)bridge.backend_read_blocked_events,
+            bridge.backend_socket_sndbuf_bytes,
+            bridge.backend_socket_rcvbuf_bytes,
             (unsigned long long)loop.wait_calls,
             (unsigned long long)loop.ready_wakeups,
             (unsigned long long)loop.timeout_wakeups,
