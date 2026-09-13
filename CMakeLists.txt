@@ -54,11 +54,10 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
-# Linux host integration is deliberately separate from the lwIP transport code.
-# This is a source/library boundary, not a process boundary.
 add_library(tcp_shift_host STATIC
     src/host/tun.c
     src/host/ifconfig.c
+    src/host/ifconfig_ipv6.c
     src/host/nft_ingress.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -89,8 +88,6 @@ add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-# P0 remains an unprivileged reproducible initialization artifact. From P1b
-# onward its source/config contract follows the actual dual-stack product core.
 add_executable(tcp-shift src/main.c src/platform.c)
 target_include_directories(tcp-shift PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift PRIVATE
@@ -100,8 +97,6 @@ target_compile_options(tcp-shift PRIVATE
 target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
-# Temporary P1 bring-up executable. IPv4 lifecycle behavior remains qualified;
-# P1b extends the same libraries rather than introducing a parallel stack.
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
 target_include_directories(tcp-shift-p1 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1 PRIVATE
@@ -115,7 +110,21 @@ target_link_libraries(tcp-shift-p1 PRIVATE
 )
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)
 
-# Deterministic, unprivileged contracts for the production L3 packet path.
+# P1b IPv6-only bring-up reuses the same host/L3/runtime/probe libraries. It is
+# intentionally a temporary qualification entrypoint, not a second datapath.
+add_executable(tcp-shift-p1-ipv6 src/p1_ipv6_main.c src/platform.c)
+target_include_directories(tcp-shift-p1-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p1-ipv6 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p1-ipv6 PRIVATE
+    tcp_shift_host
+    tcp_shift_runtime
+    tcp_shift_probe
+)
+target_link_options(tcp-shift-p1-ipv6 PRIVATE -Wl,--gc-sections)
+
 add_executable(tcp-shift-p1-backpressure-contract
     src/tests/l3_tun_backpressure_test.c
     src/platform.c
