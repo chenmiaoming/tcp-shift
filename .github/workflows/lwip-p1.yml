@@ -55,11 +55,20 @@ jobs:
           sudo nft list ruleset > /dev/null
           sudo iptables -w -S FORWARD > /dev/null
 
-      - name: Build pinned P1 runtime
+      - name: Build pinned P1 runtime and contracts
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build --target tcp-shift-p1 --parallel
+          cmake --build .build --target \
+            tcp-shift-p1 \
+            tcp-shift-p1-backpressure-contract \
+            --parallel
+
+      - name: Enforce bounded TX backpressure contract
+        run: |
+          .build/tcp-shift-p1-backpressure-contract | tee .build/p1-backpressure.txt
+          grep -F 'fifo_order=ok detach_cleanup=ok' .build/p1-backpressure.txt
+          grep -F 'packets=64 peak_bytes=96000 drops=1' .build/p1-backpressure.txt
 
       - name: Grant only network-admin capability to the bring-up binary
         run: |
@@ -67,7 +76,7 @@ jobs:
           getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
           grep -F 'cap_net_admin=ep' .build/p1-capability.txt
 
-      - name: Exercise direct and DNAT IPv4 through lwIP
+      - name: Exercise idle, direct, and DNAT IPv4 through lwIP
         run: sh scripts/p1-ipv4-smoke.sh
 
       - name: Upload P1 diagnostics
@@ -77,5 +86,6 @@ jobs:
           name: tcp-shift-p1-ipv4-diagnostics
           path: |
             .build/p1-capability.txt
+            .build/p1-backpressure.txt
             .build/p1-ci
           if-no-files-found: warn
