@@ -1,0 +1,2 @@
+LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip.git
+LWIP_COMMIT=d08f4773edd0182b7910fc8f046eed82ffcd67c9

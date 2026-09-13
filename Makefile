@@ -1,19 +1,16 @@
-.PHONY: build build-upstream version test bench clean
+.PHONY: fetch configure build clean distclean
 
-build:
-	bash ./scripts/build.sh
+fetch:
+	sh ./scripts/fetch-lwip.sh
 
-build-upstream:
-	GVISOR_REF=go bash ./scripts/build.sh
+configure: fetch
+	cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
 
-version: build
-	./bin/tcp-shift --version
-
-test: build
-	go test -modfile=go.local.mod ./...
-
-bench: build
-	sudo -E bash ./scripts/bench-long-fat.sh
+build: configure
+	cmake --build .build --parallel
 
 clean:
-	rm -rf bin .deps .bench go.local.mod go.local.sum
+	rm -rf .build
+
+distclean: clean
+	rm -rf .deps
