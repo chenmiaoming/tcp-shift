@@ -12,8 +12,10 @@ on:
       - 'src/lwip/**'
       - 'src/host/**'
       - 'src/p2_main.c'
+      - 'src/p2_ipv6_main.c'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/p2-bridge-smoke.sh'
+      - 'scripts/p2-ipv6-bridge-smoke.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -50,23 +52,32 @@ jobs:
         run: |
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p2-bridge-smoke.sh
+          sh -n scripts/p2-ipv6-bridge-smoke.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
-      - name: Build pinned P2 runtime
+      - name: Build pinned P2 runtimes
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build --target tcp-shift-p2 --parallel
+          cmake --build .build --target \
+            tcp-shift-p2 \
+            tcp-shift-p2-ipv6 \
+            --parallel
 
-      - name: Grant TUN administration capability
+      - name: Grant TUN administration capability for IPv4 bridge
         run: |
           sudo setcap cap_net_admin+ep .build/tcp-shift-p2
           getcap .build/tcp-shift-p2 | tee .build/p2-capability.txt
           grep -F 'cap_net_admin=ep' .build/p2-capability.txt
 
-      - name: Exercise bidirectional bridge and natural teardown
+      - name: Exercise IPv4 public bridge and natural teardown
         run: sh scripts/p2-bridge-smoke.sh
+
+      - name: Exercise IPv6 public bridge to IPv4 loopback backend
+        run: |
+          sudo env TCP_SHIFT_P2_IPV6_BINARY="$PWD/.build/tcp-shift-p2-ipv6" \
+            sh scripts/p2-ipv6-bridge-smoke.sh
 
       - name: Upload P2 diagnostics
         if: always()
@@ -76,4 +87,5 @@ jobs:
           path: |
             .build/p2-capability.txt
             .build/p2-bridge-ci
+            .build/p2-ipv6-bridge-ci
           if-no-files-found: warn
