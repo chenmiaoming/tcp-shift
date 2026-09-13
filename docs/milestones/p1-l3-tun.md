@@ -34,19 +34,31 @@ Still required before P1a exit:
 
 The adapter currently assumes a 1500-byte TUN MTU and rejects larger received packets. Host configuration must set the same MTU before behavioral qualification.
 
-## First retained IPv4 evidence
+## Retained IPv4 evidence
 
-GitHub Actions workflow `lwIP P1 IPv4 TUN`, run `34740740077`, passed on Ubuntu 24.04.5 using the pinned lwIP baseline.
+### Run 34740740077: ICMP and fd-lifetime cleanup
 
-The test granted only `cap_net_admin=ep` to the temporary `tcp-shift-p1` executable, created nonpersistent TUN `tsp1ci0`, configured host `10.231.0.1/30`, and sent ICMP directly to lwIP `10.231.0.2`. All 3 echo requests received replies with 0% loss. The runtime reported:
+The first `lwIP P1 IPv4 TUN` workflow passed on Ubuntu 24.04.5 using the pinned lwIP baseline. The test granted only `cap_net_admin=ep` to `tcp-shift-p1`, created nonpersistent TUN `tsp1ci0`, configured host `10.231.0.1/30`, and sent ICMP directly to lwIP `10.231.0.2`.
+
+All 3 echo requests received replies with 0% loss. The runtime reported:
 
 ```text
 rx_packets=4 tx_packets=3 tx_queue_peak_bytes=0 tx_queue_drops=0
 ```
 
-The test then verified that the TUN device disappeared after the runtime exited. Diagnostics retained interface, route and link state plus runtime output. This evidence proves the direct IPv4 L3 TUN + lwIP ICMP path and nonpersistent-fd cleanup. It does **not** yet prove DNAT, public-address routing, TCP, queue-pressure behavior, or idle wakeup bounds.
+The TUN device disappeared after the runtime exited. This proved direct IPv4 L3 TUN ingress/egress, ICMP handling, and nonpersistent-fd cleanup.
 
-The current CI extends this same workflow with a real host TCP `connect()` to the lwIP probe listener and requires `tcp_accepts > 0`; that TCP evidence is recorded only after the updated workflow passes.
+### Run 34740867645: TCP SYN/SYN-ACK/accept
+
+The next workflow extended the same path with a real host `connect()` to lwIP port 18080. The connection succeeded and the lwIP raw-API accept callback ran exactly once. ICMP remained 3/3 with 0% loss. The runtime reported:
+
+```text
+rx_packets=8 tx_packets=5 tx_queue_peak_bytes=0 tx_queue_drops=0 tcp_accepts=1 tcp_rx_bytes=0 tcp_errors=0
+```
+
+This is retained evidence that the direct IPv4 TUN path reaches lwIP TCP and completes SYN/SYN-ACK/ACK through `tcp_accept`. It still does **not** prove DNAT/public-address routing, payload bridge behavior, TUN queue-pressure behavior, or idle-wakeup bounds.
+
+For commit `0a420757aa41c4d1eaeeb2f8c68d652ca4d0982a`, all three relevant workflows passed: P0 qualification, upstream provenance, and P1 IPv4 TUN behavior.
 
 ## Manual IPv4 bring-up shape
 

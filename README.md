@@ -4,7 +4,7 @@
 
 ## Current direction: lwIP
 
-The previous gVisor-based implementation has been retired. The active design terminates the WAN-facing TCP connection in lwIP, moves raw L3 packets through TUN, and bridges the accepted byte stream to an ordinary host-loopback backend.
+The active design terminates the WAN-facing TCP connection in lwIP, moves raw L3 packets through TUN, and bridges the accepted byte stream to an ordinary host-loopback backend.
 
 ```text
 remote client
@@ -29,7 +29,7 @@ single-owner userspace bridge
 
 The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket.
 
-The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is the first packet-path bring-up, but IPv6-only operation is a product requirement and is scheduled immediately after the IPv4 TUN path rather than as a late optional feature.
+The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is the first packet-path bring-up, but IPv6-only operation is a product requirement and follows immediately after IPv4 rather than as a late optional feature.
 
 ## Module direction
 
@@ -60,14 +60,16 @@ lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream co
 make build
 ```
 
-P0 remains the unprivileged reproducible initialization artifact. P1a is now actively implemented: Linux TUN acquisition, the IPv4 lwIP L3 netif, a bounded whole-packet TUN retry queue, and an epoll loop driven by lwIP timer deadlines all compile under `-Werror`. A temporary `tcp-shift-p1` bring-up executable exists, but host address/route/firewall ownership and privileged packet-path CI are not complete yet.
+P0 remains the unprivileged reproducible initialization artifact. P1a now has retained behavioral evidence on GitHub Actions: a real nonpersistent L3 TUN carries IPv4 ICMP through lwIP (3/3 echo replies) and a host TCP `connect()` reaches an lwIP raw-API listener and triggers `tcp_accept`. The event loop is epoll-driven from lwIP timer deadlines, and TUN write backpressure is bounded by a whole-packet FIFO.
+
+P1a is not complete yet: DNAT/public routing, transactional host lifecycle, explicit idle-wakeup measurement, and queue-pressure/failure-path qualification remain. P1b IPv6 follows before P2 bridge development.
 
 Start here for project state:
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — current product architecture and ownership;
 - [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
-- [`docs/ci.md`](docs/ci.md) — qualification model and evidence;
+- [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
-- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state.
+- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state and evidence.
 
 > Status: P1a IPv4 L3 TUN bring-up. Do not use on production traffic.
