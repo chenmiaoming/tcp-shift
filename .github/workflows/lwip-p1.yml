@@ -10,6 +10,7 @@ on:
       - 'src/**'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/p1-ipv4-smoke.sh'
+      - 'scripts/p1-ipv4-checksum.py'
       - '.lwip-baseline'
   push:
     branches:
@@ -50,6 +51,7 @@ jobs:
         run: |
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p1-ipv4-smoke.sh
+          python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
           sudo nft list ruleset > /dev/null
@@ -62,6 +64,7 @@ jobs:
           cmake --build .build --target \
             tcp-shift-p1 \
             tcp-shift-p1-backpressure-contract \
+            tcp-shift-p1-rx-contract \
             --parallel
 
       - name: Enforce bounded TX backpressure contract
@@ -70,13 +73,19 @@ jobs:
           grep -F 'fifo_order=ok detach_cleanup=ok' .build/p1-backpressure.txt
           grep -F 'packets=64 peak_bytes=96000 drops=1' .build/p1-backpressure.txt
 
+      - name: Enforce nonfatal RX packet-drop contract
+        run: |
+          .build/tcp-shift-p1-rx-contract | tee .build/p1-rx-contract.txt
+          grep -F 'mtu=1500 oversize=1501 rx_drops=1 rx_errors=0 runtime_survives_drop=ok' \
+            .build/p1-rx-contract.txt
+
       - name: Grant only network-admin capability to the bring-up binary
         run: |
           sudo setcap cap_net_admin+ep .build/tcp-shift-p1
           getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
           grep -F 'cap_net_admin=ep' .build/p1-capability.txt
 
-      - name: Exercise idle, direct, and DNAT IPv4 through lwIP
+      - name: Exercise idle, MTU, checksum, direct, and DNAT IPv4 through lwIP
         run: sh scripts/p1-ipv4-smoke.sh
 
       - name: Upload P1 diagnostics
@@ -87,5 +96,6 @@ jobs:
           path: |
             .build/p1-capability.txt
             .build/p1-backpressure.txt
+            .build/p1-rx-contract.txt
             .build/p1-ci
           if-no-files-found: warn
