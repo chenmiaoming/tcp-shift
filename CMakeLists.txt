@@ -43,7 +43,6 @@ set(TCP_SHIFT_LWIP_SRCS
     "${LWIP_DIR}/src/core/ipv6/inet6.c"
     "${LWIP_DIR}/src/core/ipv6/ip6.c"
     "${LWIP_DIR}/src/core/ipv6/ip6_addr.c"
-    "${LWIP_DIR}/src/core/ipv6/ip6_frag.c"
     "${LWIP_DIR}/src/core/ipv6/nd6.c"
 )
 
