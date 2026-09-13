@@ -47,6 +47,16 @@ set(TCP_SHIFT_LWIP_SRCS
     "${LWIP_DIR}/src/core/ipv6/nd6.c"
 )
 
+# The pinned lwIP ND6 unit leaves two otherwise useful diagnostics unused when
+# tcp-shift deliberately disables RS/SLAAC. Keep the warnings visible, but do
+# not let only those two upstream diagnostics become build errors. Project code
+# and every other warning in the lwIP allowlist remain under -Werror.
+set_source_files_properties(
+    "${LWIP_DIR}/src/core/ipv6/nd6.c"
+    PROPERTIES COMPILE_OPTIONS
+        "-Wno-error=unused-parameter;-Wno-error=unused-variable"
+)
+
 add_library(tcp_shift_lwip STATIC ${TCP_SHIFT_LWIP_SRCS})
 target_include_directories(tcp_shift_lwip PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip PRIVATE
