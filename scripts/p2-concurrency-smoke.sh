@@ -27,6 +27,10 @@ mkdir -p "$OUT"
     echo "missing P2 binary: $BINARY" >&2
     exit 1
 }
+[ "$PAYLOAD_BYTES" -ge 4 ] || {
+    echo "concurrency payload must be at least 4 bytes" >&2
+    exit 1
+}
 
 stop_runtime()
 {
@@ -59,13 +63,18 @@ trap cleanup EXIT HUP INT TERM
 
 python3 - "$BACKEND_PORT" "$FLOW_COUNT" "$PAYLOAD_BYTES" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
-import hashlib
 import socket
 import sys
 
 port = int(sys.argv[1])
 count = int(sys.argv[2])
 length = int(sys.argv[3])
+
+def make_payload(index):
+    return index.to_bytes(4, "big") + bytes(
+        (((offset + index) * 43 + 17) & 0xFF) for offset in range(length - 4)
+    )
+
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind(("127.0.0.1", port))
@@ -73,12 +82,13 @@ server.listen(count)
 print(f"backend-ready 127.0.0.1:{port}", flush=True)
 connections = []
 for _ in range(count):
-    conn, peer = server.accept()
+    conn, _ = server.accept()
     conn.settimeout(10.0)
     connections.append(conn)
 print(f"backend-accepted={len(connections)}", flush=True)
 total = 0
-for index, conn in enumerate(connections):
+seen = set()
+for accept_slot, conn in enumerate(connections):
     chunks = []
     while True:
         chunk = conn.recv(16384)
@@ -86,17 +96,29 @@ for index, conn in enumerate(connections):
             break
         chunks.append(chunk)
     payload = b"".join(chunks)
-    expected = bytes((((offset + index) * 43 + 17) & 0xFF) for offset in range(length))
+    if len(payload) != length:
+        raise SystemExit(
+            f"backend accept slot {accept_slot} length mismatch: expected={length} got={len(payload)}"
+        )
+    flow_id = int.from_bytes(payload[:4], "big")
+    if flow_id < 0 or flow_id >= count:
+        raise SystemExit(f"backend accept slot {accept_slot} invalid flow id {flow_id}")
+    if flow_id in seen:
+        raise SystemExit(f"backend duplicate flow id {flow_id}")
+    expected = make_payload(flow_id)
     if payload != expected:
         raise SystemExit(
-            f"backend flow {index} mismatch: expected={length} got={len(payload)}"
+            f"backend flow id {flow_id} content mismatch: expected={length} got={len(payload)}"
         )
+    seen.add(flow_id)
     conn.sendall(payload)
     conn.shutdown(socket.SHUT_WR)
     conn.close()
     total += len(payload)
 server.close()
-print(f"backend-concurrent-total={total} flows={count} echo=ok", flush=True)
+if seen != set(range(count)):
+    raise SystemExit(f"backend flow id set mismatch: seen={sorted(seen)}")
+print(f"backend-concurrent-total={total} flows={count} unique_flow_ids={len(seen)} echo=ok", flush=True)
 PY
 BACKEND_PID=$!
 
@@ -158,8 +180,13 @@ port = int(sys.argv[2])
 count = int(sys.argv[3])
 length = int(sys.argv[4])
 
+def make_payload(index):
+    return index.to_bytes(4, "big") + bytes(
+        (((offset + index) * 43 + 17) & 0xFF) for offset in range(length - 4)
+    )
+
 def run(index):
-    payload = bytes((((offset + index) * 43 + 17) & 0xFF) for offset in range(length))
+    payload = make_payload(index)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(10.0)
         sock.connect((host, port))
@@ -207,7 +234,7 @@ cat "$OUT/runtime.stderr" >&2
 
 grep -F "concurrent-client-flows=$FLOW_COUNT total_bytes=$TOTAL_BYTES echo=ok" "$OUT/client.stdout" >/dev/null
 grep -F "backend-accepted=$FLOW_COUNT" "$OUT/backend.stdout" >/dev/null
-grep -F "backend-concurrent-total=$TOTAL_BYTES flows=$FLOW_COUNT echo=ok" "$OUT/backend.stdout" >/dev/null
+grep -F "backend-concurrent-total=$TOTAL_BYTES flows=$FLOW_COUNT unique_flow_ids=$FLOW_COUNT echo=ok" "$OUT/backend.stdout" >/dev/null
 
 grep -F "bridge_accepts=$FLOW_COUNT bridge_backend_connects=$FLOW_COUNT bridge_public_to_backend_bytes=$TOTAL_BYTES bridge_backend_to_public_bytes=$TOTAL_BYTES bridge_active_flows=0 bridge_peak_active_flows=$FLOW_COUNT bridge_backend_failures=0 bridge_public_errors=0" \
     "$OUT/runtime.stderr" >/dev/null
