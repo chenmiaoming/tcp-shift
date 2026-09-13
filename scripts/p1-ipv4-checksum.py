@@ -20,24 +20,6 @@ def checksum(data: bytes) -> int:
     return (~total) & 0xFFFF
 
 
-def ipv4_header(source: str, destination: str, payload_len: int) -> bytes:
-    version_ihl = (4 << 4) | 5
-    total_len = 20 + payload_len
-    return struct.pack(
-        "!BBHHHBBH4s4s",
-        version_ihl,
-        0,
-        total_len,
-        0x5453,
-        0x4000,
-        64,
-        socket.IPPROTO_ICMP,
-        0,
-        socket.inet_aton(source),
-        socket.inet_aton(destination),
-    )
-
-
 def icmp_echo(sequence: int, valid: bool) -> bytes:
     header = struct.pack("!BBHHH", 8, 0, 0, IDENT, sequence)
     good = checksum(header + PAYLOAD)
@@ -70,11 +52,11 @@ def receive_reply(sock: socket.socket, sequence: int, timeout: float) -> bool:
             return True
 
 
-def send_echo(sock: socket.socket, source: str, destination: str,
+def send_echo(sock: socket.socket, destination: str,
               sequence: int, valid: bool) -> None:
-    icmp = icmp_echo(sequence, valid)
-    packet = ipv4_header(source, destination, len(icmp)) + icmp
-    sock.sendto(packet, (destination, 0))
+    # Let Linux construct the IPv4 header. The only wire field deliberately
+    # varied by this probe is the ICMP checksum.
+    sock.sendto(icmp_echo(sequence, valid), (destination, 0))
 
 
 def main() -> int:
@@ -84,14 +66,14 @@ def main() -> int:
 
     source, destination = sys.argv[1:]
     sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+    sock.bind((source, 0))
 
-    send_echo(sock, source, destination, BAD_SEQ, valid=False)
+    send_echo(sock, destination, BAD_SEQ, valid=False)
     if receive_reply(sock, BAD_SEQ, 0.35):
         print("bad checksum unexpectedly received echo reply", file=sys.stderr)
         return 1
 
-    send_echo(sock, source, destination, GOOD_SEQ, valid=True)
+    send_echo(sock, destination, GOOD_SEQ, valid=True)
     if not receive_reply(sock, GOOD_SEQ, 1.0):
         print("valid checksum did not receive echo reply", file=sys.stderr)
         return 1
