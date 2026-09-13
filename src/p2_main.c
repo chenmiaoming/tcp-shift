@@ -187,6 +187,11 @@ int main(int argc, char **argv)
 out:
     if (bridge_started != 0) {
         tcp_shift_bridge_stop(&bridge);
+        fprintf(stderr,
+                "tcp-shift-p2: shutdown_bridge_active_flows=%llu "
+                "shutdown_bridge_pending_public_bytes=%llu\n",
+                (unsigned long long)bridge.active_flows,
+                (unsigned long long)bridge.pending_public_bytes);
     }
     if (loop_started != 0) {
         tcp_shift_lwip_loop_close(&loop);
