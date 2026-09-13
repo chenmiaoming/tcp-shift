@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "lwip/ip4_addr.h"
+#include "lwip/ip6_addr.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
 
@@ -38,6 +39,13 @@ int tcp_shift_l3_tun_attach_ipv4(struct tcp_shift_l3_tun *l3,
                                  const ip4_addr_t *address,
                                  const ip4_addr_t *netmask,
                                  const ip4_addr_t *gateway);
+
+/* Attach the same L3 adapter as an IPv6-only lwIP netif. P1b uses a static
+ * address and no Ethernet/NDP link-layer resolution at the TUN boundary. */
+int tcp_shift_l3_tun_attach_ipv6(struct tcp_shift_l3_tun *l3,
+                                 int tun_fd,
+                                 const ip6_addr_t *address);
+
 void tcp_shift_l3_tun_detach(struct tcp_shift_l3_tun *l3);
 
 /*
