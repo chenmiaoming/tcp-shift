@@ -1,61 +1,63 @@
 # Development and agent handoff contract
 
-`tcp-shift` is expected to move between human developers and multiple coding agents. The repository itself is the canonical memory. Chat history is useful context but is never the only place where an architectural decision may live.
+This repository is the durable project memory. A human or coding agent should be able to continue the work from repository state without relying on a private chat transcript.
 
-## Required reading before changing behavior
+## Read order for a new contributor
 
-Read these files in order:
+Start with:
 
-1. `README.md` for the current product front door and status.
-2. `ARCHITECTURE.md` for current product ownership and hard boundaries.
-3. `docs/lwip-roadmap.md` for milestone order, exit criteria, and stop criteria.
-4. `docs/ci.md` for qualification and evidence requirements.
-5. the active milestone document under `docs/milestones/`.
+1. `README.md` for product intent and current milestone;
+2. `ARCHITECTURE.md` for current architectural truth and ownership boundaries;
+3. `docs/lwip-roadmap.md` for implementation order, exit criteria, and stop conditions;
+4. `docs/ci.md` for what has actually been proven and how failures are diagnosed;
+5. the active file under `docs/milestones/` for detailed current work.
 
-Historical commits and old experiments may explain why a choice was rejected, but current architecture wins when they conflict.
+Historical PRs, failed CI runs, and milestone notes are evidence about design evolution, but they do not override `ARCHITECTURE.md`.
 
 ## Same-change documentation rule
 
-A code change must update documentation in the same branch/PR when it changes any of the following:
+Behavior-changing implementation work must update the relevant repository memory in the same branch/PR. At minimum, ask whether the change affects:
 
-- product CLI or deployment prerequisites;
-- packet path, process ownership, lifecycle, or security boundary;
-- source/module ownership;
-- IPv4/IPv6 behavior;
-- memory/CPU model or an advertised resource claim;
-- congestion-control, pacing, sampling, or recovery semantics;
-- milestone exit criteria or CI gates;
-- a previously documented design decision.
+- product scope or user-visible deployment shape (`README.md`);
+- ownership, process/module boundaries, packet/stream paths, privilege, or invariants (`ARCHITECTURE.md`);
+- milestone order, exit criteria, or stop criteria (`docs/lwip-roadmap.md`);
+- validation, measurements, diagnostic artifacts, or retained evidence (`docs/ci.md`);
+- active implementation state, unresolved risks, and handoff detail (`docs/milestones/...`).
 
-Do not leave an important design decision only in a PR comment or chat response.
+Do not treat a green workflow as a substitute for documentation, and do not mark a behavior as qualified until a retained CI run or an explicitly recorded external test proves it.
 
-## Milestone record
+## Milestone completion rule
 
-Each active milestone document should contain:
+A milestone is complete only when implementation, failure-path behavior, CI evidence, and repository documentation agree. Before squash-merging a milestone PR:
 
-- problem and non-goals;
-- intended data/control path;
-- current implementation status;
-- invariants and failure behavior;
-- CI/evidence required to exit;
-- measured results once available;
-- open questions and deliberately deferred work;
-- decisions that should not be silently revisited.
+- verify the latest behavior-changing commit has the relevant workflows green;
+- verify later commits, if any, are documentation-only or rerun the affected workflows;
+- update the active milestone and architecture documents from planned/in-progress language to the exact proven state;
+- record the run IDs and important measured outputs needed by a future agent;
+- leave the next milestone and any intentionally deferred work explicit.
 
-When a milestone completes, mark it complete but keep the document. It is design history and future porting evidence.
+The goal is that `main` never contains a feature whose real qualification state can only be reconstructed from the chat that produced it.
 
-## Small reversible increments
+## Validation discipline
 
-Prefer changes that establish one mechanical boundary at a time. Build new modules under `-Werror` before depending on them in the product runtime. Preserve a known-good lower milestone while privileged or destructive integration paths are still under construction.
+Use CI as the primary Linux integration and debugging environment when it can faithfully represent the behavior. Add diagnostics before guessing: runtime counters, packet captures, address/route state, nftables/iptables rules, conntrack entries, resource limits, and cleanup state should survive failures as artifacts.
 
-Do not weaken a gate merely to obtain green CI. If a gate is wrong, record why it was wrong and replace it with a gate that measures the intended property.
+If the target environment has behavior GitHub runners cannot represent—especially OpenVZ/container capability restrictions, provider IPv6 routing, or production kernel/network policy—document an exact manual validation command sequence and the outputs that must be returned. Do not silently generalize a runner result to an untested provider environment.
 
-## Portability rule for congestion control
+## Scope discipline
 
-`cc/` is intended to be pure C and independently buildable. Platform adapters provide time, transport events, and pacing execution. The CC core must not gain Linux-specific TUN, epoll, timerfd, netfilter, socket-fd, or process-lifecycle dependencies.
+Prefer narrow milestone changes over speculative abstractions. Implement the smallest boundary needed by the current exit criteria, but keep source ownership clean enough that later extraction is possible.
 
-The immediate product remains `tcp-shift`; do not broaden scope into a general embedded networking project before the API has been proven by the VPS runtime. If the CC interface stabilizes, extracting it to a separate `lwip-cc` repository is a later packaging decision rather than a redesign.
+In particular:
 
-## Handoff checklist
+- process separation and source/library separation are independent decisions;
+- the future congestion-control core must remain Linux-host independent even while it is linked into the tcp-shift process;
+- host privilege mechanisms should not leak into lwIP transport or CC APIs;
+- no BBR work starts before packet path, bridge lifecycle, and memory behavior are observable;
+- IPv6-only operation is a product requirement and should be qualified before P2 bridge work rather than deferred as optional compatibility.
 
-Before handing work to another agent, the branch should make the following discoverable without private context: what works now, what does not work yet, which CI run/evidence proves the claim, what the next smallest implementation step is, and which alternatives were considered and rejected.
+## Evidence language
+
+Use precise claims. Distinguish `implemented`, `compiles`, `unit/contract tested`, `runner-qualified`, and `production/provider-qualified`. Include the workload and boundary when quoting memory, CPU, throughput, or packet-path results.
+
+A failed run can be useful retained evidence when it isolates an environmental prerequisite or a real defect. Preserve the diagnosis instead of erasing failure history after the fix.
