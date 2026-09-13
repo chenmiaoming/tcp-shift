@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "host/ifconfig.h"
 #include "host/tun.h"
 #include "lwip/init.h"
 #include "lwip/ip4_addr.h"
@@ -11,6 +12,7 @@
 #include "runtime/lwip_loop.h"
 
 #define TCP_SHIFT_P1_DEFAULT_PORT 18080U
+#define TCP_SHIFT_P1_MTU 1500U
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -48,7 +50,7 @@ static int parse_port(const char *text, uint16_t *port)
 static void usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s <tun-name> <lwip-ipv4> <netmask> <gateway> [listen-port]\n"
+            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> [listen-port]\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 18080\n",
             program, program);
 }
@@ -93,6 +95,11 @@ int main(int argc, char **argv)
         perror("open TUN");
         return EXIT_FAILURE;
     }
+    if (tcp_shift_host_configure_ipv4_tun(tun.ifname, argv[4], argv[3],
+                                          TCP_SHIFT_P1_MTU) < 0) {
+        perror("configure host TUN interface");
+        goto out_tun;
+    }
     if (tcp_shift_l3_tun_attach_ipv4(&l3, tun.fd, &address, &netmask,
                                      &gateway) < 0) {
         perror("attach lwIP TUN netif");
@@ -108,8 +115,8 @@ int main(int argc, char **argv)
         goto out_listener;
     }
 
-    printf("tcp-shift-p1: ready tun=%s lwip-ipv4=%s mtu=%u tcp-port=%u\n",
-           tun.ifname, argv[2], (unsigned)l3.netif.mtu,
+    printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u tcp-port=%u\n",
+           tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
            (unsigned)listen_port);
     fflush(stdout);
 
