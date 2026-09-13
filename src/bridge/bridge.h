@@ -6,6 +6,8 @@
 #include "lwip/tcp.h"
 #include "runtime/lwip_loop.h"
 
+#define TCP_SHIFT_BRIDGE_BACKEND_SOCKET_BUFFER 16384U
+
 struct tcp_shift_bridge_flow;
 
 struct tcp_shift_bridge {
@@ -20,8 +22,14 @@ struct tcp_shift_bridge {
     uint64_t backend_to_public_bytes;
     uint64_t active_flows;
     uint64_t peak_active_flows;
+    uint64_t pending_public_bytes;
+    uint64_t peak_pending_public_bytes;
+    uint64_t backend_write_blocked_events;
+    uint64_t backend_read_blocked_events;
     uint64_t backend_failures;
     uint64_t public_errors;
+    uint32_t backend_socket_sndbuf_bytes;
+    uint32_t backend_socket_rcvbuf_bytes;
 };
 
 int tcp_shift_bridge_start_ipv4(struct tcp_shift_bridge *bridge,
