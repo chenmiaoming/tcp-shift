@@ -87,6 +87,8 @@ jobs:
             .build/upstream.env
             .build/lwip-critical.sha256
             .build/compile_commands.json
+            .build/CMakeFiles/tcp_shift_lwip.dir/build.make
+            .build/CMakeCache.txt
             .build/p0-report.json
             .build/p0-smoke.txt
             .build/p0-maxrss-kib.txt
