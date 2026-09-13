@@ -16,6 +16,7 @@ def checksum(data: bytes) -> int:
     total = 0
     for offset in range(0, len(data), 2):
         total += (data[offset] << 8) | data[offset + 1]
+    while total >> 16:
         total = (total & 0xFFFF) + (total >> 16)
     return (~total) & 0xFFFF
 
@@ -27,6 +28,11 @@ def icmp_echo(sequence: int, valid: bool) -> tuple[bytes, int]:
     if value == good:
         value ^= 0x0001
     packet = struct.pack("!BBHHH", 8, 0, value, IDENT, sequence) + PAYLOAD
+    verify = checksum(packet)
+    if valid and verify != 0:
+        raise RuntimeError(f"checksum self-test failed for valid packet: 0x{verify:04x}")
+    if not valid and verify == 0:
+        raise RuntimeError("checksum self-test failed for deliberately invalid packet")
     return packet, value
 
 
