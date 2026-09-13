@@ -25,7 +25,7 @@ def icmp_echo(sequence: int, valid: bool) -> tuple[bytes, int]:
     header = struct.pack("!BBHHH", 8, 0, 0, IDENT, sequence)
     good = checksum(header + PAYLOAD)
     value = good if valid else (good ^ 0xFFFF)
-    if value == good:
+    if not valid and value == good:
         value ^= 0x0001
     packet = struct.pack("!BBHHH", 8, 0, value, IDENT, sequence) + PAYLOAD
     verify = checksum(packet)
