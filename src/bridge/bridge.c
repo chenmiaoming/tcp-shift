@@ -80,6 +80,22 @@ static void tcp_shift_bridge_flow_unlink(struct tcp_shift_bridge_flow *flow)
     }
 }
 
+static void tcp_shift_bridge_release_pending_public(
+    struct tcp_shift_bridge_flow *flow)
+{
+    if (flow->public_rx == NULL) {
+        return;
+    }
+
+    if (flow->bridge->pending_public_bytes >= flow->public_rx->tot_len) {
+        flow->bridge->pending_public_bytes -= flow->public_rx->tot_len;
+    } else {
+        flow->bridge->pending_public_bytes = 0U;
+    }
+    pbuf_free(flow->public_rx);
+    flow->public_rx = NULL;
+}
+
 static void tcp_shift_bridge_flow_release(struct tcp_shift_bridge_flow *flow)
 {
     if (flow->backend_watch.registered != 0U) {
@@ -90,10 +106,7 @@ static void tcp_shift_bridge_flow_release(struct tcp_shift_bridge_flow *flow)
         close(flow->backend_fd);
         flow->backend_fd = -1;
     }
-    if (flow->public_rx != NULL) {
-        pbuf_free(flow->public_rx);
-        flow->public_rx = NULL;
-    }
+    tcp_shift_bridge_release_pending_public(flow);
     tcp_shift_bridge_flow_unlink(flow);
     free(flow);
 }
@@ -108,6 +121,62 @@ static void tcp_shift_bridge_flow_abort(struct tcp_shift_bridge_flow *flow)
         tcp_abort(pcb);
     }
     tcp_shift_bridge_flow_release(flow);
+}
+
+static void tcp_shift_bridge_mark_backend_read_blocked(
+    struct tcp_shift_bridge_flow *flow)
+{
+    if (flow->backend_read_blocked == 0U) {
+        flow->backend_read_blocked = 1U;
+        flow->bridge->backend_read_blocked_events++;
+    }
+}
+
+static void tcp_shift_bridge_track_public_rx(struct tcp_shift_bridge_flow *flow,
+                                             const struct pbuf *p)
+{
+    flow->bridge->pending_public_bytes += p->tot_len;
+    if (flow->bridge->pending_public_bytes >
+        flow->bridge->peak_pending_public_bytes) {
+        flow->bridge->peak_pending_public_bytes =
+            flow->bridge->pending_public_bytes;
+    }
+}
+
+static int tcp_shift_bridge_configure_backend_socket(
+    struct tcp_shift_bridge_flow *flow)
+{
+    int requested = (int)TCP_SHIFT_BRIDGE_BACKEND_SOCKET_BUFFER;
+    int actual;
+    socklen_t actual_length;
+
+    if (setsockopt(flow->backend_fd, SOL_SOCKET, SO_SNDBUF,
+                   &requested, sizeof(requested)) < 0 ||
+        setsockopt(flow->backend_fd, SOL_SOCKET, SO_RCVBUF,
+                   &requested, sizeof(requested)) < 0) {
+        return -1;
+    }
+
+    actual = 0;
+    actual_length = sizeof(actual);
+    if (getsockopt(flow->backend_fd, SOL_SOCKET, SO_SNDBUF,
+                   &actual, &actual_length) < 0) {
+        return -1;
+    }
+    if (actual > 0 && (uint32_t)actual > flow->bridge->backend_socket_sndbuf_bytes) {
+        flow->bridge->backend_socket_sndbuf_bytes = (uint32_t)actual;
+    }
+
+    actual = 0;
+    actual_length = sizeof(actual);
+    if (getsockopt(flow->backend_fd, SOL_SOCKET, SO_RCVBUF,
+                   &actual, &actual_length) < 0) {
+        return -1;
+    }
+    if (actual > 0 && (uint32_t)actual > flow->bridge->backend_socket_rcvbuf_bytes) {
+        flow->bridge->backend_socket_rcvbuf_bytes = (uint32_t)actual;
+    }
+    return 0;
 }
 
 static uint32_t tcp_shift_bridge_backend_events(
@@ -162,8 +231,7 @@ static int tcp_shift_bridge_flush_public_to_backend(
             iov_count++;
         }
         if (iov_count == 0U) {
-            pbuf_free(flow->public_rx);
-            flow->public_rx = NULL;
+            tcp_shift_bridge_release_pending_public(flow);
             break;
         }
 
@@ -173,6 +241,7 @@ static int tcp_shift_bridge_flush_public_to_backend(
 
         if (written < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                flow->bridge->backend_write_blocked_events++;
                 return 0;
             }
             return -1;
@@ -183,6 +252,11 @@ static int tcp_shift_bridge_flush_public_to_backend(
         }
 
         flow->bridge->public_to_backend_bytes += (uint64_t)written;
+        if (flow->bridge->pending_public_bytes >= (uint64_t)written) {
+            flow->bridge->pending_public_bytes -= (uint64_t)written;
+        } else {
+            flow->bridge->pending_public_bytes = 0U;
+        }
         tcp_recved(flow->pcb, (u16_t)written);
         flow->public_rx = pbuf_free_header(flow->public_rx, (u16_t)written);
     }
@@ -231,7 +305,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
         err_t err;
 
         if (sndbuf == 0U) {
-            flow->backend_read_blocked = 1U;
+            tcp_shift_bridge_mark_backend_read_blocked(flow);
             return 0;
         }
         wanted = sizeof(buffer);
@@ -258,7 +332,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
         err = tcp_write(flow->pcb, buffer, (u16_t)available,
                         TCP_WRITE_FLAG_COPY);
         if (err == ERR_MEM) {
-            flow->backend_read_blocked = 1U;
+            tcp_shift_bridge_mark_backend_read_blocked(flow);
             return 0;
         }
         if (err != ERR_OK) {
@@ -447,10 +521,13 @@ static err_t tcp_shift_bridge_public_recv(void *arg,
 
     if (p == NULL) {
         flow->public_eof = 1U;
-    } else if (flow->public_rx == NULL) {
-        flow->public_rx = p;
     } else {
-        pbuf_cat(flow->public_rx, p);
+        tcp_shift_bridge_track_public_rx(flow, p);
+        if (flow->public_rx == NULL) {
+            flow->public_rx = p;
+        } else {
+            pbuf_cat(flow->public_rx, p);
+        }
     }
 
     result = tcp_shift_bridge_progress(flow);
@@ -545,6 +622,13 @@ static err_t tcp_shift_bridge_accept(void *arg,
                               SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     flow->backend_watch.fd = -1;
     if (flow->backend_fd < 0) {
+        free(flow);
+        bridge->backend_failures++;
+        tcp_abort(newpcb);
+        return ERR_ABRT;
+    }
+    if (tcp_shift_bridge_configure_backend_socket(flow) < 0) {
+        close(flow->backend_fd);
         free(flow);
         bridge->backend_failures++;
         tcp_abort(newpcb);
