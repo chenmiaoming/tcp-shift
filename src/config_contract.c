@@ -25,6 +25,9 @@
 #if LWIP_ND6_QUEUEING != 0 || LWIP_ND6_ALLOW_RA_UPDATES != 0
 #error "L3 TUN must not queue for L2 neighbor resolution or accept RA MTU updates"
 #endif
+#if LWIP_IPV6_FRAG != 0 || LWIP_IPV6_REASS != 0
+#error "P1b low-memory server profile must rely on PMTU, not IPv6 fragmentation state"
+#endif
 #if MEM_LIBC_MALLOC != 1 || MEMP_MEM_MALLOC != 1
 #error "memory accounting assumes libc-backed demand allocation"
 #endif
