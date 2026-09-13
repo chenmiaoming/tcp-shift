@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #define TCP_SHIFT_NFT_BATCH_MAX 1024U
+#define TCP_SHIFT_NFT_DESTINATION_MAX (INET6_ADDRSTRLEN + 16U)
 
 static int tcp_shift_valid_table_name(const char *name)
 {
@@ -41,11 +42,11 @@ static int tcp_shift_valid_table_name(const char *name)
     return 0;
 }
 
-static int tcp_shift_valid_ipv4(const char *text)
+static int tcp_shift_valid_ip(const char *text, int family)
 {
-    struct in_addr address;
+    unsigned char address[sizeof(struct in6_addr)];
 
-    if (text == NULL || inet_pton(AF_INET, text, &address) != 1) {
+    if (text == NULL || inet_pton(family, text, address) != 1) {
         errno = EINVAL;
         return -1;
     }
@@ -143,12 +144,12 @@ static int tcp_shift_run_nft_batch(const char *batch, int check_only)
     return tcp_shift_wait_child(child);
 }
 
-int tcp_shift_host_ipv4_forwarding_enabled(void)
+static int tcp_shift_forwarding_enabled(const char *path)
 {
     FILE *file;
     int value;
 
-    file = fopen("/proc/sys/net/ipv4/ip_forward", "r");
+    file = fopen(path, "r");
     if (file == NULL) {
         return -1;
     }
@@ -164,14 +165,32 @@ int tcp_shift_host_ipv4_forwarding_enabled(void)
     return value == '1' ? 1 : 0;
 }
 
-int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
-                                       const char *table_name,
-                                       const char *public_ipv4,
-                                       uint16_t public_port,
-                                       const char *target_ipv4,
-                                       uint16_t target_port)
+int tcp_shift_host_ipv4_forwarding_enabled(void)
+{
+    return tcp_shift_forwarding_enabled("/proc/sys/net/ipv4/ip_forward");
+}
+
+int tcp_shift_host_ipv6_forwarding_enabled(void)
+{
+    return tcp_shift_forwarding_enabled(
+        "/proc/sys/net/ipv6/conf/all/forwarding");
+}
+
+static int tcp_shift_nft_ingress_install(struct tcp_shift_nft_ingress *ingress,
+                                         const char *table_name,
+                                         unsigned ip_version,
+                                         const char *public_address,
+                                         uint16_t public_port,
+                                         const char *target_address,
+                                         uint16_t target_port)
 {
     char batch[TCP_SHIFT_NFT_BATCH_MAX];
+    char destination[TCP_SHIFT_NFT_DESTINATION_MAX];
+    const char *family;
+    const char *selector;
+    const char *l4_guard;
+    int address_family;
+    int destination_length;
     int length;
 
     if (ingress == NULL || public_port == 0U || target_port == 0U) {
@@ -182,19 +201,48 @@ int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
         errno = EALREADY;
         return -1;
     }
+
+    if (ip_version == 4U) {
+        family = "ip";
+        selector = "ip";
+        l4_guard = "";
+        address_family = AF_INET;
+        destination_length = snprintf(destination, sizeof(destination),
+                                      "%s:%u", target_address,
+                                      (unsigned)target_port);
+    } else if (ip_version == 6U) {
+        family = "ip6";
+        selector = "ip6";
+        /* Explicit l4proto walks IPv6 extension headers before tcp dport. */
+        l4_guard = "meta l4proto tcp ";
+        address_family = AF_INET6;
+        destination_length = snprintf(destination, sizeof(destination),
+                                      "[%s]:%u", target_address,
+                                      (unsigned)target_port);
+    } else {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+
     if (tcp_shift_valid_table_name(table_name) < 0 ||
-        tcp_shift_valid_ipv4(public_ipv4) < 0 ||
-        tcp_shift_valid_ipv4(target_ipv4) < 0) {
+        tcp_shift_valid_ip(public_address, address_family) < 0 ||
+        tcp_shift_valid_ip(target_address, address_family) < 0) {
+        return -1;
+    }
+    if (destination_length < 0 ||
+        (size_t)destination_length >= sizeof(destination)) {
+        errno = EOVERFLOW;
         return -1;
     }
 
     length = snprintf(batch, sizeof(batch),
-                      "create table ip %s\n"
-                      "add chain ip %s prerouting { type nat hook prerouting priority -100; policy accept; }\n"
-                      "add rule ip %s prerouting ip daddr %s tcp dport %u counter dnat to %s:%u\n",
-                      table_name, table_name, table_name, public_ipv4,
-                      (unsigned)public_port, target_ipv4,
-                      (unsigned)target_port);
+                      "create table %s %s\n"
+                      "add chain %s %s prerouting { type nat hook prerouting priority -100; policy accept; }\n"
+                      "add rule %s %s prerouting %s daddr %s %stcp dport %u counter dnat to %s\n",
+                      family, table_name,
+                      family, table_name,
+                      family, table_name, selector, public_address, l4_guard,
+                      (unsigned)public_port, destination);
     if (length < 0 || (size_t)length >= sizeof(batch)) {
         errno = EOVERFLOW;
         return -1;
@@ -210,13 +258,37 @@ int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
     }
 
     memcpy(ingress->table_name, table_name, strlen(table_name) + 1U);
+    ingress->ip_version = ip_version;
     ingress->installed = 1;
     return 0;
+}
+
+int tcp_shift_nft_ingress_install_ipv4(struct tcp_shift_nft_ingress *ingress,
+                                       const char *table_name,
+                                       const char *public_ipv4,
+                                       uint16_t public_port,
+                                       const char *target_ipv4,
+                                       uint16_t target_port)
+{
+    return tcp_shift_nft_ingress_install(ingress, table_name, 4U, public_ipv4,
+                                         public_port, target_ipv4, target_port);
+}
+
+int tcp_shift_nft_ingress_install_ipv6(struct tcp_shift_nft_ingress *ingress,
+                                       const char *table_name,
+                                       const char *public_ipv6,
+                                       uint16_t public_port,
+                                       const char *target_ipv6,
+                                       uint16_t target_port)
+{
+    return tcp_shift_nft_ingress_install(ingress, table_name, 6U, public_ipv6,
+                                         public_port, target_ipv6, target_port);
 }
 
 int tcp_shift_nft_ingress_remove(struct tcp_shift_nft_ingress *ingress)
 {
     char batch[128];
+    const char *family;
     int length;
 
     if (ingress == NULL) {
@@ -227,8 +299,17 @@ int tcp_shift_nft_ingress_remove(struct tcp_shift_nft_ingress *ingress)
         return 0;
     }
 
-    length = snprintf(batch, sizeof(batch), "delete table ip %s\n",
-                      ingress->table_name);
+    if (ingress->ip_version == 4U) {
+        family = "ip";
+    } else if (ingress->ip_version == 6U) {
+        family = "ip6";
+    } else {
+        errno = EINVAL;
+        return -1;
+    }
+
+    length = snprintf(batch, sizeof(batch), "delete table %s %s\n",
+                      family, ingress->table_name);
     if (length < 0 || (size_t)length >= sizeof(batch)) {
         errno = EOVERFLOW;
         return -1;
@@ -238,6 +319,7 @@ int tcp_shift_nft_ingress_remove(struct tcp_shift_nft_ingress *ingress)
     }
 
     ingress->installed = 0;
+    ingress->ip_version = 0U;
     ingress->table_name[0] = '\0';
     return 0;
 }
