@@ -1,0 +1,103 @@
+name: lwIP P1 IPv4 TUN
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p1.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p1-ipv4-smoke.sh'
+      - 'scripts/p1-ipv4-checksum.py'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipv4-tun-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P1 dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            conntrack \
+            git \
+            iproute2 \
+            iptables \
+            iputils-ping \
+            libcap2-bin \
+            nftables \
+            python3 \
+            tcpdump
+
+      - name: Validate smoke harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p1-ipv4-smoke.sh
+          python3 -m py_compile scripts/p1-ipv4-checksum.py
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          sudo nft list ruleset > /dev/null
+          sudo iptables -w -S FORWARD > /dev/null
+          tcpdump --version
+
+      - name: Build pinned P1 runtime and contracts
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target \
+            tcp-shift-p1 \
+            tcp-shift-p1-backpressure-contract \
+            tcp-shift-p1-rx-contract \
+            --parallel
+
+      - name: Enforce bounded TX backpressure contract
+        run: |
+          .build/tcp-shift-p1-backpressure-contract | tee .build/p1-backpressure.txt
+          grep -F 'fifo_order=ok detach_cleanup=ok' .build/p1-backpressure.txt
+          grep -F 'packets=64 peak_bytes=96000 drops=1' .build/p1-backpressure.txt
+
+      - name: Enforce nonfatal RX packet-drop contract
+        run: |
+          .build/tcp-shift-p1-rx-contract | tee .build/p1-rx-contract.txt
+          grep -F 'mtu=1500 oversize=1501 rx_drops=1 rx_errors=0 runtime_survives_drop=ok' \
+            .build/p1-rx-contract.txt
+
+      - name: Grant only network-admin capability to the bring-up binary
+        run: |
+          sudo setcap cap_net_admin+ep .build/tcp-shift-p1
+          getcap .build/tcp-shift-p1 | tee .build/p1-capability.txt
+          grep -F 'cap_net_admin=ep' .build/p1-capability.txt
+
+      - name: Exercise idle, MTU, checksum, direct, and DNAT IPv4 through lwIP
+        run: sh scripts/p1-ipv4-smoke.sh
+
+      - name: Upload P1 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p1-ipv4-diagnostics
+          path: |
+            .build/p1-capability.txt
+            .build/p1-backpressure.txt
+            .build/p1-rx-contract.txt
+            .build/p1-ci
+          if-no-files-found: warn
