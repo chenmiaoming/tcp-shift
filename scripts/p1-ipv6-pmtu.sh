@@ -239,7 +239,7 @@ if ! wait "$CAPTURE_PID"; then
     exit 1
 fi
 CAPTURE_PID=
-grep -F 'Packet too big' "$OUT/ptb-wire.txt" >/dev/null
+grep -F 'packet too big' "$OUT/ptb-wire.txt" >/dev/null
 grep -E 'mtu 1280|mtu 1280,' "$OUT/ptb-wire.txt" >/dev/null
 
 # A subsequent connection to the same destination must now use the learned
