@@ -1,148 +1,90 @@
 # lwIP route: architecture and milestones
 
-This document defines the reset boundary for `tcp-shift`. The old gVisor/LKL experiments are historical only; new implementation work starts from lwIP and a Linux userspace event loop.
+This roadmap defines implementation order and exit evidence. `ARCHITECTURE.md` is the current product source of truth; this file explains how the project gets there.
 
 ## Product hypothesis
 
-A constrained VPS can afford a small userspace TCP endpoint when it cannot control the host kernel's congestion-control policy, but it cannot comfortably afford a hosted Linux kernel or a large general-purpose userspace network stack. The new path therefore optimizes fixed memory cost first and accepts that congestion-control behavior must be implemented and validated explicitly.
+A constrained VPS can afford a small userspace TCP endpoint when it cannot control the host kernel's congestion-control policy, but it cannot comfortably afford a hosted Linux kernel or a large general-purpose userspace network stack. Fixed memory cost is the first optimization target.
 
 The target shape is:
 
 ```text
-public packet -> host routing/netfilter -> TUN -> lwIP IPv4/TCP
-                                              -> raw TCP callbacks
-                                              -> single-owner bridge
-                                              -> host 127.0.0.1 backend
+public IPv4/IPv6 packet -> host routing/netfilter -> L3 TUN -> lwIP TCP
+                                                        -> raw TCP callbacks
+                                                        -> single-owner bridge
+                                                        -> 127.0.0.1 backend
 ```
 
 The public and backend TCP legs remain distinct. Congestion control belongs to the lwIP public leg.
 
 ## Hard boundaries
 
-- L3 TUN, not TAP/Ethernet. No ARP or software Ethernet bridge is required.
-- Single process and single mutable owner for lwIP state.
+- L3 TUN, not TAP/Ethernet, for the current product path.
+- One mutable owner for lwIP state; no per-flow forwarding threads.
 - `NO_SYS=1`; no lwIP TCP/IP thread, socket API, or netconn API.
-- IPv4 first. IPv6 is added only after the IPv4 memory and correctness baseline is stable.
-- Do not patch congestion control before the packet path, TCP bridge, shutdown behavior, and memory accounting are observable.
+- IPv4 is the bring-up path, but IPv6-only operation is a product requirement and follows immediately in P1b.
+- Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate source modules.
+- The future CC core is pure C and independently buildable; library separation does not imply process separation.
+- Do not patch congestion control before packet path, bridge, shutdown behavior, and memory accounting are observable.
 - Do not call an experimental controller "Linux BBR" merely because its state names resemble Linux BBR.
 
-## P0: reproducible lwIP userspace build
+## P0: reproducible lwIP userspace build — complete
 
-Exit criteria:
+Exit evidence includes exact upstream pinning, clean reproducible fetch, an IPv4/TCP `NO_SYS=1` source allowlist, configuration/source/binary/RSS gates, and clean-runner artifact smoke.
 
-- exact lwIP commit is pinned and fetched reproducibly;
-- release build initializes `lwip_init()` in a normal Linux process;
-- binary and idle RSS are recorded;
-- no gVisor/Go dependency exists.
+The initial Linux baseline intentionally uses libc allocation (`MEM_LIBC_MALLOC` and `MEMP_MEM_MALLOC`) so host RSS reflects demand.
 
-The first baseline intentionally uses libc allocation (`MEM_LIBC_MALLOC` and `MEMP_MEM_MALLOC`) so host RSS reflects demand. Static/custom pools can be introduced later only if measurements justify them.
+## P1a: IPv4 L3 TUN
 
-## P1: raw L3 TUN netif
-
-Implement a custom lwIP `netif` backed by one nonblocking TUN fd.
-
-Receive path:
+Implement a custom lwIP netif backed by one nonblocking `IFF_TUN | IFF_NO_PI` fd.
 
 ```text
-TUN read -> pbuf allocation/copy -> netif input -> IPv4 -> TCP
+RX: TUN read -> packet pbuf -> ip4_input -> TCP/ICMP
+TX: lwIP ip4 output -> netif output -> whole-packet TUN write
 ```
 
-Transmit path:
+The event loop integrates `sys_timeouts_sleeptime()` / `sys_check_timeouts()` rather than polling on a fixed timer. Temporary writable interest is armed only after a TUN write returns `EAGAIN`, with a bounded whole-packet retry queue.
 
-```text
-lwIP IPv4 output -> netif output callback -> gather/copy pbuf chain -> TUN write
-```
+Exit criteria: ICMP echo, TCP SYN/SYN-ACK to a minimal listener, checksum/MTU validation, transactional host cleanup, and no periodic busy wakeup.
 
-The event loop must integrate `sys_timeouts_sleeptime()` / `sys_check_timeouts()` rather than polling on a fixed timer. Temporary writable interest is armed only after a TUN write returns `EAGAIN`.
+## P1b: IPv6 L3 TUN
 
-Exit criteria:
+Extend the same L3 adapter with IPv6; do not create a second runtime. Add IPv6 address configuration, `output_ip6`, `ip6_input`, ICMPv6, TCP, and host-side IPv6 netfilter/routing rules.
 
-- ICMP echo through the lwIP endpoint;
-- TCP SYN/SYN-ACK reaches a test listener;
-- packet checksums and MTU behavior are verified;
-- idle loop has no periodic busy wakeup.
+Exit criteria include IPv6-only operation, Packet Too Big/PMTU behavior, extension-header-safe L4 matching, and explicit diagnosis of unavailable TUN/forwarding/conntrack/NAT/container capabilities.
 
-## P2: TCP listener and backend bridge
+## P2: dual-stack TCP listener and backend bridge
 
-Use lwIP's raw TCP API (`tcp_accept`, `tcp_recv`, `tcp_sent`, `tcp_err`, `tcp_poll`) and ordinary nonblocking host sockets for the backend leg.
+Use lwIP raw TCP callbacks (`tcp_accept`, `tcp_recv`, `tcp_sent`, `tcp_err`, `tcp_poll`) and ordinary nonblocking host sockets for the backend leg. Public IPv4 and IPv6 share the same flow/bridge state machine; the initial backend remains IPv4 loopback.
 
-Each flow owns only control metadata while idle. Direction buffers are demand allocated and globally budgeted. Backpressure must stop reads instead of allowing unbounded buffering.
+Each flow owns only control metadata while idle. Direction buffers are demand allocated and globally budgeted. Backpressure stops reads instead of allowing unbounded buffering.
 
-Exit criteria:
-
-- bidirectional byte-stream integrity under partial reads/writes;
-- half-close and reset semantics;
-- deterministic teardown with zero active bridge objects;
-- repeated connect/drain/reuse cycles without RSS ratcheting.
+Exit criteria include bidirectional integrity under partial I/O, half-close/reset semantics, deterministic teardown with zero active bridge objects, and repeated connect/drain/reuse without RSS ratcheting.
 
 ## P3: memory/capacity baseline
 
-Before custom congestion control, measure:
+Measure idle RSS/PSS/private dirty, incremental memory per idle established connection, active-flow residency at fixed in-flight data, peak/post-drain floors, and CPU under idle/small-packet loads. Test stages are chosen for 32/64/128-MiB target hosts.
 
-- process idle RSS/PSS/private dirty;
-- incremental memory per idle established connection;
-- incremental memory per active connection at fixed in-flight data;
-- peak and post-drain RSS;
-- CPU under idle and small-packet loads.
+## P4: generic congestion-control library boundary
 
-Test stages should be chosen from the target VPS sizes rather than from an arbitrary high connection count. The primary question is whether a 32/64/128-MiB host can run the endpoint with useful headroom.
+Introduce an independently buildable pure-C CC interface instead of scattering policy through lwIP TCP code. The core consumes transport events/samples and emits cwnd/pacing policy. It does not call Linux host APIs and it does not own the pacing scheduler.
 
-## P4: congestion-control abstraction
-
-Introduce a project-local interface instead of scattering policy through lwIP TCP code. Conceptually:
-
-```c
-struct tcp_shift_cc_ops {
-    void (*init)(void *state);
-    void (*packet_sent)(void *state, const struct tx_sample *tx);
-    void (*acked)(void *state, const struct rate_sample *rs);
-    void (*lost)(void *state, const struct loss_sample *ls);
-    void (*app_limited)(void *state);
-    uint32_t (*cwnd_bytes)(const void *state);
-    uint64_t (*pacing_rate_bps)(const void *state);
-};
-```
-
-The adapter may need small additions to `tcp_pcb` and transmitted segment metadata. Keep that patch surface explicit and mechanically testable.
-
-Validate the interface first with a conventional controller before BBR.
+The lwIP adapter may require small, explicit additions to `tcp_pcb` and transmitted-segment metadata. Keep that patch surface mechanically testable. Validate the interface with a conventional controller before BBR.
 
 ## P5: delivery-rate sampler and pacer
 
-BBR depends more on transport instrumentation than on its visible state machine.
+Add high-resolution monotonic timestamps, delivered-byte accounting, per-segment delivery snapshots/send timestamps, ACK-derived delivery-rate samples, latest RTT samples, app-limited detection, and loss/inflight accounting.
 
-Required primitives:
-
-- high-resolution monotonic timestamps;
-- monotonically increasing delivered-byte accounting;
-- per-transmitted-segment delivery snapshot and send timestamp;
-- ACK-derived delivery interval/rate samples;
-- RTT sample associated with the ACKed transmission, not only smoothed RTT;
-- app-limited detection;
-- loss/inflight accounting;
-- a global pacing scheduler.
-
-The preferred pacer is one process-wide min-heap/timerfd scheduler keyed by each flow's next eligible send time. Avoid one host timer per connection.
+The Linux runtime pacer is one process-wide scheduler, preferably min-heap plus timerfd, keyed by each flow's next eligible send time. The generic controller sees pacing rate, not timerfd.
 
 ## P6: experimental BBR
 
-Reference order:
+Reference order: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c`/`tcp_rate.c` as TCP behavior cross-checks.
 
-1. current IETF BBR specification for algorithm semantics;
-2. Google QUICHE for network-model and sampler decomposition;
-3. ns-3 `TcpBbr` for mapping BBR concepts onto a non-Linux TCP control block;
-4. Picoquic for a compact C implementation reference;
-5. Linux `tcp_bbr.c` and `tcp_rate.c` as the final TCP behavior cross-check.
-
-Validation must compare cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, loss response, throughput, retransmission behavior, CPU, and memory against native Linux baselines under reproducible RTT/loss/bandwidth scenarios.
+Validation compares cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, loss response, throughput, retransmission behavior, CPU, and memory against native Linux baselines under reproducible RTT/loss/bandwidth scenarios.
 
 ## Stop criteria
 
-Stop the lwIP route rather than recreating half of Linux TCP if any of these become true:
+Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, or unavoidable BDP buffering dominates the fixed-memory advantage.
 
-- acceptable BBR behavior requires replacing most of lwIP recovery/SACK machinery;
-- per-segment metadata and pacing raise memory close to the hosted-Linux design;
-- correctness requires a long-lived fork of large parts of lwIP TCP;
-- performance at the target VPS sizes is dominated by unavoidable BDP buffering rather than fixed stack overhead.
-
-The project is successful even if the result is a very small CUBIC-capable userspace TCP endpoint and BBR is rejected by evidence.
+The project is still successful if the result is a very small conventional-CC userspace TCP endpoint and BBR is rejected by evidence.

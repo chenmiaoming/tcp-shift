@@ -1,17 +1,15 @@
 # tcp-shift
 
-`tcp-shift` is a low-memory userspace TCP endpoint experiment for constrained VPS/container environments.
+`tcp-shift` is a low-memory userspace TCP endpoint for constrained VPS/container environments where the tenant cannot select the outer kernel's congestion-control implementation.
 
 ## Current direction: lwIP
 
-The previous gVisor-based implementation has been retired. The project is restarting around **lwIP** with a narrower goal: terminate the WAN-facing TCP connection in a small userspace TCP/IP stack, feed raw L3 packets through TUN, and bridge the accepted byte stream to an ordinary host-loopback backend.
-
-The reason for the reset is memory cost and implementation ownership. The new path should keep the fixed runtime footprint small enough to be useful on 32/64/128-MiB systems while leaving application processes and the host kernel unchanged.
+The previous gVisor-based implementation has been retired. The active design terminates the WAN-facing TCP connection in lwIP, moves raw L3 packets through TUN, and bridges the accepted byte stream to an ordinary host-loopback backend.
 
 ```text
 remote client
     |
-    | public IPv4 packets
+    | public IPv4 or IPv6 TCP
     v
 host netfilter / routing
     |
@@ -19,12 +17,9 @@ host netfilter / routing
 TUN (L3)
     |
     v
-lwIP netif
+lwIP TCP endpoint
     |
-    v
-lwIP TCP listener / PCB
-    |
-    | raw TCP callbacks
+    | accepted byte stream
     v
 single-owner userspace bridge
     |
@@ -32,30 +27,47 @@ single-owner userspace bridge
 127.0.0.1 backend
 ```
 
-The initial implementation deliberately uses lwIP's `NO_SYS=1` raw API: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, no Ethernet/TAP requirement, and IPv4 first. The Linux process event loop will own TUN readiness, backend sockets, lwIP timers, and later pacing.
+The public TCP connection and backend TCP connection are distinct. Congestion control for the public connection belongs to lwIP/tcp-shift; the loopback backend remains an ordinary host Linux socket.
+
+The runtime uses lwIP `NO_SYS=1`: no lwIP socket layer, no netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. IPv4 is the first packet-path bring-up, but IPv6-only operation is a product requirement and is scheduled immediately after the IPv4 TUN path rather than as a late optional feature.
+
+## Module direction
+
+Source boundaries are deliberately separated even while the initial product stays a single process. Linux TUN/netfilter/lifecycle code is distinct from lwIP integration, the stream bridge, and the future congestion-control core.
+
+The congestion-control core is intended to become an independently buildable pure-C static library. That library may still be linked into the same process. It must not depend on TUN, epoll, timerfd, nftables, host socket descriptors, or tcp-shift lifecycle code so a later embedded lwIP port can reuse it if the interface proves stable.
+
+A separate privileged helper process is a possible later security boundary, not a prerequisite for portability.
 
 ## Congestion-control plan
 
-The first milestone is a correct lwIP TCP endpoint and bridge, not BBR. Once that path is stable, congestion control will be introduced behind an explicit internal interface:
+The first milestones are a correct dual-stack lwIP endpoint, bridge, shutdown behavior, and memory accounting. After that:
 
-1. establish a high-resolution monotonic clock and per-segment delivery accounting;
-2. implement ACK/delivery-rate sampling and app-limited detection;
-3. add a global userspace pacer;
-4. validate a conventional controller such as CUBIC;
-5. add an experimental BBR implementation and compare it against native Linux baselines.
+1. introduce a platform-independent CC interface;
+2. establish high-resolution transport timestamps and per-segment delivery accounting;
+3. implement ACK/delivery-rate sampling and app-limited detection;
+4. add a runtime pacing scheduler;
+5. validate a conventional controller;
+6. add an experimental BBR implementation and compare it against native Linux baselines.
 
-An lwIP BBR implementation will not be described as upstream Linux BBR unless its transport semantics are actually equivalent. Linux `tcp_bbr.c`, Google QUICHE, the IETF BBR specification, ns-3 TCP BBR, and Picoquic are reference material rather than code to copy blindly.
+An lwIP controller will not be described as Linux BBR unless the relevant transport semantics are actually equivalent.
 
-## Upstream baseline
+## Build and status
 
-lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream commit so experiments are reproducible. Run:
+lwIP is fetched rather than vendored. `.lwip-baseline` pins an exact upstream commit.
 
 ```bash
 make build
 ```
 
-The current P0 target only proves that the pinned lwIP core builds and initializes in a Linux userspace process. TUN integration begins in P1.
+P0 is green and records a small reproducible initialization baseline. P1 is now in progress: Linux TUN acquisition and the first IPv4 lwIP L3 netif module are compiled, while the existing P0 executable remains unprivileged until the event loop and privileged integration tests are ready.
 
-See [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) for the implementation boundaries and stop criteria.
+Start here for project state:
 
-> Status: architecture reset / P0 bring-up. Do not use on production traffic.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — current product architecture and ownership;
+- [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
+- [`docs/ci.md`](docs/ci.md) — qualification model and evidence;
+- [`docs/development.md`](docs/development.md) — development and agent handoff contract;
+- [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — active milestone state.
+
+> Status: P1 L3 TUN bring-up. Do not use on production traffic.

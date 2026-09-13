@@ -48,6 +48,23 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
+# Linux host integration is deliberately separate from the lwIP transport code.
+# This is a source/library boundary, not a process boundary.
+add_library(tcp_shift_host STATIC
+    src/host/tun.c
+)
+target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+# P1 L3 adapter. It is built in CI now, but is not yet linked into the P0 smoke
+# executable until the event loop and privileged integration test exist.
+add_library(tcp_shift_l3 STATIC
+    src/lwip/l3_tun.c
+)
+target_include_directories(tcp_shift_l3 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_l3 PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_l3 PUBLIC tcp_shift_lwip)
+
 add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
