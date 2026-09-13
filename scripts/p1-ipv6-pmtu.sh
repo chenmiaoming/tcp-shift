@@ -151,7 +151,8 @@ capture_synack()
 
     # libpcap rejects raw tcp[13] byte offsets for IPv6. The runtime is idle
     # and this controlled connection is the only flow, so capture the first TCP
-    # packet emitted by the lwIP listener and validate SYN-ACK in decoded text.
+    # packet emitted by the listener. The caller validates its SYN-only MSS
+    # option, which identifies the SYN-ACK without another timing-sensitive read.
     timeout 4 tcpdump -i "$TUN_NAME" -c 1 -nn -vv -l \
         "ip6 and tcp and src host $LWIP_IP and src port $TCP_PORT" \
         > "$output" 2>&1 &
@@ -165,11 +166,6 @@ capture_synack()
         exit 1
     fi
     CAPTURE_PID=
-    grep -F 'Flags [S.]' "$output" >/dev/null || {
-        cat "$output" >&2 || true
-        echo "captured IPv6 TCP packet was not SYN-ACK" >&2
-        exit 1
-    }
 }
 
 OLD_FORWARD=$(sysctl -n net.ipv6.conf.all.forwarding)
