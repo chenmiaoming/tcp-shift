@@ -20,13 +20,14 @@ def checksum(data: bytes) -> int:
     return (~total) & 0xFFFF
 
 
-def icmp_echo(sequence: int, valid: bool) -> bytes:
+def icmp_echo(sequence: int, valid: bool) -> tuple[bytes, int]:
     header = struct.pack("!BBHHH", 8, 0, 0, IDENT, sequence)
     good = checksum(header + PAYLOAD)
     value = good if valid else (good ^ 0xFFFF)
     if value == good:
         value ^= 0x0001
-    return struct.pack("!BBHHH", 8, 0, value, IDENT, sequence) + PAYLOAD
+    packet = struct.pack("!BBHHH", 8, 0, value, IDENT, sequence) + PAYLOAD
+    return packet, value
 
 
 def receive_reply(sock: socket.socket, sequence: int, timeout: float) -> bool:
@@ -56,7 +57,13 @@ def send_echo(sock: socket.socket, destination: str,
               sequence: int, valid: bool) -> None:
     # Let Linux construct the IPv4 header. The only wire field deliberately
     # varied by this probe is the ICMP checksum.
-    sock.sendto(icmp_echo(sequence, valid), (destination, 0))
+    packet, field = icmp_echo(sequence, valid)
+    print(
+        f"send seq={sequence} valid={int(valid)} checksum_field=0x{field:04x} "
+        f"software_verify=0x{checksum(packet):04x}",
+        flush=True,
+    )
+    sock.sendto(packet, (destination, 0))
 
 
 def main() -> int:
