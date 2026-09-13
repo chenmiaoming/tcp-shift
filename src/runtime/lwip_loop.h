@@ -9,6 +9,12 @@ struct tcp_shift_lwip_loop {
     int epoll_fd;
     struct tcp_shift_l3_tun *l3;
     uint32_t tun_events;
+    uint64_t wait_calls;
+    uint64_t ready_wakeups;
+    uint64_t timeout_wakeups;
+    uint64_t eintr_wakeups;
+    uint64_t tun_readable_wakeups;
+    uint64_t tun_writable_wakeups;
 };
 
 int tcp_shift_lwip_loop_init(struct tcp_shift_lwip_loop *loop,
