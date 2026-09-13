@@ -25,6 +25,7 @@ struct tcp_shift_l3_tun {
     uint64_t rx_packets;
     uint64_t rx_bytes;
     uint64_t rx_drops;
+    uint64_t rx_errors;
     uint64_t tx_packets;
     uint64_t tx_bytes;
     uint64_t tx_would_block;
@@ -41,8 +42,8 @@ void tcp_shift_l3_tun_detach(struct tcp_shift_l3_tun *l3);
 
 /*
  * Consume at most one packet from the nonblocking TUN fd.
- * Returns 1 when one packet was injected, 0 for EAGAIN/no packet, and -1 on
- * host I/O or lwIP input failure.
+ * Returns 1 when one packet was consumed (including a per-packet drop), 0 for
+ * EAGAIN/no packet, and -1 only for fatal host-fd I/O/state errors.
  */
 int tcp_shift_l3_tun_rx_once(struct tcp_shift_l3_tun *l3);
 
