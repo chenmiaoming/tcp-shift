@@ -174,7 +174,7 @@ sysctl -q -w net.ipv6.conf.all.forwarding=1
 ip netns add "$NS_NAME"
 ip link add "$WAN_HOST_IF" type veth peer name "$WAN_NS_IF"
 ip link set "$WAN_NS_IF" netns "$NS_NAME"
-ip link set "$WAN_HOST_IF" mtu "$PATH_MTU" up
+ip link set "$WAN_HOST_IF" mtu 1500 up
 ip -6 addr add "$WAN_HOST_CIDR" dev "$WAN_HOST_IF" nodad
 ip -n "$NS_NAME" link set lo up
 ip -n "$NS_NAME" link set "$WAN_NS_IF" mtu 1500 up
@@ -205,10 +205,15 @@ grep -F 'mss 1440]' "$OUT/synack-before.txt" >/dev/null || {
     exit 1
 }
 
-# The client-facing host veth has MTU 1280 while the client peer remains 1500.
-# A 1500-byte echo request can enter the path and reach lwIP. Its 1500-byte echo
-# reply cannot leave the host toward the client, so Linux must return ICMPv6
-# Packet Too Big (MTU 1280) to lwIP through the TUN.
+# Keep the client link itself at MTU 1500 so a 1500-byte request can enter the
+# router. Apply the smaller MTU only to the host's egress route back to this
+# client. The request therefore reaches lwIP unchanged, while the 1500-byte
+# reply hits the 1280-byte route and Linux must send ICMPv6 Packet Too Big back
+# to the lwIP source through the TUN.
+ip -6 route replace "$WAN_CLIENT_IP"/128 dev "$WAN_HOST_IF" mtu "$PATH_MTU"
+ip -6 route get "$WAN_CLIENT_IP" > "$OUT/egress-route.txt"
+grep -F "mtu $PATH_MTU" "$OUT/egress-route.txt" >/dev/null
+
 timeout 4 tcpdump -i "$TUN_NAME" -c 1 -nn -vv -l \
     "icmp6 and dst host $LWIP_IP" > "$OUT/ptb-wire.txt" 2>&1 &
 CAPTURE_PID=$!
