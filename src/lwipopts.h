@@ -32,8 +32,13 @@
 #define LWIP_ND6_QUEUEING 0
 #define LWIP_ND6_ALLOW_RA_UPDATES 0
 #define LWIP_IPV6_FORWARD 0
-#define LWIP_IPV6_FRAG 1
-#define LWIP_IPV6_REASS 1
+
+/* The P1b server path relies on MTU/PMTU rather than IPv6 endpoint
+ * fragmentation. Routers never fragment IPv6, and keeping reassembly disabled
+ * avoids per-fragment state on the low-memory target. PTB qualification is a
+ * separate gate and must not be replaced by silently enabling fragmentation. */
+#define LWIP_IPV6_FRAG 0
+#define LWIP_IPV6_REASS 0
 
 /* Do not pay for lwIP's sequential/socket APIs. */
 #define LWIP_NETCONN 0
