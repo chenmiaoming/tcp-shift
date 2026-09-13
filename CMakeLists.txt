@@ -141,9 +141,8 @@ target_link_libraries(tcp-shift-p1-ipv6 PRIVATE
 )
 target_link_options(tcp-shift-p1-ipv6 PRIVATE -Wl,--gc-sections)
 
-# P2 first qualifies the real stream bridge on the already-proven IPv4 L3 path.
-# IPv6 uses the same bridge object and is added as a second ingress gate after
-# the shared flow state machine is proven.
+# P2 has temporary address-family-specific bring-up entrypoints, but both link
+# the same bridge/runtime implementation and the same IPv4 loopback backend.
 add_executable(tcp-shift-p2 src/p2_main.c src/platform.c)
 target_include_directories(tcp-shift-p2 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p2 PRIVATE
@@ -155,6 +154,18 @@ target_link_libraries(tcp-shift-p2 PRIVATE
     tcp_shift_bridge
 )
 target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
+
+add_executable(tcp-shift-p2-ipv6 src/p2_ipv6_main.c src/platform.c)
+target_include_directories(tcp-shift-p2-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p2-ipv6 PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p2-ipv6 PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge
+)
+target_link_options(tcp-shift-p2-ipv6 PRIVATE -Wl,--gc-sections)
 
 add_executable(tcp-shift-p1-backpressure-contract
     src/tests/l3_tun_backpressure_test.c
