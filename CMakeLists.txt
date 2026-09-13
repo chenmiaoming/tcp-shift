@@ -157,3 +157,13 @@ target_compile_options(tcp-shift-p1-rx-contract PRIVATE
 )
 target_link_libraries(tcp-shift-p1-rx-contract PRIVATE tcp_shift_l3)
 target_link_options(tcp-shift-p1-rx-contract PRIVATE -Wl,--gc-sections)
+
+# CI-only raw packet generator. It proves that the IPv6 nft ingress rule matches
+# TCP after a Hop-by-Hop extension header and that DNAT routes that packet into
+# the same TUN/lwIP datapath. It is not linked into a product runtime.
+add_executable(tcp-shift-p1-ipv6-ext-header-probe
+    src/tests/ipv6_extension_header_probe.c
+)
+target_compile_options(tcp-shift-p1-ipv6-ext-header-probe PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
