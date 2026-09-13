@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "host/ifconfig.h"
+#include "host/nft_ingress.h"
 #include "host/tun.h"
 #include "lwip/init.h"
 #include "lwip/ip6_addr.h"
@@ -13,6 +14,7 @@
 
 #define TCP_SHIFT_P1_IPV6_DEFAULT_PORT 18082U
 #define TCP_SHIFT_P1_MTU 1500U
+#define TCP_SHIFT_P1_NFT_TABLE "tcp_shift_p1"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -50,8 +52,10 @@ static int parse_port(const char *text, uint16_t *port)
 static void usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s <tun-name> <lwip-ipv6> <host-ipv6-cidr> [listen-port]\n"
-            "example: %s ts6 2001:db8:231::2 2001:db8:231::1/126 18082\n",
+            "usage: %s <tun-name> <lwip-ipv6> <host-ipv6-cidr> "
+            "[listen-port [public-ipv6]]\n"
+            "example: %s ts6 fd00:198:18::2 fd00:198:18::1/126 "
+            "18082 2001:db8:231::10\n",
             program, program);
 }
 
@@ -61,23 +65,36 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_probe_listener listener;
+    struct tcp_shift_nft_ingress ingress;
     ip6_addr_t address;
+    ip6_addr_t public_address;
+    const char *public_ipv6 = NULL;
     uint16_t listen_port = TCP_SHIFT_P1_IPV6_DEFAULT_PORT;
     int listener_started = 0;
     int loop_started = 0;
+    int forwarding;
     int status = EXIT_FAILURE;
 
     tun.fd = -1;
     loop.epoll_fd = -1;
     listener.pcb = NULL;
+    ingress.table_name[0] = '\0';
+    ingress.ip_version = 0U;
+    ingress.installed = 0;
 
-    if (argc != 4 && argc != 5) {
+    if (argc != 4 && argc != 5 && argc != 6) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
     if (parse_ipv6(argv[2], &address) < 0 ||
-        (argc == 5 && parse_port(argv[4], &listen_port) < 0)) {
+        (argc >= 5 && parse_port(argv[4], &listen_port) < 0)) {
         return EXIT_FAILURE;
+    }
+    if (argc == 6) {
+        if (parse_ipv6(argv[5], &public_address) < 0) {
+            return EXIT_FAILURE;
+        }
+        public_ipv6 = argv[5];
     }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
@@ -112,10 +129,38 @@ int main(int argc, char **argv)
     }
     loop_started = 1;
 
-    printf("tcp-shift-p1-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
-           "mtu=%u tcp-port=%u\n",
-           tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
-           (unsigned)listen_port);
+    if (public_ipv6 != NULL) {
+        forwarding = tcp_shift_host_ipv6_forwarding_enabled();
+        if (forwarding < 0) {
+            perror("read net.ipv6.conf.all.forwarding");
+            goto out_loop;
+        }
+        if (forwarding == 0) {
+            fprintf(stderr,
+                    "tcp-shift-p1-ipv6: IPv6 forwarding is disabled; "
+                    "configure net.ipv6.conf.all.forwarding=1 before public ingress\n");
+            goto out_loop;
+        }
+        if (tcp_shift_nft_ingress_install_ipv6(&ingress,
+                                               TCP_SHIFT_P1_NFT_TABLE,
+                                               public_ipv6, listen_port,
+                                               argv[2], listen_port) < 0) {
+            perror("install IPv6 nft ingress");
+            goto out_loop;
+        }
+    }
+
+    if (public_ipv6 != NULL) {
+        printf("tcp-shift-p1-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
+               "mtu=%u tcp-port=%u public-ipv6=%s nft-table=%s\n",
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)listen_port, public_ipv6, ingress.table_name);
+    } else {
+        printf("tcp-shift-p1-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
+               "mtu=%u tcp-port=%u\n",
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)listen_port);
+    }
     fflush(stdout);
 
     status = EXIT_SUCCESS;
@@ -150,6 +195,11 @@ int main(int argc, char **argv)
             (unsigned long long)loop.tun_readable_wakeups,
             (unsigned long long)loop.tun_writable_wakeups);
 
+out_loop:
+    if (ingress.installed != 0 && tcp_shift_nft_ingress_remove(&ingress) < 0) {
+        perror("remove IPv6 nft ingress");
+        status = EXIT_FAILURE;
+    }
     if (loop_started != 0) {
         tcp_shift_lwip_loop_close(&loop);
     }
