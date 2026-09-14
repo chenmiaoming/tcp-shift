@@ -31,6 +31,9 @@
 #if MEM_LIBC_MALLOC != 1 || MEMP_MEM_MALLOC != 1
 #error "memory accounting assumes libc-backed demand allocation"
 #endif
+#if LWIP_TCP_PCB_NUM_EXT_ARGS != 1
+#error "P4 reserves exactly one TCP PCB ext-arg slot for CC integration"
+#endif
 #if LWIP_WND_SCALE != 0
 #error "window scaling remains disabled until high-BDP memory tests exist"
 #endif
