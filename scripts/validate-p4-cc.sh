@@ -22,6 +22,7 @@ if awk '
     $0 == "#include <stdint.h>" { next }
     $0 == "#include \"cc/cc.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
+    $0 == "#include \"cc/bbr.h\"" { next }
     { print; bad = 1 }
     END { exit bad ? 0 : 1 }
 ' "$OUT/includes.txt" > "$OUT/forbidden-includes.txt"; then
@@ -55,7 +56,7 @@ fi
 rm -f "$OUT/unexpected-undefined.txt"
 
 # Record object/text/data size as the fixed pre-adapter P4 baseline. This is not
-# process residency; later P4/P5 measurements still compare real PSS to P3.
+# process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
 printf 'cc_boundary=pure-c\ncontroller=reno\nstate_bytes=16\nexternal_symbols=0\n' \
