@@ -6,9 +6,17 @@ on:
       - main
     paths:
       - '.github/workflows/lwip-p4.yml'
+      - 'CMakeLists.txt'
       - 'src/cc/**'
+      - 'src/lwip/**'
+      - 'src/lwipopts.h'
+      - 'src/p2_main.c'
       - 'src/tests/cc_contract_test.c'
+      - 'scripts/fetch-lwip.sh'
       - 'scripts/validate-p4-cc.sh'
+      - 'scripts/p4-cc-recovery-smoke.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
       - 'docs/milestones/p4-cc-boundary.md'
       - 'ARCHITECTURE.md'
       - 'docs/lwip-roadmap.md'
@@ -54,4 +62,59 @@ jobs:
         with:
           name: tcp-shift-p4-cc-boundary
           path: .build/p4-cc/evidence
+          if-no-files-found: warn
+
+  integrated-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            python3
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Validate integrated recovery harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p4-cc-recovery-smoke.sh
+
+      - name: Build pinned bridge runtime with CC adapter
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Exercise integrated fast retransmit loss path
+        run: |
+          sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p4-cc-recovery-smoke.sh fast-loss
+
+      - name: Exercise integrated RTO path
+        run: |
+          sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p4-cc-recovery-smoke.sh rto
+
+      - name: Upload integrated P4 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p4-integrated-recovery
+          path: |
+            .build/p4-fast-loss-ci
+            .build/p4-rto-ci
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
+            .build/lwip-p4-cc-hooks.applied.diff
           if-no-files-found: warn
