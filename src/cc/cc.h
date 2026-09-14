@@ -35,10 +35,13 @@ struct tcp_shift_cc_loss {
     uint32_t lost_bytes;
 };
 
-/* A zero pacing rate means that the controller does not request pacing. The
- * runtime owns pacing mechanics; a controller only publishes policy. */
+/* ssthresh is explicit policy because the transport's native recovery
+ * machinery may need the controller's threshold while it temporarily owns
+ * recovery-specific cwnd inflation. A zero pacing rate means that the
+ * controller does not request pacing. The runtime owns pacing mechanics. */
 struct tcp_shift_cc_policy {
     uint32_t cwnd_bytes;
+    uint32_t ssthresh_bytes;
     uint64_t pacing_rate_bytes_per_sec;
 };
 
