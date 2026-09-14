@@ -38,22 +38,31 @@ static int test_invalid_inputs(void)
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state) - 1U, &transport, &init,
                             &policy) == -1);
+    CHECK(cc.ops == NULL);
+    CHECK(cc.state == NULL);
 
     transport.mss_bytes = 0U;
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state), &transport, &init,
                             &policy) == -1);
+    CHECK(cc.ops == NULL);
+    CHECK(cc.state == NULL);
     transport.mss_bytes = 1000U;
 
     init.min_cwnd_bytes = 999U;
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state), &transport, &init,
                             &policy) == -1);
+    CHECK(cc.ops == NULL);
+    CHECK(cc.state == NULL);
+    CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == -1);
     init.min_cwnd_bytes = 1000U;
 
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state), &transport, &init,
                             &policy) == 0);
+    CHECK(cc.ops == &tcp_shift_reno_ops);
+    CHECK(cc.state == &state);
     ack.acked_bytes = 0U;
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == -1);
     loss.lost_bytes = 0U;
