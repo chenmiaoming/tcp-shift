@@ -1,0 +1,109 @@
+diff --git a/src/core/tcp.c b/src/core/tcp.c
+index ea95ffeef..000000000 100644
+--- a/src/core/tcp.c
++++ b/src/core/tcp.c
+@@ -1294,14 +1294,16 @@ tcp_slowtmr(void)
+             /* Reset the retransmission timer. */
+             pcb->rtime = 0;
+ 
+-            /* Reduce congestion window and ssthresh. */
+-            eff_wnd = LWIP_MIN(pcb->cwnd, pcb->snd_wnd);
+-            pcb->ssthresh = eff_wnd >> 1;
+-            if (pcb->ssthresh < (tcpwnd_size_t)(pcb->mss << 1)) {
+-              pcb->ssthresh = (tcpwnd_size_t)(pcb->mss << 1);
++            /* Delegate base congestion policy when a project hook is bound.
++             * Retransmission preparation/commit remains native lwIP. */
++            if (!tcp_shift_lwip_cc_hook_timeout(pcb)) {
++              eff_wnd = LWIP_MIN(pcb->cwnd, pcb->snd_wnd);
++              pcb->ssthresh = eff_wnd >> 1;
++              if (pcb->ssthresh < (tcpwnd_size_t)(pcb->mss << 1)) {
++                pcb->ssthresh = (tcpwnd_size_t)(pcb->mss << 1);
++              }
++              pcb->cwnd = pcb->mss;
+             }
+-            pcb->cwnd = pcb->mss;
+             LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_slowtmr: cwnd %"TCPWNDSIZE_F
+                                          " ssthresh %"TCPWNDSIZE_F"\n",
+                                          pcb->cwnd, pcb->ssthresh));
+diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
+index 4e7a08d17..000000000 100644
+--- a/src/core/tcp_in.c
++++ b/src/core/tcp_in.c
+@@ -1249,23 +1249,25 @@ tcp_receive(struct tcp_pcb *pcb)
+       /* Update the congestion control variables (cwnd and
+          ssthresh). */
+       if (pcb->state >= ESTABLISHED) {
+-        if (pcb->cwnd < pcb->ssthresh) {
+-          tcpwnd_size_t increase;
+-          /* limit to 1 SMSS segment during period following RTO */
+-          u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
+-          /* RFC 3465, section 2.2 Slow Start */
+-          increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
+-          TCP_WND_INC(pcb->cwnd, increase);
+-          LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: slow start cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
+-        } else {
+-          /* RFC 3465, section 2.1 Congestion Avoidance */
+-          TCP_WND_INC(pcb->bytes_acked, acked);
+-          if (pcb->bytes_acked >= pcb->cwnd) {
+-            pcb->bytes_acked = (tcpwnd_size_t)(pcb->bytes_acked - pcb->cwnd);
+-            TCP_WND_INC(pcb->cwnd, pcb->mss);
++        if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
++          if (pcb->cwnd < pcb->ssthresh) {
++            tcpwnd_size_t increase;
++            /* limit to 1 SMSS segment during period following RTO */
++            u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
++            /* RFC 3465, section 2.2 Slow Start */
++            increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
++            TCP_WND_INC(pcb->cwnd, increase);
++            LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: slow start cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
++          } else {
++            /* RFC 3465, section 2.1 Congestion Avoidance */
++            TCP_WND_INC(pcb->bytes_acked, acked);
++            if (pcb->bytes_acked >= pcb->cwnd) {
++              pcb->bytes_acked = (tcpwnd_size_t)(pcb->bytes_acked - pcb->cwnd);
++              TCP_WND_INC(pcb->cwnd, pcb->mss);
++            }
++            LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: congestion avoidance cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
+           }
+-          LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: congestion avoidance cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
+         }
+       }
+       LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: ACK for %"U32_F", unacked->seqno %"U32_F":%"U32_F"\n",
+diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
+index cfcc55dd1..000000000 100644
+--- a/src/core/tcp_out.c
++++ b/src/core/tcp_out.c
+@@ -1796,18 +1796,20 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+                  (u16_t)pcb->dupacks, pcb->lastack,
+                  lwip_ntohl(pcb->unacked->tcphdr->seqno)));
+     if (tcp_rexmit(pcb) == ERR_OK) {
+-      /* Set ssthresh to half of the minimum of the current
+-       * cwnd and the advertised window */
+-      pcb->ssthresh = LWIP_MIN(pcb->cwnd, pcb->snd_wnd) / 2;
+-
+-      /* The minimum value for ssthresh should be 2 MSS */
+-      if (pcb->ssthresh < (2U * pcb->mss)) {
+-        LWIP_DEBUGF(TCP_FR_DEBUG,
+-                    ("tcp_receive: The minimum value for ssthresh %"TCPWNDSIZE_F
+-                     " should be min 2 mss %"U16_F"...\n",
+-                     pcb->ssthresh, (u16_t)(2 * pcb->mss)));
+-        pcb->ssthresh = 2 * pcb->mss;
++      if (!tcp_shift_lwip_cc_hook_loss(pcb, pcb->mss)) {
++        /* Set ssthresh to half of the minimum of the current
++         * cwnd and the advertised window */
++        pcb->ssthresh = LWIP_MIN(pcb->cwnd, pcb->snd_wnd) / 2;
++
++        /* The minimum value for ssthresh should be 2 MSS */
++        if (pcb->ssthresh < (2U * pcb->mss)) {
++          LWIP_DEBUGF(TCP_FR_DEBUG,
++                      ("tcp_receive: The minimum value for ssthresh %"TCPWNDSIZE_F
++                       " should be min 2 mss %"U16_F"...\n",
++                       pcb->ssthresh, (u16_t)(2 * pcb->mss)));
++          pcb->ssthresh = 2 * pcb->mss;
++        }
+       }
+ 
++      /* Fast-recovery inflation remains native lwIP mechanics. */
+       pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
+       tcp_set_flags(pcb, TF_INFR);
+ 
