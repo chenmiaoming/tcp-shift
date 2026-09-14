@@ -67,9 +67,9 @@ P4 contains `src/cc/` as an independently buildable pure-C static library. It ma
 
 The generic CC core must not depend on TUN, nftables, epoll, timerfd, host socket descriptors, backend bridge objects, lwIP objects, or Linux syscalls. The standalone gate permits only its own headers plus ISO C integer/size/limits headers. Controller state is caller-owned; the library has no controller-owned heap allocation and its qualified static archive has zero undefined external symbols.
 
-The generic interface separates transport observations from policy. The first increment exposes MSS, inflight and peer-window transport state; init, ACK, loss and timeout events; and policy outputs for cwnd plus an optional pacing rate. A pacing rate of zero means no pacing request. The first conventional byte-counting Reno controller uses 16 bytes of caller-owned state and always publishes zero pacing rate.
+The generic interface separates transport observations from policy. The first increment exposes MSS, inflight and peer-window transport state; init, ACK, loss and timeout events; and policy outputs for `cwnd`, `ssthresh`, plus an optional pacing rate. `ssthresh` is explicit so the native transport recovery engine can consume the controller's threshold without inspecting opaque controller state. A pacing rate of zero means no pacing request. The first conventional byte-counting Reno controller uses 16 bytes of caller-owned state and always publishes zero pacing rate.
 
-Dedicated run `34806148317`, job `103858312293`, qualified this standalone boundary on behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8`:
+Final standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed P4 run `34810033939`, job `103869414629`:
 
 ```text
 cc_contract=ok controller=reno state_bytes=16 pacing=none
@@ -77,11 +77,13 @@ cc_boundary=pure-c
 external_symbols=0
 ```
 
-Artifact `10333074163` retains the include-surface, archive-symbol and object-size diagnostics. P0 run `34806148285` and full P1 run `34806148306` remained green on the same head.
+Artifact `10334775895` retains the include-surface, archive-symbol and object-size diagnostics. The final contract also proves failed controller initialization leaves the generic handle invalid. P0 run `34810033921` and full P1 run `34810033970` remained green on the same behavior head.
 
-This standalone qualification does not yet move public-side congestion-window ownership out of native lwIP. The active P4 work is a thin lwIP adapter/hook surface that translates native transport events into generic CC observations and applies policy back to cwnd/ssthresh or an equally narrow hook. The adapter may depend on lwIP; `src/cc/` may not.
+This standalone qualification does not yet move public-side congestion-window ownership out of native lwIP. The active P4 work is a thin lwIP adapter/hook surface that translates native transport events into generic CC observations and applies `cwnd`/`ssthresh` policy back to the native transport. The adapter may depend on lwIP; `src/cc/` may not.
 
 lwIP must continue to own retransmission execution, fast-recovery mechanics, send/receive sequence space, segment queues, SACK/recovery machinery, packet construction, and output. The CC library owns policy only. If conventional-controller integration requires copying or rebuilding those mechanisms instead of narrow hooks, that is a P4 stop signal.
+
+Existing lwIP PCB extension arguments are the preferred place for adapter-owned per-flow state if their configuration and cost remain acceptable. They provide lifecycle/passive-open storage hooks, not ACK/loss/RTO policy hooks by themselves; any transport hook patch therefore must remain confined to the smallest congestion-policy assignment points and be mechanically testable.
 
 Linux-specific pacing belongs to the runtime scheduler introduced in P5. An embedded port may use an RTOS or hardware timer. The controller must not own that scheduler directly. High-resolution delivery sampling, per-segment rate metadata, app-limited detection and process-wide pacing are P5 prerequisites; BBR-specific state does not belong in P4.
 
@@ -159,7 +161,7 @@ P2 runner evidence covers IPv4 and IPv6 public-stream integrity to an IPv4 loopb
 
 P3 behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`. It runner-qualifies staged process PSS/private-dirty/fd observations, both directional active-window residency workloads, three repeated 128-flow load/drain rounds, a small-operation CPU baseline, and the constrained-host process-PSS planning model.
 
-P4 standalone behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed P4 run `34806148317`, job `103858312293`, with P0 run `34806148285` and full P1 run `34806148306` green. It runner-qualifies the independent pure-C CC library, conventional 16-byte Reno state-machine contract, include allowlist, no-pacing output, and zero-external-symbol archive. It does not yet qualify integrated lwIP controller ownership.
+P4 standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed P4 run `34810033939`, job `103869414629`, with P0 run `34810033921` and full P1 run `34810033970` green. It runner-qualifies the independent pure-C CC library, conventional 16-byte Reno state-machine contract, explicit `cwnd`/`ssthresh` policy, failed-init invalid-handle semantics, include allowlist, no-pacing output, and zero-external-symbol archive. It does not yet qualify integrated lwIP controller ownership.
 
 This is GitHub-runner qualification, not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, capability, memory-accounting, or scheduling surface. Provider qualification remains separate.
 
