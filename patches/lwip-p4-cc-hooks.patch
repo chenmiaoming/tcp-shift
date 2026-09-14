@@ -76,7 +76,19 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -1618,5 +1618,10 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
+@@ -1341,6 +1341,11 @@ tcp_output(struct tcp_pcb *pcb)
+         ((pcb->flags & (TF_NAGLEMEMERR | TF_FIN)) == 0)) {
+       break;
+     }
++    if ((seg->len != 0U) &&
++        !tcp_shift_lwip_cc_hook_segment_send_eligible(pcb, seg->len)) {
++      break;
++    }
++
+ #if TCP_CWND_DEBUG
+     LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_output: snd_wnd %"TCPWNDSIZE_F", cwnd %"TCPWNDSIZE_F", wnd %"U32_F", effwnd %"U32_F", seq %"U32_F", ack %"U32_F", i %"S16_F"\n",
+                                  pcb->snd_wnd, pcb->cwnd, wnd,
+@@ -1618,5 +1623,10 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
    err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
                       pcb->tos, IP_PROTO_TCP, netif);
    NETIF_RESET_HINTS(netif);
@@ -87,7 +99,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
  
  #if TCP_CHECKSUM_ON_COPY
-@@ -1796,19 +1801,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1806,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
