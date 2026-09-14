@@ -37,7 +37,7 @@ Source boundaries are deliberate even while the initial product remains a single
 
 ```text
 host/       Linux TUN/interface/netfilter/lifecycle integration
-runtime/    epoll owner, fd readiness, timers, future pacer
+runtime/    epoll owner, fd readiness, timers, pacer
 lwip/       L3/TCP adapter, PMTU, CC/delivery integration
 bridge/     public stream <-> 127.0.0.1 backend
 cc/         pure-C congestion-control policy
@@ -49,29 +49,32 @@ cc/         pure-C congestion-control policy
 
 P0-P4 are runner-qualified. P4 proves that public-side ACK, fast-loss, and retransmission-timeout policy decisions reach the generic controller while lwIP retains retransmission execution, duplicate-ACK handling, fast recovery, SACK/recovery, RTT/RTO calculation, packet queues, sequence space, packet construction, and output.
 
-P5a is now also runner-qualified. It adds high-resolution send/ACK timestamps, cumulative unique delivered-byte accounting, and retransmission-safe per-segment metadata without enlarging upstream `struct tcp_seg`.
+P5a and P5b are also runner-qualified. P5a established high-resolution send/ACK timestamps, cumulative unique delivered-byte accounting, and retransmission-safe segment metadata. P5b turns that ledger into transport-neutral ACK delivery-rate samples, including app-limited and retransmission metadata, while keeping conventional Reno behavior unchanged.
 
 The current progression is:
 
-1. **P5a — delivery ledger: complete.** 32-byte lazy sidecar slots keyed by `tcp_seg *`; retransmission reuses the same slot and cannot double-count delivery.
-2. **P5b — rate sampler: next.** Derive ACK delivery-rate samples and app-limited semantics from P5a snapshots.
-3. **P5c — event-driven pacer.** One process-wide deadline heap + one one-shot `timerfd` integrated with epoll; no fixed pacing tick, no per-flow timerfd/thread, no busy spin.
+1. **P5a — delivery ledger: complete.** Lazy sidecar metadata keyed by `tcp_seg *`; retransmission reuses the same slot and cannot double-count delivery.
+2. **P5b — rate sampler + app-limited: complete.** ACK-derived delivery samples use exact payload delivery, send/ACK intervals, retransmission-safe snapshots, RTT validity, prior inflight, and event-driven app-limited marking.
+3. **P5c — event-driven pacer: next.** One process-wide deadline heap + one one-shot `timerfd` integrated with epoll; no fixed pacing tick, no per-flow timerfd/thread, no busy spin.
 4. **P6 — tcp-shift BBR.** Implement bandwidth/min-RTT model and mode logic, then compare against native Linux BBR reference runs.
 
-The architectural ownership problem is therefore already solved. The main remaining risk before BBR is measurement and pacing correctness under high BDP/loss, not rebuilding TCP.
+The architectural ownership problem is therefore already solved. The main remaining risk before BBR is pacing correctness under high BDP/loss, not rebuilding TCP.
 
 An lwIP controller will not be described as Linux BBR unless the relevant transport semantics are actually equivalent.
 
 ## Event-driven runtime
 
-The runtime is already deadline/readiness driven rather than fixed-polling:
+The runtime is deadline/readiness driven rather than fixed-polling:
 
 - `epoll_wait()` blocks until fd readiness or the next lwIP timeout from `sys_timeouts_sleeptime()`;
 - `sys_check_timeouts()` runs after a real readiness/timeout wakeup;
 - TUN `EPOLLOUT` is armed only while the bounded TX queue is non-empty;
-- backend read/write interests are suppressed when they cannot make progress.
+- backend read/write interests are suppressed when they cannot make progress;
+- app-limited detection is triggered by the actual backend read path reaching `EAGAIN`, not by a periodic flow scan.
 
-P5 pacing must preserve this shape. The intended pacer uses a single process-wide min-heap and a one-shot monotonic `timerfd` armed only to the earliest pacing deadline. When no paced transmission is pending, that timer is disarmed.
+The P5b application-pause gate observed zero runtime CPU ticks during a 300-ms sample window while still proving app-limited enter/sample/exit transitions.
+
+P5c must preserve this shape. The intended pacer uses a single process-wide min-heap and a one-shot monotonic `timerfd` armed only to the earliest pacing deadline. When no paced transmission is pending, that timer is disarmed.
 
 ## Build and upstream provenance
 
@@ -87,7 +90,7 @@ make build
 
 The repository carries one controlled lwIP integration patch, `patches/lwip-p4-cc-hooks.patch`. Provenance CI records pristine critical-source hashes before patching, verifies the patch SHA and modified-file set, checks reverse application, and independently reapplies the patch to a fresh worktree to prove byte-identical results.
 
-The patch stays confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4 uses those sites for ACK/loss/RTO policy delegation; P5a adds send/fully-ACKed segment observations in the already-controlled `tcp_in.c`/`tcp_out.c` surface. Unbound PCBs retain native lwIP behavior.
+The patch stays confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4 uses those sites for ACK/loss/RTO policy delegation; P5 adds send/ACK observation data in the already-controlled `tcp_in.c`/`tcp_out.c` surface. Unbound PCBs retain native lwIP behavior.
 
 ## Qualification summary
 
@@ -118,19 +121,9 @@ fast-loss: cc_loss_events=1 cc_timeout_events=0 payload_bytes=262144 recovery=ok
 RTO:       cc_loss_events=0 cc_timeout_events=2 payload_bytes=262144 recovery=ok
 ```
 
-The adapter-enabled P3 baseline retained:
-
-```text
-warm fixed process PSS: 335 KiB
-fully-window-resident process slope: 37.148438 KiB/flow
-128 active projected process PSS: 5090 KiB
-8-MiB process-budget remaining: 3102 KiB
-headroom: 24.234 KiB/active flow
-```
-
 ### P5a delivery ledger
 
-Behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed provenance/P0/P1/P2/P3/P4 and P5 run `34821205375`, job `103903019956`. Artifact `10338108552` retains corrected fail-closed diagnostics.
+Behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed provenance/P0/P1/P2/P3/P4 and P5 run `34821205375`, job `103903019956`. Artifact `10338108552` retained corrected fail-closed diagnostics:
 
 ```text
 normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
@@ -139,19 +132,34 @@ RTO:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
 metadata_bytes_per_slot=32
 ```
 
-All three paths require zero metadata allocation failures, metadata misses, abandoned slots, clock errors, and timestamp regressions.
+### P5b delivery-rate sampler + app-limited
 
-The P5a P3 rerun retained:
+Final behavior head `327efe7e29adfc230e7d201b466f2bd4980e976c` passed provenance/P0/P1/P2/P3/P4/P5. P5 run `34843586990`, job `103974027867`, artifact `10347003115` retained:
 
 ```text
-warm fixed process PSS: 343 KiB
-fully-window-resident process slope: 37.679688 KiB/flow
-128 active projected process PSS: 5166 KiB
-8-MiB process-budget remaining: 3026 KiB
-headroom: 23.641 KiB/active flow
+normal:    samples=138 valid=138 invalid=0 max_rate=696998778 B/s
+fast-loss: samples=121 valid=121 invalid=0 cc_loss_events=1
+RTO:       samples=135 valid=135 invalid=0 retransmitted_samples=3 cc_timeout_events=2
+
+app-pause:
+first_burst=4096 second_burst=131072 delivered=135168
+app_limited_samples=7 app_limited_enters=2 app_limited_exits=2
+pause_cpu_ticks=0 event_driven=ok
 ```
 
-So P5a consumes only a small fraction of the P4 planning headroom. Active residency remains dominated by TCP-window/pbuf/send-segment state.
+P5b widened the lazy sidecar to 56 bytes so it can retain sequence/progress, send-phase, prior-inflight, app-limited, and retransmission state. Partial-ACK accounting is based on cumulative ACK sequence progress before upstream frees the segment; FIN sequence space is not counted as delivered payload.
+
+The P5b P3 rerun, run `34843587033`, job `103974029078`, artifact `10346739278`, retained:
+
+```text
+warm fixed process PSS: 347 KiB
+fully-window-resident process slope: 37.710938 KiB/flow
+128 active projected process PSS: 5174 KiB
+8-MiB process-budget remaining: 3018 KiB
+headroom: 23.578 KiB/active flow
+```
+
+Active residency remains dominated by TCP-window/pbuf/send-segment state; sampler metadata remains well inside the constrained-process planning budget.
 
 This remains GitHub-runner qualification, not provider/OpenVZ qualification.
 
@@ -167,4 +175,4 @@ Start here for project state:
 - [`docs/milestones/p4-cc-boundary.md`](docs/milestones/p4-cc-boundary.md) — completed P4 controller integration;
 - [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — active P5 sampler/pacer work.
 
-> Status: P0/P1/P2/P3/P4 and P5a delivery ledger runner-qualified; P5b rate sampling/app-limited next. Do not use on production traffic.
+> Status: P0-P4, P5a delivery ledger, and P5b delivery-rate/app-limited sampling are runner-qualified; P5c event-driven pacing is next. Do not use on production traffic.
