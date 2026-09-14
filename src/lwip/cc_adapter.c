@@ -4,14 +4,26 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define TCP_SHIFT_LWIP_CC_MAX_LISTENERS 2U
+#define TCP_SHIFT_DELIVERY_INITIAL_SLOTS 8U
 
 struct tcp_shift_lwip_cc_listener_binding {
     struct tcp_pcb *listener;
     tcp_accept_fn accept;
     void *callback_arg;
     unsigned used;
+};
+
+/* P5 keeps delivery metadata outside upstream struct tcp_seg. The existing
+ * segment pointer is stable while a sent segment moves between unacked/unsent
+ * during fast/RTO retransmission, so it is a sufficient sidecar key. */
+struct tcp_shift_delivery_slot {
+    const void *segment;
+    uint64_t first_tx_ns;
+    uint64_t delivered_at_send;
+    uint64_t delivered_mstamp_at_send_ns;
 };
 
 static struct tcp_shift_lwip_cc_listener_binding
@@ -73,6 +85,279 @@ static int tcp_shift_lwip_cc_apply_policy(
     return 0;
 }
 
+static uint64_t tcp_shift_delivery_now_ns(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct timespec now;
+    uint64_t value;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        if (adapter != NULL && adapter->stats != NULL) {
+            adapter->stats->delivery_clock_errors++;
+        }
+        return 0U;
+    }
+    value = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+            (uint64_t)now.tv_nsec;
+    if (adapter != NULL) {
+        if (adapter->delivery_last_event_ns != 0U &&
+            value < adapter->delivery_last_event_ns &&
+            adapter->stats != NULL) {
+            adapter->stats->delivery_timestamp_regressions++;
+        }
+        adapter->delivery_last_event_ns = value;
+    }
+    return value;
+}
+
+static struct tcp_shift_delivery_slot *
+tcp_shift_delivery_slots(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    return (struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+}
+
+static struct tcp_shift_delivery_slot *
+tcp_shift_delivery_find(struct tcp_shift_lwip_cc_adapter *adapter,
+                        const void *segment)
+{
+    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
+    uint16_t index;
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        if (slots[index].segment == segment) {
+            return &slots[index];
+        }
+    }
+    return NULL;
+}
+
+static struct tcp_shift_delivery_slot *
+tcp_shift_delivery_empty_slot(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
+    uint16_t index;
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        if (slots[index].segment == NULL) {
+            return &slots[index];
+        }
+    }
+    return NULL;
+}
+
+static int tcp_shift_delivery_grow(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct tcp_shift_delivery_slot *slots;
+    uint32_t configured_max = (uint32_t)TCP_SND_QUEUELEN;
+    uint32_t next_capacity;
+    size_t old_bytes;
+    size_t new_bytes;
+
+    if (configured_max > UINT16_MAX) {
+        configured_max = UINT16_MAX;
+    }
+    if ((uint32_t)adapter->delivery_capacity >= configured_max) {
+        return -1;
+    }
+
+    if (adapter->delivery_capacity == 0U) {
+        next_capacity = TCP_SHIFT_DELIVERY_INITIAL_SLOTS;
+    } else {
+        next_capacity = (uint32_t)adapter->delivery_capacity * 2U;
+    }
+    if (next_capacity > configured_max) {
+        next_capacity = configured_max;
+    }
+    if (next_capacity == 0U) {
+        return -1;
+    }
+
+    old_bytes = (size_t)adapter->delivery_capacity *
+                sizeof(struct tcp_shift_delivery_slot);
+    new_bytes = (size_t)next_capacity *
+                sizeof(struct tcp_shift_delivery_slot);
+    slots = realloc(adapter->delivery_slots, new_bytes);
+    if (slots == NULL) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_metadata_alloc_failures++;
+        }
+        return -1;
+    }
+    memset((unsigned char *)slots + old_bytes, 0, new_bytes - old_bytes);
+    adapter->delivery_slots = slots;
+    adapter->delivery_capacity = (uint16_t)next_capacity;
+    if (adapter->stats != NULL &&
+        next_capacity > adapter->stats->delivery_peak_capacity_slots_per_flow) {
+        adapter->stats->delivery_peak_capacity_slots_per_flow = next_capacity;
+    }
+    return 0;
+}
+
+static struct tcp_shift_delivery_slot *
+tcp_shift_delivery_create(struct tcp_shift_lwip_cc_adapter *adapter,
+                          const void *segment)
+{
+    struct tcp_shift_delivery_slot *slot =
+        tcp_shift_delivery_empty_slot(adapter);
+
+    if (slot == NULL) {
+        if (tcp_shift_delivery_grow(adapter) < 0) {
+            return NULL;
+        }
+        slot = tcp_shift_delivery_empty_slot(adapter);
+    }
+    if (slot == NULL) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_metadata_alloc_failures++;
+        }
+        return NULL;
+    }
+
+    memset(slot, 0, sizeof(*slot));
+    slot->segment = segment;
+    adapter->delivery_live++;
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_live_slots++;
+        if (adapter->stats->delivery_live_slots >
+            adapter->stats->delivery_peak_live_slots) {
+            adapter->stats->delivery_peak_live_slots =
+                adapter->stats->delivery_live_slots;
+        }
+        if ((uint32_t)adapter->delivery_live >
+            adapter->stats->delivery_peak_slots_per_flow) {
+            adapter->stats->delivery_peak_slots_per_flow =
+                adapter->delivery_live;
+        }
+    }
+    return slot;
+}
+
+static void tcp_shift_delivery_release_slot(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_shift_delivery_slot *slot)
+{
+    if (adapter == NULL || slot == NULL || slot->segment == NULL) {
+        return;
+    }
+    memset(slot, 0, sizeof(*slot));
+    if (adapter->delivery_live != 0U) {
+        adapter->delivery_live--;
+    }
+    if (adapter->stats != NULL && adapter->stats->delivery_live_slots != 0U) {
+        adapter->stats->delivery_live_slots--;
+    }
+}
+
+static void tcp_shift_delivery_release_all(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    uint32_t live;
+
+    if (adapter == NULL) {
+        return;
+    }
+    live = adapter->delivery_live;
+    if (adapter->stats != NULL && live != 0U) {
+        adapter->stats->delivery_metadata_abandoned_slots += live;
+        if (adapter->stats->delivery_live_slots >= live) {
+            adapter->stats->delivery_live_slots -= live;
+        } else {
+            adapter->stats->delivery_live_slots = 0U;
+        }
+    }
+    free(adapter->delivery_slots);
+    adapter->delivery_slots = NULL;
+    adapter->delivery_capacity = 0U;
+    adapter->delivery_live = 0U;
+}
+
+static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
+                                             struct tcp_pcb *pcb,
+                                             const void *segment,
+                                             u16_t payload_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_delivery_slot *slot;
+    uint64_t now_ns;
+
+    if (adapter == NULL || adapter->pcb != pcb || segment == NULL ||
+        payload_bytes == 0U) {
+        return;
+    }
+
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return;
+    }
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_last_tx_ns = now_ns;
+    }
+
+    slot = tcp_shift_delivery_find(adapter, segment);
+    if (slot != NULL) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_retransmit_events++;
+        }
+        return;
+    }
+
+    slot = tcp_shift_delivery_create(adapter, segment);
+    if (slot == NULL) {
+        return;
+    }
+    slot->first_tx_ns = now_ns;
+    slot->delivered_at_send = adapter->delivered_bytes;
+    slot->delivered_mstamp_at_send_ns =
+        adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
+                                           : now_ns;
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_first_tx_events++;
+    }
+}
+
+static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
+                                                struct tcp_pcb *pcb,
+                                                const void *segment,
+                                                u16_t payload_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_delivery_slot *slot;
+    uint64_t now_ns;
+
+    if (adapter == NULL || adapter->pcb != pcb || segment == NULL ||
+        payload_bytes == 0U) {
+        return;
+    }
+
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_acked_segment_events++;
+    }
+    slot = tcp_shift_delivery_find(adapter, segment);
+    if (slot == NULL) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_metadata_misses++;
+        }
+        return;
+    }
+
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return;
+    }
+    if (slot->first_tx_ns == 0U || now_ns < slot->first_tx_ns) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_timestamp_regressions++;
+        }
+    }
+
+    adapter->delivered_bytes += payload_bytes;
+    adapter->delivered_mstamp_ns = now_ns;
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_payload_bytes += payload_bytes;
+        adapter->stats->delivery_last_ack_ns = now_ns;
+    }
+    tcp_shift_delivery_release_slot(adapter, slot);
+}
+
 static void tcp_shift_lwip_cc_disable_on_error(
     struct tcp_shift_lwip_cc_adapter *adapter)
 {
@@ -83,8 +368,8 @@ static void tcp_shift_lwip_cc_disable_on_error(
         adapter->stats->controller_errors++;
     }
     /* Keep the ext-arg attached until PCB destruction so heap-owned adapter
-     * storage is still released. bound=0 makes later hook calls fall back to
-     * native lwIP congestion control instead of using stale controller state. */
+     * storage and delivery metadata are still released. bound=0 makes later
+     * policy calls fall back to native lwIP rather than stale controller state. */
     adapter->bound = 0U;
 }
 
@@ -176,6 +461,8 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack = tcp_shift_lwip_cc_on_ack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+    .on_segment_tx = tcp_shift_lwip_cc_on_segment_tx,
+    .on_segment_acked = tcp_shift_lwip_cc_on_segment_acked,
 };
 
 static void tcp_shift_lwip_cc_pcb_destroyed(u8_t id, void *data)
@@ -194,6 +481,7 @@ static void tcp_shift_lwip_cc_pcb_destroyed(u8_t id, void *data)
     }
 
     heap_owned = adapter->heap_owned;
+    tcp_shift_delivery_release_all(adapter);
     adapter->bound = 0U;
     adapter->pcb = NULL;
     if (heap_owned != 0U) {
@@ -225,6 +513,11 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
     adapter->hook.arg = adapter;
     adapter->stats = stats;
     adapter->pcb = pcb;
+    adapter->delivered_mstamp_ns = tcp_shift_delivery_now_ns(adapter);
+    if (stats != NULL) {
+        stats->delivery_metadata_bytes_per_slot =
+            (uint32_t)sizeof(struct tcp_shift_delivery_slot);
+    }
 
     tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
     init.initial_cwnd_bytes = pcb->cwnd;
@@ -265,6 +558,7 @@ void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
         tcp_ext_arg_set(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID,
                         NULL);
     }
+    tcp_shift_delivery_release_all(adapter);
     adapter->bound = 0U;
     adapter->pcb = NULL;
 }
