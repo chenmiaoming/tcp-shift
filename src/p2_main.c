@@ -57,6 +57,35 @@ static void usage(const char *program)
             program, program);
 }
 
+static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
+{
+    fprintf(stderr,
+            "tcp-shift-p2-delivery: first_tx_events=%llu "
+            "retransmit_events=%llu acked_segment_events=%llu "
+            "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
+            "metadata_misses=%llu metadata_abandoned_slots=%llu "
+            "clock_errors=%llu timestamp_regressions=%llu "
+            "last_tx_ns=%llu last_ack_ns=%llu metadata_bytes_per_slot=%u "
+            "live_slots=%u peak_live_slots=%u peak_slots_per_flow=%u "
+            "peak_capacity_slots_per_flow=%u\n",
+            (unsigned long long)stats->delivery_first_tx_events,
+            (unsigned long long)stats->delivery_retransmit_events,
+            (unsigned long long)stats->delivery_acked_segment_events,
+            (unsigned long long)stats->delivery_payload_bytes,
+            (unsigned long long)stats->delivery_metadata_alloc_failures,
+            (unsigned long long)stats->delivery_metadata_misses,
+            (unsigned long long)stats->delivery_metadata_abandoned_slots,
+            (unsigned long long)stats->delivery_clock_errors,
+            (unsigned long long)stats->delivery_timestamp_regressions,
+            (unsigned long long)stats->delivery_last_tx_ns,
+            (unsigned long long)stats->delivery_last_ack_ns,
+            stats->delivery_metadata_bytes_per_slot,
+            stats->delivery_live_slots,
+            stats->delivery_peak_live_slots,
+            stats->delivery_peak_slots_per_flow,
+            stats->delivery_peak_capacity_slots_per_flow);
+}
+
 int main(int argc, char **argv)
 {
     struct tcp_shift_tun tun;
@@ -199,6 +228,7 @@ int main(int argc, char **argv)
             (unsigned long long)cc_stats->controller_errors,
             cc_stats->last_cwnd_bytes,
             cc_stats->last_ssthresh_bytes);
+    print_delivery_stats(cc_stats);
 
 out:
     if (bridge_started != 0) {

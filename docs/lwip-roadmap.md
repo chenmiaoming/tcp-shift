@@ -24,6 +24,7 @@ The public and backend TCP legs are distinct. Congestion control belongs to the 
 - Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate modules.
 - `src/cc/` stays pure C and independently buildable.
 - Linux timerfd/epoll pacing stays outside `src/cc/`.
+- Pacing is deadline/event driven: no periodic pacing poll loop, no per-flow timerfd/thread, no busy spin.
 - Do not call an experimental controller Linux BBR unless transport semantics actually match.
 
 ## P0: reproducible lwIP userspace build — complete
@@ -78,19 +79,15 @@ The generic controller consumes MSS, inflight, peer send window, and a transport
 
 ### Narrow lwIP integration
 
-Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. A repository-owned patch modifies exactly three congestion-policy sites:
+Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. A repository-owned patch is confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`.
 
-1. ACK cwnd growth;
-2. fast-loss cwnd/ssthresh policy;
-3. RTO cwnd/ssthresh policy.
-
-Unbound PCBs retain native lwIP policy. Retransmission execution, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output remain native lwIP mechanics.
+P4 delegates ACK cwnd growth, fast-loss cwnd/ssthresh, and RTO cwnd/ssthresh. Unbound PCBs retain native lwIP policy. Retransmission execution, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output remain native lwIP mechanics.
 
 One PCB ext-arg slot carries the project hook. Passive-open initialization explicitly mirrors pinned lwIP's initial-cwnd formula because upstream assigns that cwnd after invoking the accept callback.
 
 ### Integrated ownership evidence
 
-P2 now hard-gates every workload with:
+P2 hard-gates every workload with:
 
 ```text
 cc_bindings == bridge_accepts
@@ -99,27 +96,14 @@ cc_ack_events > 0
 cc_controller_errors = 0
 ```
 
-Real external fault injection on the TUN path qualifies fast-loss recovery:
+External TUN fault injection qualifies:
 
 ```text
-cc_loss_events=1
-cc_timeout_events=0
-mode=fast-loss payload_bytes=262144 recovery=ok
+fast-loss: cc_loss_events=1 cc_timeout_events=0 payload_bytes=262144 recovery=ok
+RTO:       cc_loss_events=0 cc_timeout_events=2 payload_bytes=262144 recovery=ok
 ```
 
-and RTO recovery:
-
-```text
-cc_loss_events=0
-cc_timeout_events=2
-mode=rto payload_bytes=262144 recovery=ok
-```
-
-Both preserve exact stream integrity and do not call generic loss/RTO handlers directly.
-
-### Provenance and regression evidence
-
-Final behavior-head runs:
+Final P4 behavior-head runs:
 
 ```text
 upstream provenance  34815149550  success
@@ -130,8 +114,6 @@ P3                   34815149825  success
 P4                   34815149645  success
 ```
 
-The provenance gate proves exact pin, pristine pre-patch hashes, recorded patch SHA, exactly three modified upstream files, no untracked dependency files, reverse-apply correctness, and byte identity against an independently patched worktree.
-
 P3 rerun with the adapter retained:
 
 ```text
@@ -139,40 +121,123 @@ warm fixed process PSS: 335 KiB
 fully-window-resident slope: 37.148438 KiB/flow
 128-active projected process PSS: 5090 KiB
 remaining 8-MiB process budget: 3102 KiB = 24.234 KiB/flow
-three-round 128-flow drain growth: 5 KiB
 ```
 
-P4 therefore exits with the constrained-host admission headroom intact.
+## P5a: retransmission-safe delivery ledger — complete
 
-## P5: delivery-rate sampler and pacing prerequisites — active next
+P5a supplies the accounting substrate for later delivery-rate estimation without changing controller behavior or adding pacing.
 
-P5 must establish the transport observations needed by model-based congestion control before any BBR mode/state machine is added.
+Design:
 
-Required work:
+- do not enlarge upstream `struct tcp_seg`;
+- use project-owned lazy per-flow sidecar metadata keyed by `tcp_seg *`;
+- start at 8 slots, grow as needed, hard-bounded by current `TCP_SND_QUEUELEN=90`;
+- each slot is 32 bytes;
+- record first successful transmit timestamp and delivery snapshots;
+- retransmission reuses the slot and cannot double-count delivered payload;
+- consume metadata before a fully acknowledged segment is freed;
+- flow teardown must leave zero live slots.
 
-1. high-resolution monotonic send/ACK timestamps;
-2. cumulative delivered-byte accounting;
-3. per-segment delivery snapshots/send timestamps;
-4. ACK-derived delivery-rate samples;
-5. app-limited detection and marking;
-6. loss/inflight observations suitable for later controllers;
-7. process-wide pacing scheduler, preferably one min-heap plus one timerfd;
-8. fixed/per-flow/per-segment memory and CPU qualification against P3/P4.
+The first workflow implementation exposed a CI bug: exact runtime data already reported `live_slots=0`, but a greedy parser matched `peak_live_slots`, and `check_delivery | tee` masked the checker failure. Qualification was withheld until both defects were fixed and hidden `.build` diagnostics were retained correctly.
 
-The sampler should publish transport-neutral observations into the generic CC boundary. Runtime scheduling stays in `runtime/`, not `cc/`.
+Final P5a behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed provenance/P0/P1/P2/P3/P4 and P5 run `34821205375`, job `103903019956`. Artifact `10338108552` retains:
 
-P5 is complete only when rate samples and app-limited semantics are behaviorally qualified under real traffic, pacing is externally observable and bounded, P0-P4 regressions remain green, and the added metadata/scheduler residency fits the constrained-host model.
+```text
+normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
+fast-loss: first_tx=180 retransmit=1 acked=180 delivered=262144 live_slots=0
+RTO:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
+metadata_bytes_per_slot=32
+```
 
-## P6: experimental BBR
+All modes require zero allocation failures, metadata misses, abandoned slots, clock errors, and timestamp regressions.
 
-Only after P5 is qualified should an experimental BBR controller be added.
+P5a memory rerun:
 
-Reference order: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c`/`tcp_rate.c` as TCP behavior cross-checks.
+```text
+warm fixed process PSS: 343 KiB
+fully-window-resident slope: 37.679688 KiB/flow
+128-active projected process PSS: 5166 KiB
+remaining 8-MiB process budget: 3026 KiB = 23.641 KiB/flow
+```
 
-Validation must compare cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, and memory against native Linux baselines under reproducible RTT/loss/bandwidth scenarios.
+The delivery ledger therefore consumes only a small fraction of the P4 admission headroom.
+
+## P5b: ACK delivery-rate sampler + app-limited — next
+
+P5b converts P5a timestamps/snapshots into a transport-neutral rate observation. It must define and qualify:
+
+1. newly delivered bytes per ACK event;
+2. delivery interval and send interval;
+3. rate sample selection/validity rules;
+4. delayed ACK and ACK aggregation behavior;
+5. ACKs covering multiple segments;
+6. retransmitted data without duplicate delivery accounting;
+7. partial ACK handling;
+8. sequence-number wrap safety;
+9. latest valid RTT observation;
+10. prior inflight/loss state;
+11. app-limited marking and exit semantics.
+
+The sampler belongs in the lwIP adapter/transport-observation layer. It may extend the pure-C controller input with transport-neutral sample fields, but it must not move Linux timer or lwIP queue mechanics into `src/cc/`.
+
+P5b exits only when the sample can be reproduced and asserted under normal, delayed-ACK/aggregation, fast-loss, RTO, and app-limited workloads.
+
+## P5c: event-driven pacer
+
+P5c turns controller pacing policy into actual transmission timing without introducing periodic polling.
+
+Target runtime shape:
+
+```text
+all paced flows
+      |
+      v
+process-wide min-heap of next eligible send deadlines
+      |
+      v
+one one-shot CLOCK_MONOTONIC timerfd
+      |
+      v
+existing epoll owner
+```
+
+Rules:
+
+- one timerfd for the process, not per flow;
+- arm to the earliest pending deadline only;
+- disarm when no pacing deadline exists;
+- no fixed pacing tick;
+- no busy spin;
+- fd readiness and lwIP timers remain under the same owner;
+- CI records timer expirations, pacing wakeups, deadline lateness, CPU, and idle wakeups.
+
+The current loop is already event/deadline driven: epoll timeout comes from `sys_timeouts_sleeptime()` and TUN `EPOLLOUT` is enabled only for real backlog. P5c must preserve or improve that wakeup profile. Unifying lwIP deadlines and the pacer behind one one-shot timerfd is allowed only if behavior/wakeup CI proves the change.
+
+## P6: tcp-shift BBR
+
+After P5b and P5c are qualified, BBR becomes the active controller milestone.
+
+P6 implements tcp-shift's bandwidth/min-RTT model, pacing/cwnd policy, mode transitions, probing, loss behavior, and app-limited treatment over the generic CC boundary.
+
+Reference order: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c` / `tcp_rate.c` as TCP behavior cross-checks.
+
+Validation compares cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, timer wakeups, and memory against native Linux reference runs under reproducible RTT/loss/bandwidth scenarios.
+
+## Distance to BBR
+
+The remaining path is now compact:
+
+```text
+P5a delivery ledger        complete
+P5b rate/app-limited       next
+P5c event-driven pacing    then
+P6 tcp-shift BBR           then active
+```
+
+The difficult TCP ownership/recovery boundary has already been qualified. The largest remaining pre-BBR risk is sampler/pacer correctness under high BDP, ACK aggregation, and loss.
 
 ## Stop criteria
 
-Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, or unavoidable BDP buffering dominates the fixed-memory advantage.
+Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, unavoidable BDP buffering dominates the fixed-memory advantage, or pacing accuracy requires per-flow timers / periodic polling / busy spinning.
 
 The project is still successful if evidence supports only a very small conventional-CC userspace TCP endpoint and rejects BBR.
