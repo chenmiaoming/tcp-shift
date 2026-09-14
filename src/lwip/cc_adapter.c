@@ -851,6 +851,8 @@ static void tcp_shift_delivery_build_rate_sample(
     }
 
     delivered_delta64 = adapter->delivered_bytes - candidate->delivered_at_send;
+    rate->prior_delivered_bytes = candidate->delivered_at_send;
+    rate->delivered_total_bytes = adapter->delivered_bytes;
     rate->delivered_bytes = delivered_delta64 > UINT32_MAX
                                 ? UINT32_MAX
                                 : (uint32_t)delivered_delta64;
