@@ -41,7 +41,7 @@ A separate privileged helper process is a possible later security boundary, not 
 
 ## Congestion-control plan
 
-The packet path, stream bridge, pre-CC memory/capacity envelope, and standalone generic CC boundary are runner-qualified. The active P4 work is now the smallest lwIP adapter/hook surface that delegates public-side cwnd policy without moving retransmission, recovery, queueing, or sequence-space mechanics out of lwIP. After that:
+The packet path, stream bridge, pre-CC memory/capacity envelope, and standalone generic CC boundary are runner-qualified. The generic policy now publishes `cwnd`, `ssthresh`, and an optional pacing rate; the active P4 work is the smallest lwIP adapter/hook surface that delegates public-side policy without moving retransmission, recovery, queueing, or sequence-space mechanics out of lwIP. After that:
 
 1. integrate and qualify the conventional controller through real public-side lwIP traffic;
 2. establish high-resolution transport timestamps and per-segment delivery accounting;
@@ -93,7 +93,7 @@ The conservative capacity model uses a 315-KiB warm fixed PSS and about 37.52 Ki
 
 P3 also retained 0 runtime CPU ticks over a one-second idle sample and about 34.18 us of runtime CPU per operation for 2048 four-flow 64-byte request/echo operations on the GitHub runner. These are regression baselines, not provider performance claims.
 
-P4 standalone behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed dedicated run `34806148317`, job `103858312293`, while P0 run `34806148285` and full P1 run `34806148306` also stayed green. Retained evidence is:
+P4 standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed dedicated run `34810033939`, job `103869414629`, while P0 run `34810033921` and full P1 run `34810033970` also stayed green. Retained evidence is:
 
 ```text
 cc_contract=ok controller=reno state_bytes=16 pacing=none
@@ -101,7 +101,7 @@ cc_boundary=pure-c
 external_symbols=0
 ```
 
-Artifact `10333074163` retains the standalone build, include-surface and symbol diagnostics. This qualifies only the generic pure-C boundary and conventional state-machine contract; public-side cwnd is still owned directly by native lwIP until the next P4 adapter increment is qualified.
+Artifact `10334775895` retains the standalone build, include-surface and symbol diagnostics. The final contract also proves failed controller initialization leaves the generic handle invalid and that controller `ssthresh` is published explicitly beside `cwnd`. This qualifies only the generic pure-C boundary and conventional state-machine contract; public-side cwnd is still owned directly by native lwIP until the next P4 adapter increment is qualified.
 
 This remains GitHub-runner qualification, not yet provider/OpenVZ qualification.
 
