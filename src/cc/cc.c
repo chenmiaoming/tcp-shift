@@ -1,7 +1,5 @@
 #include "cc/cc.h"
 
-#include <string.h>
-
 static int tcp_shift_cc_valid_transport(
     const struct tcp_shift_cc_transport *transport)
 {
@@ -32,8 +30,8 @@ int tcp_shift_cc_init(struct tcp_shift_cc *cc,
         return -1;
     }
 
-    memset(state, 0, ops->state_size);
-    memset(policy, 0, sizeof(*policy));
+    policy->cwnd_bytes = 0U;
+    policy->pacing_rate_bytes_per_sec = 0U;
     cc->ops = ops;
     cc->state = state;
     return ops->init(state, transport, init, policy);
