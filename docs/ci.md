@@ -161,9 +161,9 @@ P3 therefore qualifies entry to P4. It is not a full-host 32-MiB connection-capa
 
 The first P4 job qualifies the generic congestion-control core before any lwIP adapter is added. `scripts/validate-p4-cc.sh` configures `src/cc/` as an independent CMake project and compiles it with warnings-as-errors, `-ffreestanding`, and `-fno-builtin`.
 
-The source-surface gate permits only the controller's own headers plus ISO C integer/size/limits headers. It therefore fails if lwIP, Linux, socket/runtime, bridge, TUN, epoll, timerfd, or nftables dependencies leak into `src/cc/`. The resulting static archive must have zero undefined external symbols. A conventional byte-counting Reno contract then exercises init, slow start, congestion avoidance, loss, RTO, MSS changes, saturation, invalid arguments, and the no-pacing policy.
+The source-surface gate permits only the controller's own headers plus ISO C integer/size/limits headers. It therefore fails if lwIP, Linux, socket/runtime, bridge, TUN, epoll, timerfd, or nftables dependencies leak into `src/cc/`. The resulting static archive must have zero undefined external symbols. A conventional byte-counting Reno contract exercises init, slow start, congestion avoidance, loss, RTO, MSS changes, saturation, invalid arguments, explicit `cwnd`/`ssthresh` policy publication, failed-init invalid-handle semantics, and the no-pacing policy.
 
-Behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed P4 run `34806148317`, job `103858312293`; artifact `10333074163` retained eight standalone evidence files. Output included:
+Final standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed P4 run `34810033939`, job `103869414629`; artifact `10334775895` retained the standalone evidence. Output included:
 
 ```text
 cc_contract=ok controller=reno state_bytes=16 pacing=none
@@ -174,7 +174,7 @@ external_symbols=0
 P4 standalone congestion-control boundary passed
 ```
 
-P0 run `34806148285` and full P1 run `34806148306` also passed on the same head. This proves only the standalone policy-library boundary. It does not prove that lwIP is yet delegating public-side cwnd to the controller, and it does not qualify P5 delivery-rate or pacing behavior.
+P0 run `34810033921` and full P1 run `34810033970` also passed on the same head. This proves only the standalone policy-library boundary. It does not prove that lwIP is yet delegating public-side cwnd/ssthresh to the controller, and it does not qualify P5 delivery-rate or pacing behavior.
 
 The next P4 CI increment must add integrated adapter evidence under real public-side lwIP traffic, preserve the standalone gate unchanged, retain ACK/loss/RTO policy transitions, and remeasure fixed/per-flow process cost against the P3 baseline.
 
@@ -232,7 +232,7 @@ The P2 artifact for run `34769960275` retains 72 diagnostic files covering the b
 
 ### P4: generic congestion-control boundary — active
 
-The standalone core is now runner-qualified. The next gate is the thin lwIP adapter: preserve the pure-C boundary, demonstrate conventional-controller ownership of public-side cwnd under real traffic, retain structured ACK/loss/RTO policy evidence, and measure adapter/per-flow overhead against P3.
+The standalone core is runner-qualified. The next gate is the thin lwIP adapter: preserve the pure-C boundary, demonstrate conventional-controller ownership of public-side cwnd/ssthresh under real traffic, retain structured ACK/loss/RTO policy evidence, and measure adapter/per-flow overhead against P3.
 
 ### P5-P6: sampler, pacing, and BBR
 
