@@ -122,6 +122,12 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
  * callback but binds a controller to the established child PCB first. */
 void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
 
+/* P5c qualification-only registration wrapper. It lets the normal adapter bind
+ * the child first, then swaps the already-initialized Reno controller ops to the
+ * deterministic fixed-pacing Reno policy before the bridge sees the child. */
+void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
+                                           tcp_accept_fn accept);
+
 /* Called by the bridge only when the backend application has no bytes ready
  * while the public TCP has transport capacity. The adapter applies the final
  * transport checks before setting a Linux-style delivered+inflight marker. */
