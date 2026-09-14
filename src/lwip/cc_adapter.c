@@ -2,7 +2,21 @@
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+
+#define TCP_SHIFT_LWIP_CC_MAX_LISTENERS 2U
+
+struct tcp_shift_lwip_cc_listener_binding {
+    struct tcp_pcb *listener;
+    tcp_accept_fn accept;
+    void *callback_arg;
+    unsigned used;
+};
+
+static struct tcp_shift_lwip_cc_listener_binding
+    tcp_shift_lwip_cc_listeners[TCP_SHIFT_LWIP_CC_MAX_LISTENERS];
+static struct tcp_shift_lwip_cc_stats tcp_shift_lwip_cc_stats;
 
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 {
@@ -45,21 +59,19 @@ static int tcp_shift_lwip_cc_apply_policy(
     return 0;
 }
 
-static void tcp_shift_lwip_cc_detach_on_error(
+static void tcp_shift_lwip_cc_disable_on_error(
     struct tcp_shift_lwip_cc_adapter *adapter)
 {
-    if (adapter == NULL || adapter->bound == 0U || adapter->pcb == NULL) {
+    if (adapter == NULL) {
         return;
     }
-    if (tcp_ext_arg_get(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID) ==
-        &adapter->hook) {
-        tcp_ext_arg_set_callbacks(adapter->pcb,
-                                  (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID, NULL);
-        tcp_ext_arg_set(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID,
-                        NULL);
+    if (adapter->stats != NULL) {
+        adapter->stats->controller_errors++;
     }
+    /* Keep the ext-arg attached until PCB destruction so heap-owned adapter
+     * storage is still released. bound=0 makes later hook calls fall back to
+     * native lwIP congestion control instead of using stale controller state. */
     adapter->bound = 0U;
-    adapter->pcb = NULL;
 }
 
 static int tcp_shift_lwip_cc_on_ack(void *arg,
@@ -81,7 +93,7 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
                             &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
-        tcp_shift_lwip_cc_detach_on_error(adapter);
+        tcp_shift_lwip_cc_disable_on_error(adapter);
         return 0;
     }
 
@@ -111,7 +123,7 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
     if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
                              &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
-        tcp_shift_lwip_cc_detach_on_error(adapter);
+        tcp_shift_lwip_cc_disable_on_error(adapter);
         return 0;
     }
 
@@ -135,7 +147,7 @@ static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
     tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
     if (tcp_shift_cc_on_timeout(&adapter->controller, &transport, &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
-        tcp_shift_lwip_cc_detach_on_error(adapter);
+        tcp_shift_lwip_cc_disable_on_error(adapter);
         return 0;
     }
 
@@ -156,15 +168,22 @@ static void tcp_shift_lwip_cc_pcb_destroyed(u8_t id, void *data)
 {
     struct tcp_shift_lwip_cc_hook *hook = data;
     struct tcp_shift_lwip_cc_adapter *adapter;
+    unsigned heap_owned;
 
     (void)id;
     if (hook == NULL) {
         return;
     }
     adapter = hook->arg;
-    if (adapter != NULL) {
-        adapter->bound = 0U;
-        adapter->pcb = NULL;
+    if (adapter == NULL) {
+        return;
+    }
+
+    heap_owned = adapter->heap_owned;
+    adapter->bound = 0U;
+    adapter->pcb = NULL;
+    if (heap_owned != 0U) {
+        free(adapter);
     }
 }
 
@@ -182,7 +201,7 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
     struct tcp_shift_cc_policy policy;
 
     if (adapter == NULL || pcb == NULL || pcb->mss == 0U ||
-        adapter->bound != 0U ||
+        adapter->pcb != NULL ||
         tcp_ext_arg_get(pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID) != NULL) {
         return -1;
     }
@@ -218,7 +237,7 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
 
 void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
 {
-    if (adapter == NULL || adapter->bound == 0U || adapter->pcb == NULL) {
+    if (adapter == NULL || adapter->pcb == NULL) {
         return;
     }
 
@@ -231,4 +250,95 @@ void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
     }
     adapter->bound = 0U;
     adapter->pcb = NULL;
+}
+
+static void tcp_shift_lwip_cc_listener_destroyed(u8_t id, void *data)
+{
+    struct tcp_shift_lwip_cc_listener_binding *binding = data;
+
+    (void)id;
+    if (binding != NULL) {
+        memset(binding, 0, sizeof(*binding));
+    }
+}
+
+static const struct tcp_ext_arg_callbacks tcp_shift_lwip_cc_listener_callbacks = {
+    .destroy = tcp_shift_lwip_cc_listener_destroyed,
+    .passive_open = NULL,
+};
+
+static err_t tcp_shift_lwip_cc_accept_dispatch(void *arg,
+                                                struct tcp_pcb *newpcb,
+                                                err_t err)
+{
+    struct tcp_shift_lwip_cc_listener_binding *binding = arg;
+    struct tcp_shift_lwip_cc_adapter *adapter;
+
+    if (binding == NULL || binding->used == 0U || binding->accept == NULL) {
+        if (newpcb != NULL) {
+            tcp_abort(newpcb);
+            return ERR_ABRT;
+        }
+        return ERR_VAL;
+    }
+
+    if (newpcb == NULL || err != ERR_OK) {
+        return binding->accept(binding->callback_arg, newpcb, err);
+    }
+
+    adapter = calloc(1, sizeof(*adapter));
+    if (adapter == NULL) {
+        tcp_shift_lwip_cc_stats.bind_failures++;
+        tcp_abort(newpcb);
+        return ERR_ABRT;
+    }
+    if (tcp_shift_lwip_cc_adapter_bind(adapter, newpcb,
+                                       &tcp_shift_lwip_cc_stats) < 0) {
+        tcp_shift_lwip_cc_stats.bind_failures++;
+        free(adapter);
+        tcp_abort(newpcb);
+        return ERR_ABRT;
+    }
+    adapter->heap_owned = 1U;
+
+    return binding->accept(binding->callback_arg, newpcb, err);
+}
+
+void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept)
+{
+    struct tcp_shift_lwip_cc_listener_binding *binding = NULL;
+    unsigned i;
+
+    if (pcb == NULL || pcb->state != LISTEN) {
+        tcp_accept(pcb, accept);
+        return;
+    }
+
+    for (i = 0U; i < TCP_SHIFT_LWIP_CC_MAX_LISTENERS; i++) {
+        if (tcp_shift_lwip_cc_listeners[i].used == 0U) {
+            binding = &tcp_shift_lwip_cc_listeners[i];
+            break;
+        }
+    }
+    if (binding == NULL) {
+        tcp_shift_lwip_cc_stats.bind_failures++;
+        tcp_accept(pcb, NULL);
+        return;
+    }
+
+    binding->listener = pcb;
+    binding->accept = accept;
+    binding->callback_arg = pcb->callback_arg;
+    binding->used = 1U;
+
+    tcp_arg(pcb, binding);
+    tcp_ext_arg_set_callbacks(pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID,
+                              &tcp_shift_lwip_cc_listener_callbacks);
+    tcp_ext_arg_set(pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID, binding);
+    tcp_accept(pcb, tcp_shift_lwip_cc_accept_dispatch);
+}
+
+const struct tcp_shift_lwip_cc_stats *tcp_shift_lwip_cc_get_stats(void)
+{
+    return &tcp_shift_lwip_cc_stats;
 }
