@@ -50,6 +50,15 @@
 #define MEM_ALIGNMENT 8
 
 /*
+ * P4 reserves exactly one TCP PCB extension slot for the tcp-shift CC hook ABI.
+ * The slot stores only an opaque hook pointer. Unbound P0/P1/probe PCBs execute
+ * native lwIP congestion control. The hook header is intentionally independent
+ * from src/cc so patched lwIP never links the controller core directly.
+ */
+#define LWIP_TCP_PCB_NUM_EXT_ARGS 1
+#define LWIP_HOOK_FILENAME "lwip/cc_hooks.h"
+
+/*
  * Keep the current transport within lwIP's native 16-bit window fields.
  * Window scaling is a later transport milestone and must be introduced together
  * with explicit memory and high-BDP tests.
