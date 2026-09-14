@@ -86,6 +86,38 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->delivery_peak_capacity_slots_per_flow);
 }
 
+static void print_rate_stats(const struct tcp_shift_lwip_cc_stats *stats)
+{
+    fprintf(stderr,
+            "tcp-shift-p2-rate: samples=%llu valid_samples=%llu "
+            "invalid_samples=%llu app_limited_samples=%llu "
+            "retransmitted_samples=%llu partial_ack_events=%llu "
+            "multi_segment_ack_events=%llu app_limited_enters=%llu "
+            "app_limited_exits=%llu last_rate_bytes_per_sec=%llu "
+            "max_rate_bytes_per_sec=%llu last_interval_ns=%llu "
+            "last_send_interval_ns=%llu last_ack_interval_ns=%llu "
+            "last_rtt_ns=%llu last_delivered_bytes=%u "
+            "last_prior_inflight_bytes=%u last_flags=%u\n",
+            (unsigned long long)stats->rate_samples,
+            (unsigned long long)stats->rate_valid_samples,
+            (unsigned long long)stats->rate_invalid_samples,
+            (unsigned long long)stats->rate_app_limited_samples,
+            (unsigned long long)stats->rate_retransmitted_samples,
+            (unsigned long long)stats->rate_partial_ack_events,
+            (unsigned long long)stats->rate_multi_segment_ack_events,
+            (unsigned long long)stats->app_limited_enters,
+            (unsigned long long)stats->app_limited_exits,
+            (unsigned long long)stats->rate_last_bytes_per_sec,
+            (unsigned long long)stats->rate_max_bytes_per_sec,
+            (unsigned long long)stats->rate_last_interval_ns,
+            (unsigned long long)stats->rate_last_send_interval_ns,
+            (unsigned long long)stats->rate_last_ack_interval_ns,
+            (unsigned long long)stats->rate_last_rtt_ns,
+            stats->rate_last_delivered_bytes,
+            stats->rate_last_prior_inflight_bytes,
+            stats->rate_last_flags);
+}
+
 int main(int argc, char **argv)
 {
     struct tcp_shift_tun tun;
@@ -229,6 +261,7 @@ int main(int argc, char **argv)
             cc_stats->last_cwnd_bytes,
             cc_stats->last_ssthresh_bytes);
     print_delivery_stats(cc_stats);
+    print_rate_stats(cc_stats);
 
 out:
     if (bridge_started != 0) {
