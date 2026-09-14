@@ -27,6 +27,20 @@ static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 #endif
 }
 
+/* Keep this calculation mechanically equivalent to pinned lwIP's
+ * LWIP_TCP_CALC_INITIAL_CWND(). On passive open, lwIP invokes the raw accept
+ * callback while pcb->cwnd is still its allocation sentinel (1 byte), then
+ * assigns this initial cwnd immediately after the callback returns. Binding the
+ * controller at accept therefore needs the value lwIP is about to publish. */
+static uint32_t tcp_shift_lwip_cc_initial_cwnd(uint32_t mss_bytes)
+{
+    uint32_t twice_mss = 2U * mss_bytes;
+    uint32_t four_mss = 4U * mss_bytes;
+    uint32_t floor = twice_mss > 4380U ? twice_mss : 4380U;
+
+    return four_mss < floor ? four_mss : floor;
+}
+
 static void tcp_shift_lwip_cc_transport_from_pcb(
     const struct tcp_pcb *pcb,
     struct tcp_shift_cc_transport *transport)
@@ -214,6 +228,9 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
 
     tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
     init.initial_cwnd_bytes = pcb->cwnd;
+    if (init.initial_cwnd_bytes < pcb->mss && pcb->state == ESTABLISHED) {
+        init.initial_cwnd_bytes = tcp_shift_lwip_cc_initial_cwnd(pcb->mss);
+    }
     init.initial_ssthresh_bytes = pcb->ssthresh;
     init.min_cwnd_bytes = pcb->mss;
     if (tcp_shift_cc_init(&adapter->controller, &tcp_shift_reno_ops,
