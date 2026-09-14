@@ -87,7 +87,7 @@ rss_final_kb=1800
 bridge_reuse_no_ratcheting=ok
 ```
 
-P3 runner-qualifies the pre-CC userspace memory and CPU envelope. Behavior head `775ea5832f7e30884ecaf44722281a5054d2a615` is not a P3 identifier; the retained P3 behavior head remains `775ea5832f7e308e2c908c2f5abedfa4175c69be`, which passed P3 run `34805306193`. The final run measured 262 KiB ready PSS and 307 KiB at 128 idle flows. Under controlled window pressure, public-to-backend residency added 36.5 KiB/flow and backend-to-public added 37.125 KiB/flow. Three rounds of 128 flows returned fd count to 5 and showed only 5 KiB first-to-last drained PSS growth.
+P3 runner-qualifies the pre-CC userspace memory and CPU envelope. Behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed P3 run `34805306193`. The final run measured 262 KiB ready PSS and 307 KiB at 128 idle flows. Under controlled window pressure, public-to-backend residency added 36.5 KiB/flow and backend-to-public added 37.125 KiB/flow. Three rounds of 128 flows returned fd count to 5 and showed only 5 KiB first-to-last drained PSS growth.
 
 The conservative capacity model uses a 315-KiB warm fixed PSS and about 37.52 KiB/flow for a fully-window-resident flow. In its P4 admission scenario, tcp-shift gets only 25% of a 32-MiB host (8 MiB process-PSS budget): 128 active flows project to about 5.12 MiB, leaving about 3.07 MiB, or 24.0 KiB/flow, for future CC/sampler/pacer process structures. Backend kernel TCP memory, backend application memory, public-client kernel memory, and provider-specific overhead are deliberately excluded, so this is not a full-host capacity guarantee.
 
