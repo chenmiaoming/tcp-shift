@@ -1091,8 +1091,10 @@ void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
 
     if (tcp_ext_arg_get(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID) ==
         &adapter->hook) {
-        tcp_ext_arg_set_callbacks(adapter->pcb,
-                                  (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID, NULL);
+        /* Pinned lwIP requires a non-NULL ext-arg callback table. Keep the
+         * static callbacks installed and clear only the data pointer; a later
+         * PCB destroy will invoke the callback with NULL data, which is a
+         * deliberate no-op in tcp_shift_lwip_cc_pcb_destroyed(). */
         tcp_ext_arg_set(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID,
                         NULL);
     }
