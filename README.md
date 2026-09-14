@@ -52,7 +52,7 @@ P5 completed the prerequisites for model-based congestion control:
 1. **P5a — delivery ledger: complete.** High-resolution send/ACK timestamps, unique delivered-byte accounting, and retransmission-safe lazy sidecar metadata.
 2. **P5b — rate sampler + app-limited: complete.** Transport-neutral ACK delivery-rate samples with send/ACK intervals, RTT validity, prior inflight, retransmission metadata, and event-driven app-limited marking.
 3. **P5c — event-driven pacer: complete.** Controller pacing policy now gates real data sends through one process-wide deadline heap and one one-shot `CLOCK_MONOTONIC` timerfd registered in the existing epoll owner. There is no fixed pacing tick, per-flow timerfd/thread, or busy spin.
-4. **P6 — tcp-shift BBR: next.** Implement and qualify the bandwidth/min-RTT model, pacing/cwnd policy, mode transitions, probing, loss response, and app-limited treatment over the already-qualified boundary and pacer.
+4. **P6 — tcp-shift BBR: active.** P6a starts with a pure-C BBRv3 model/state contract for bandwidth and min-RTT estimation before any live cwnd/pacing policy or lwIP binding is enabled.
 
 An experimental controller will not be described as Linux BBR unless the relevant transport semantics are actually equivalent.
 
@@ -159,6 +159,10 @@ heap final:              0
 
 The observed delivery rate becomes window-limited at about 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. P5c therefore proves scheduler correctness/efficiency under BDP pressure; it does not claim the current unscaled window can fully utilize arbitrary high-BDP links. Window scaling remains a later transport concern.
 
+### P6 BBR model — active
+
+P6a is deliberately model-only. `src/cc/bbr.*` uses the P5 transport-neutral rate sample to establish the BBRv3 bandwidth/min-RTT model and starts in `STARTUP`, but it does not yet publish BBR cwnd/pacing policy or bind BBR to live lwIP PCBs. The reference contract is `draft-ietf-ccwg-bbr-06`.
+
 ## Project state
 
 Start here:
@@ -168,6 +172,7 @@ Start here:
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and handoff contract;
 - [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — completed P5 evidence;
-- [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff.
+- [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
+- [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
 
-> Status: P0-P5 are GitHub-runner-qualified and P5c is merged; P6 tcp-shift BBR is the next development milestone. Provider/OpenVZ and production qualification remain separate. Do not use on production traffic.
+> Status: P0-P5 are GitHub-runner-qualified and P5c is merged; P6 tcp-shift BBR is active at the pure-C model-contract stage. Provider/OpenVZ and production qualification remain separate. Do not use on production traffic.

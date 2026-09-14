@@ -12,6 +12,7 @@ endif()
 add_library(tcp_shift_cc STATIC
     cc.c
     reno.c
+    bbr.c
 )
 target_include_directories(tcp_shift_cc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_options(tcp_shift_cc PRIVATE -Wall -Wextra -Wpedantic -Werror)

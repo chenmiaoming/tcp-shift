@@ -1,0 +1,59 @@
+name: P6 BBR model
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p6-bbr.yml'
+      - 'src/cc/**'
+      - 'src/tests/bbr_model_test.c'
+      - 'scripts/p6-bbr-model-contract.sh'
+      - 'scripts/validate-p4-cc.sh'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            cmake
+
+      - name: Validate P6 harness
+        run: sh -n scripts/p6-bbr-model-contract.sh
+
+      - name: Qualify BBR model estimation
+        run: sh scripts/p6-bbr-model-contract.sh
+
+      - name: Requalify pure-C CC boundary
+        run: sh scripts/validate-p4-cc.sh
+
+      - name: Upload P6 model diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p6-bbr-model
+          path: |
+            .build/p6-bbr-model-contract
+            .build/p4-cc/evidence
+          if-no-files-found: warn
+          include-hidden-files: true

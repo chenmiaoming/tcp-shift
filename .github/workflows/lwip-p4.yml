@@ -12,12 +12,15 @@ on:
       - 'src/lwipopts.h'
       - 'src/p2_main.c'
       - 'src/tests/cc_contract_test.c'
+      - 'src/tests/bbr_model_test.c'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/validate-p4-cc.sh'
+      - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
       - '.lwip-baseline'
       - 'docs/milestones/p4-cc-boundary.md'
+      - 'docs/milestones/p6-bbr.md'
       - 'ARCHITECTURE.md'
       - 'docs/lwip-roadmap.md'
       - 'docs/ci.md'
@@ -56,13 +59,21 @@ jobs:
           sh -n scripts/validate-p4-cc.sh
           sh scripts/validate-p4-cc.sh
 
-      - name: Upload P4 diagnostics
+      - name: Qualify P6 BBR model inside the pure-C boundary
+        run: |
+          sh -n scripts/p6-bbr-model-contract.sh
+          sh scripts/p6-bbr-model-contract.sh
+
+      - name: Upload P4/P6 pure-C diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tcp-shift-p4-cc-boundary
-          path: .build/p4-cc/evidence
+          path: |
+            .build/p4-cc/evidence
+            .build/p6-bbr-model-contract
           if-no-files-found: warn
+          include-hidden-files: true
 
   integrated-recovery:
     runs-on: ubuntu-latest
