@@ -1,8 +1,7 @@
 diff --git a/src/core/tcp.c b/src/core/tcp.c
-index ea95ffeef..000000000 100644
 --- a/src/core/tcp.c
 +++ b/src/core/tcp.c
-@@ -1294,14 +1294,16 @@ tcp_slowtmr(void)
+@@ -1294,13 +1294,16 @@ tcp_slowtmr(void)
              /* Reset the retransmission timer. */
              pcb->rtime = 0;
  
@@ -26,10 +25,9 @@ index ea95ffeef..000000000 100644
                                           " ssthresh %"TCPWNDSIZE_F"\n",
                                           pcb->cwnd, pcb->ssthresh));
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
-index 4e7a08d17..000000000 100644
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -1249,23 +1249,25 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1249,22 +1249,24 @@ tcp_receive(struct tcp_pcb *pcb)
        /* Update the congestion control variables (cwnd and
           ssthresh). */
        if (pcb->state >= ESTABLISHED) {
@@ -70,10 +68,9 @@ index 4e7a08d17..000000000 100644
        }
        LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: ACK for %"U32_F", unacked->seqno %"U32_F":%"U32_F"\n",
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
-index cfcc55dd1..000000000 100644
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -1796,18 +1796,20 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1796,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
