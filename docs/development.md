@@ -44,7 +44,7 @@ Use CI as the primary Linux integration and debugging environment when it can fa
 
 If the target environment has behavior GitHub runners cannot represent—especially OpenVZ/container capability restrictions, provider IPv6 routing, or production kernel/network policy—document an exact manual validation command sequence and the outputs that must be returned. Do not silently generalize a runner result to an untested provider environment.
 
-## Current handoff: P3 complete, P4 next
+## Current handoff: P4 standalone boundary qualified, lwIP adapter next
 
 P3 behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193` and established the pre-CC runner baseline. Important retained planning numbers are:
 
@@ -61,7 +61,23 @@ small-op runtime CPU: ~34.18 us/op for 2048 x 64-byte request/echo operations
 
 These numbers describe tcp-shift process PSS on a GitHub runner. Backend Linux TCP kernel memory, backend application memory, public-client kernel memory, and provider-specific overhead are excluded. Never convert the P3 projection into a full-host connection limit without separate host/provider measurement.
 
-P4 is allowed to start because the conservative userspace planning case has positive headroom. P4/P5 must measure their incremental fixed/per-flow/per-segment memory against P3 instead of treating CC metadata as free.
+The first P4 increment is runner-qualified on final behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0`. Dedicated run `34810033939`, job `103869414629`, retained artifact `10334775895` and the following boundary evidence:
+
+```text
+cc_contract=ok controller=reno state_bytes=16 pacing=none
+cc_boundary=pure-c
+external_symbols=0
+```
+
+P0 run `34810033921` and full P1 run `34810033970` remained green. The generic CC core is independently buildable as pure C, with caller-owned state, no lwIP/Linux include dependency, no controller heap ownership, and no undefined external symbol. The generic policy explicitly publishes `cwnd`, `ssthresh`, and optional pacing; failed controller initialization leaves the generic handle invalid rather than callable.
+
+This does not yet mean tcp-shift's public TCP uses that controller. Native lwIP still owns public-side cwnd/ssthresh until the adapter increment lands.
+
+The next task is to create the narrowest lwIP adapter/hook surface. Do not copy lwIP recovery logic into `src/cc/`. lwIP should continue to own retransmission execution, fast-recovery mechanics, sequence space, segment queues, SACK/recovery state and packet output, while the adapter translates transport events to generic CC observations and applies controller policy back to the native transport.
+
+Existing lwIP PCB extension arguments are a preferred storage mechanism if they can hold adapter-owned per-flow state without increasing the upstream `tcp_pcb` fork surface. They do not provide ACK/loss/RTO hooks by themselves, so any upstream hook patch must stay confined to the smallest congestion-policy assignment points and be mechanically testable.
+
+Any adapter state, `tcp_pcb` extension or per-flow allocation must be measured against the P3 ~24 KiB/active-flow planning headroom. If conventional-controller integration already requires invasive rewrites of lwIP recovery/SACK rather than narrow policy hooks, stop and reassess before P5/BBR work.
 
 ## Scope discipline
 
@@ -70,9 +86,9 @@ Prefer narrow milestone changes over speculative abstractions. Implement the sma
 In particular:
 
 - process separation and source/library separation are independent decisions;
-- the congestion-control core must be an independently buildable pure-C boundary and must remain Linux-host independent even while linked into the tcp-shift process;
+- the congestion-control core must remain an independently buildable pure-C boundary and must remain Linux-host independent even while linked into the tcp-shift process;
 - host privilege mechanisms must not leak into lwIP transport or CC APIs;
-- P4 should establish generic transport events/policy outputs with a conventional controller before BBR-specific state exists;
+- P4 must qualify a thin lwIP adapter with the conventional controller before BBR-specific state exists;
 - high-resolution delivery sampling and the process-wide pacing scheduler belong to P5, not the generic P4 policy boundary;
 - no BBR implementation should begin until delivery-rate, app-limited, pacing, loss/inflight, and timestamp prerequisites are mechanically qualified;
 - IPv6-only operation remains a product requirement and every later public-side transport change must preserve it.

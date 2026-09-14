@@ -117,7 +117,7 @@ The retained P3 gate set is:
 - a one-second idle CPU sample plus 2048 synchronous 64-byte request/echo operations across four flows;
 - a machine-readable constrained-host process-PSS model for 32/64/128-MiB planning targets.
 
-Behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`; artifact `10332963208` retains 64 diagnostic files/directories across all P3 workloads.
+Behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`; artifact `10332963208` retains the complete P3 workload diagnostics.
 
 Final retained memory evidence included:
 
@@ -156,6 +156,27 @@ wall_operations_per_second~=26066
 The capacity model deliberately covers tcp-shift process PSS only. It excludes backend Linux kernel memory, backend application memory, public-client kernel memory, and provider-specific overhead. Its conservative 32-MiB planning case assigns only 25% of host RAM (8 MiB) to tcp-shift process PSS. With a 315-KiB warm fixed floor and about 37.52 KiB/flow fully-window-resident slope, 128 active flows project to 5118 KiB, leaving 3074 KiB (about 24.0 KiB/flow) for P4/P5 CC/sampler/pacer process structures.
 
 P3 therefore qualifies entry to P4. It is not a full-host 32-MiB connection-capacity guarantee.
+
+### `lwip-p4.yml`
+
+The first P4 job qualifies the generic congestion-control core before any lwIP adapter is added. `scripts/validate-p4-cc.sh` configures `src/cc/` as an independent CMake project and compiles it with warnings-as-errors, `-ffreestanding`, and `-fno-builtin`.
+
+The source-surface gate permits only the controller's own headers plus ISO C integer/size/limits headers. It therefore fails if lwIP, Linux, socket/runtime, bridge, TUN, epoll, timerfd, or nftables dependencies leak into `src/cc/`. The resulting static archive must have zero undefined external symbols. A conventional byte-counting Reno contract exercises init, slow start, congestion avoidance, loss, RTO, MSS changes, saturation, invalid arguments, explicit `cwnd`/`ssthresh` policy publication, failed-init invalid-handle semantics, and the no-pacing policy.
+
+Final standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed P4 run `34810033939`, job `103869414629`; artifact `10334775895` retained the standalone evidence. Output included:
+
+```text
+cc_contract=ok controller=reno state_bytes=16 pacing=none
+cc_boundary=pure-c
+controller=reno
+state_bytes=16
+external_symbols=0
+P4 standalone congestion-control boundary passed
+```
+
+P0 run `34810033921` and full P1 run `34810033970` also passed on the same head. This proves only the standalone policy-library boundary. It does not prove that lwIP is yet delegating public-side cwnd/ssthresh to the controller, and it does not qualify P5 delivery-rate or pacing behavior.
+
+The next P4 CI increment must add integrated adapter evidence under real public-side lwIP traffic, preserve the standalone gate unchanged, retain ACK/loss/RTO policy transitions, and remeasure fixed/per-flow process cost against the P3 baseline.
 
 ## Retained P1 evidence
 
@@ -209,9 +230,9 @@ The P2 artifact for run `34769960275` retains 72 diagnostic files covering the b
 
 ## Milestone CI growth
 
-### P4: generic congestion-control boundary — active next
+### P4: generic congestion-control boundary — active
 
-P4 CI must keep the controller core independently buildable as pure C and prove that the lwIP adapter does not pull Linux runtime/host dependencies into the CC library. The first controller should be conventional and mechanically testable; controller events/policy outputs should be retained as structured evidence before BBR-specific logic is introduced.
+The standalone core is runner-qualified. The next gate is the thin lwIP adapter: preserve the pure-C boundary, demonstrate conventional-controller ownership of public-side cwnd/ssthresh under real traffic, retain structured ACK/loss/RTO policy evidence, and measure adapter/per-flow overhead against P3.
 
 ### P5-P6: sampler, pacing, and BBR
 

@@ -24,7 +24,7 @@ The public and backend TCP legs remain distinct. Congestion control belongs to t
 - `NO_SYS=1`; no lwIP TCP/IP thread, socket API, or netconn API.
 - IPv6-only operation is a product requirement, not an optional compatibility add-on.
 - Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate source modules.
-- The future CC core is pure C and independently buildable; library separation does not imply process separation.
+- The CC core is pure C and independently buildable; library separation does not imply process separation.
 - Do not patch congestion control before packet path, bridge, shutdown behavior, and memory accounting are observable.
 - Do not call an experimental controller "Linux BBR" merely because its state names resemble Linux BBR.
 
@@ -141,11 +141,23 @@ This is deliberately not a full-host capacity guarantee. Backend Linux TCP kerne
 
 P3 therefore provides adequate userspace headroom to enter P4 while preserving the stop criterion: every later CC/sampler/pacer increment must be measured against this baseline.
 
-## P4: generic congestion-control library boundary — active next milestone
+## P4: generic congestion-control library boundary — active
 
-Introduce an independently buildable pure-C CC interface instead of scattering policy through lwIP TCP code. The core consumes transport events/samples and emits cwnd/pacing policy. It does not call Linux host APIs and it does not own the pacing scheduler.
+The standalone policy-library increment is complete. `src/cc/` is an independently buildable pure-C static library with caller-owned controller state. Its generic boundary consumes transport observations and emits `cwnd`, `ssthresh`, and optional pacing policy; it does not call Linux host APIs and it does not own a pacing scheduler.
 
-The lwIP adapter may require small, explicit additions to `tcp_pcb` and transmitted-segment metadata. Keep that patch surface mechanically testable. Validate the interface with a conventional controller before BBR.
+The first conventional controller is a 16-byte byte-counting Reno baseline used to validate the interface, not to claim Linux Reno equivalence. Final behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed dedicated run `34810033939`, job `103869414629`, retaining:
+
+```text
+cc_contract=ok controller=reno state_bytes=16 pacing=none
+cc_boundary=pure-c
+external_symbols=0
+```
+
+The contract also requires failed controller initialization to leave the generic handle invalid and verifies explicit `ssthresh` publication. The standalone build uses `-ffreestanding -fno-builtin`, an explicit header/include allowlist, and a zero-undefined-symbol archive gate. Artifact `10334775895` retains the build, symbol and size diagnostics. P0 run `34810033921` and full P1 run `34810033970` also stayed green on the same behavior head.
+
+The next P4 increment is the lwIP adapter. It must identify the smallest explicit hook surface that delegates conventional cwnd/ssthresh policy while lwIP retains retransmission, fast recovery, queueing, sequence-space and output mechanics. The adapter may depend on lwIP; `src/cc/` may not. Integrated memory cost must be measured against the P3 24-KiB/active-flow planning headroom.
+
+P4 is not complete until conventional controller ownership is demonstrated through the integrated public-side TCP path, including ACK/loss/timeout transitions and unchanged P0-P3 transport behavior where affected.
 
 ## P5: delivery-rate sampler and pacer
 
