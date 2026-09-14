@@ -83,12 +83,18 @@ target_include_directories(tcp_shift_l3 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_l3 PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_l3 PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_pacer STATIC
+    src/runtime/pacer.c
+)
+target_include_directories(tcp_shift_pacer PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp_shift_pacer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(tcp_shift_runtime STATIC
     src/runtime/lwip_loop.c
 )
 target_include_directories(tcp_shift_runtime PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3)
+target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3 tcp_shift_pacer)
 
 add_library(tcp_shift_probe STATIC
     src/lwip/probe_listener.c
@@ -103,6 +109,23 @@ add_library(tcp_shift_lwip_cc_adapter STATIC
 target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC tcp_shift_cc tcp_shift_lwip)
+
+# CI-only wrapper that swaps an already-initialized child from ordinary Reno to
+# the deterministic fixed-pacing Reno ops table. Controller allocation/lifetime
+# still belongs to the normal adapter, and the pacing rate still enters through
+# struct tcp_shift_cc_policy.
+add_library(tcp_shift_lwip_cc_pacing_qualification STATIC
+    src/lwip/cc_pacing_qualification.c
+)
+target_include_directories(tcp_shift_lwip_cc_pacing_qualification PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_lwip_cc_pacing_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp_shift_lwip_cc_pacing_qualification PUBLIC
+    tcp_shift_lwip_cc_adapter
+    tcp_shift_cc
+    tcp_shift_lwip
+)
 
 add_library(tcp_shift_bridge STATIC
     src/bridge/bridge.c
@@ -119,6 +142,24 @@ target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter
+)
+
+# Same bridge state machine, but its listener registration goes through the
+# deterministic fixed-pacing Reno qualification wrapper. This target is used
+# only by the P5c integration gate; production P2 remains ordinary Reno.
+add_library(tcp_shift_bridge_paced STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_paced PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_bridge_paced PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(tcp_shift_bridge_paced PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_fixed_pacing
+)
+target_link_libraries(tcp_shift_bridge_paced PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter
+    tcp_shift_lwip_cc_pacing_qualification
 )
 
 add_executable(tcp-shift-config-contract src/config_contract.c)
@@ -176,6 +217,21 @@ target_link_libraries(tcp-shift-p2 PRIVATE
 )
 target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
 
+# P5c deterministic IPv4 integration binary. It uses the production runtime,
+# adapter, lwIP patch and bridge state machine; only listener controller
+# selection differs from production P2.
+add_executable(tcp-shift-p5c-paced src/p2_main.c src/platform.c)
+target_include_directories(tcp-shift-p5c-paced PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p5c-paced PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p5c-paced PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_paced
+)
+target_link_options(tcp-shift-p5c-paced PRIVATE -Wl,--gc-sections)
+
 add_executable(tcp-shift-p2-ipv6 src/p2_ipv6_main.c src/platform.c)
 target_include_directories(tcp-shift-p2-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p2-ipv6 PRIVATE
@@ -221,3 +277,33 @@ add_executable(tcp-shift-p1-ipv6-ext-header-probe
 target_compile_options(tcp-shift-p1-ipv6-ext-header-probe PRIVATE
     -Wall -Wextra -Wpedantic -Werror
 )
+
+add_executable(tcp-shift-p5-fixed-pacing-policy-contract
+    src/tests/fixed_pacing_policy_test.c
+)
+target_include_directories(tcp-shift-p5-fixed-pacing-policy-contract PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp-shift-p5-fixed-pacing-policy-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-p5-fixed-pacing-policy-contract PRIVATE tcp_shift_cc)
+
+add_executable(tcp-shift-p5-pacer-contract
+    src/tests/pacer_scheduler_test.c
+)
+target_include_directories(tcp-shift-p5-pacer-contract PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp-shift-p5-pacer-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-p5-pacer-contract PRIVATE tcp_shift_pacer)
+
+add_executable(tcp-shift-p5-pacer-loop-contract
+    src/tests/pacer_loop_test.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p5-pacer-loop-contract PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p5-pacer-loop-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p5-pacer-loop-contract PRIVATE tcp_shift_runtime)
+target_link_options(tcp-shift-p5-pacer-loop-contract PRIVATE -Wl,--gc-sections)

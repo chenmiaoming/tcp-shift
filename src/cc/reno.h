@@ -19,7 +19,13 @@ struct tcp_shift_reno_state {
     uint32_t min_cwnd_bytes;
 };
 
+/* Deterministic P5c qualification policy. It uses exactly the same Reno state
+ * and transitions but publishes this nonzero pacing rate through the generic
+ * policy output. Production Reno remains unpaced. */
+#define TCP_SHIFT_FIXED_PACING_RENO_RATE_BYTES_PER_SEC UINT64_C(65536)
+
 extern const struct tcp_shift_cc_ops tcp_shift_reno_ops;
+extern const struct tcp_shift_cc_ops tcp_shift_fixed_pacing_reno_ops;
 
 #ifdef __cplusplus
 }

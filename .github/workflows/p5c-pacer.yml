@@ -1,0 +1,169 @@
+name: P5c pacer scheduler
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p5c-pacer.yml'
+      - 'CMakeLists.txt'
+      - 'src/cc/**'
+      - 'src/bridge/**'
+      - 'src/lwip/**'
+      - 'src/runtime/pacer.c'
+      - 'src/runtime/pacer.h'
+      - 'src/runtime/lwip_loop.c'
+      - 'src/runtime/lwip_loop.h'
+      - 'src/p2_main.c'
+      - 'src/p2_ipv6_main.c'
+      - 'src/tests/fixed_pacing_policy_test.c'
+      - 'src/tests/pacer_adapter_lifecycle_test.c'
+      - 'src/tests/pacer_scheduler_test.c'
+      - 'src/tests/pacer_loop_test.c'
+      - 'src/platform.c'
+      - 'scripts/p2-bridge-smoke.sh'
+      - 'scripts/p2-concurrency-smoke.sh'
+      - 'scripts/p4-cc-recovery-smoke.sh'
+      - 'scripts/p5-pacer-adapter-contract.sh'
+      - 'scripts/p5-pacer-contract.sh'
+      - 'scripts/p5-paced-bridge-smoke.sh'
+      - 'scripts/p5-paced-high-bdp-smoke.sh'
+      - 'scripts/p5-paced-regression-smoke.sh'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scheduler-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            libcap2-bin \
+            python3
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Validate P5c harnesses
+        run: |
+          sh -n scripts/p5-pacer-contract.sh
+          sh -n scripts/p5-pacer-adapter-contract.sh
+          sh -n scripts/p5-paced-bridge-smoke.sh
+          sh -n scripts/p5-paced-high-bdp-smoke.sh
+          sh -n scripts/p5-paced-regression-smoke.sh
+          sh -n scripts/p2-bridge-smoke.sh
+          sh -n scripts/p2-concurrency-smoke.sh
+          sh -n scripts/p4-cc-recovery-smoke.sh
+          sh -n scripts/fetch-lwip.sh
+
+      - name: Qualify bounded one-shot scheduler
+        run: sh scripts/p5-pacer-contract.sh
+
+      - name: Build pinned runtime and P5c integration targets
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target \
+            tcp-shift-p5-fixed-pacing-policy-contract \
+            tcp-shift-p5-pacer-loop-contract \
+            tcp-shift-p5c-paced \
+            --parallel
+
+      - name: Qualify fixed pacing policy publication
+        run: |
+          .build/tcp-shift-p5-fixed-pacing-policy-contract \
+            | tee .build/p5-fixed-pacing-policy-summary.txt
+          grep -F 'fixed_pacing_policy=ok controller=fixed-pacing-reno ' \
+            .build/p5-fixed-pacing-policy-summary.txt
+          grep -F 'rate_bytes_per_sec=65536' \
+            .build/p5-fixed-pacing-policy-summary.txt
+
+      - name: Qualify teardown cancellation and stale-generation safety
+        run: |
+          sh scripts/p5-pacer-adapter-contract.sh \
+            | tee .build/p5-pacer-adapter-summary.txt
+          grep -F 'pacer_adapter_lifecycle=ok ' \
+            .build/p5-pacer-adapter-summary.txt
+          grep -F 'cancels=1 stale_release_safe=1' \
+            .build/p5-pacer-adapter-summary.txt
+
+      - name: Qualify timerfd through the epoll owner
+        run: |
+          .build/tcp-shift-p5-pacer-loop-contract | tee .build/p5-pacer-loop-summary.txt
+          grep -F 'pacer_loop_contract=ok ' .build/p5-pacer-loop-summary.txt
+
+      - name: Grant TUN administration capability to paced qualification binary
+        run: |
+          sudo setcap cap_net_admin+ep .build/tcp-shift-p5c-paced
+          getcap .build/tcp-shift-p5c-paced | tee .build/p5c-capability.txt
+          grep -F 'cap_net_admin=ep' .build/p5c-capability.txt
+
+      - name: Qualify fixed-rate pacing through the real bridge datapath
+        run: sh scripts/p5-paced-bridge-smoke.sh
+
+      - name: Qualify overlapping deadlines across paced flows
+        run: sh scripts/p5-paced-regression-smoke.sh multi
+
+      - name: Qualify pacing across fast retransmit recovery
+        run: |
+          sudo env TCP_SHIFT_P5C_BINARY="$PWD/.build/tcp-shift-p5c-paced" \
+            sh scripts/p5-paced-regression-smoke.sh fast-loss
+
+      - name: Qualify pacing across RTO recovery
+        run: |
+          sudo env TCP_SHIFT_P5C_BINARY="$PWD/.build/tcp-shift-p5c-paced" \
+            sh scripts/p5-paced-regression-smoke.sh rto
+
+      - name: Qualify sustained pacing on a high-BDP path
+        run: |
+          sudo env TCP_SHIFT_P5C_BINARY="$PWD/.build/tcp-shift-p5c-paced" \
+            sh scripts/p5-paced-high-bdp-smoke.sh
+
+      - name: Upload pacer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p5c-pacer-contract
+          path: |
+            .build/p5-pacer-contract
+            .build/p5-pacer-adapter-summary.txt
+            .build/p5-pacer-loop-summary.txt
+            .build/p5-fixed-pacing-policy-summary.txt
+            .build/p5c-paced-summary.txt
+            .build/p5c-paced-multi-summary.txt
+            .build/p5c-paced-fast-loss-summary.txt
+            .build/p5c-paced-rto-summary.txt
+            .build/p5c-paced-high-bdp-summary.txt
+            .build/p5c-capability.txt
+            .build/p2-bridge-ci
+            .build/p2-concurrency-ci
+            .build/p4-fast-loss-ci
+            .build/p4-rto-ci
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
+            .build/lwip-p4-cc-hooks.applied.diff
+          if-no-files-found: warn
+          include-hidden-files: true

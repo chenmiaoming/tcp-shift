@@ -1,6 +1,6 @@
 # lwIP route: architecture and milestones
 
-This roadmap defines implementation order and exit evidence. `ARCHITECTURE.md` is the current product source of truth.
+This roadmap defines implementation order and exit evidence. `ARCHITECTURE.md` remains the current product source of truth.
 
 ## Product hypothesis
 
@@ -13,7 +13,7 @@ public IPv4/IPv6 packet -> host routing/netfilter -> L3 TUN -> lwIP TCP
                                                         -> 127.0.0.1 backend
 ```
 
-The public and backend TCP legs are distinct. Congestion control belongs to the lwIP public leg. The public side is dual-stack/IPv6-only capable; the backend remains IPv4 loopback.
+The public and backend TCP legs are distinct. Congestion control belongs to the lwIP public leg. Public operation is dual-stack/IPv6-capable; the backend remains IPv4 loopback.
 
 ## Hard boundaries
 
@@ -24,7 +24,7 @@ The public and backend TCP legs are distinct. Congestion control belongs to the 
 - Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate modules.
 - `src/cc/` stays pure C and independently buildable.
 - Linux timerfd/epoll pacing stays outside `src/cc/`.
-- Pacing is deadline/event driven: no periodic pacing poll loop, no per-flow timerfd/thread, no busy spin.
+- Pacing is deadline/event driven: no periodic pacing poll loop, per-flow timerfd/thread, or busy spin.
 - Do not call an experimental controller Linux BBR unless transport semantics actually match.
 
 ## P0: reproducible lwIP userspace build — complete
@@ -33,170 +33,131 @@ Exact upstream pinning, explicit dual-stack TCP `NO_SYS=1` source allowlist, con
 
 ## P1: dual-stack L3 TUN and ingress lifecycle — complete
 
-P1 qualifies one nonpersistent `IFF_TUN | IFF_NO_PI` L3 adapter, lwIP timer-driven epoll ownership, bounded whole-packet TX retry, nonfatal RX drops, direct IPv4/IPv6 ICMP/TCP, product-owned exact IPv4/IPv6 DNAT/conntrack lifecycle, forwarding prerequisite checks, collision/rollback/cleanup, extension-header-safe IPv6 TCP matching, and routed ICMPv6 PTB learning.
-
-Representative retained PMTU evidence:
-
-```text
-ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
-```
+P1 qualifies one nonpersistent `IFF_TUN | IFF_NO_PI` adapter, lwIP timer-driven epoll ownership, bounded whole-packet TX retry, nonfatal RX drops, IPv4/IPv6 packet paths, exact product-owned ingress DNAT/conntrack lifecycle, forwarding prerequisite checks, collision/rollback/cleanup, extension-header-safe IPv6 TCP traversal, and routed ICMPv6 PTB learning.
 
 Provider/OpenVZ capability qualification remains separate.
 
-## P2: dual-stack TCP listener and backend bridge — complete
+## P2: dual-stack listener and backend bridge — complete
 
-P2 replaces the probe listener with a real bridge. Public IPv4/IPv6 use the same flow state machine and connect to an ordinary nonblocking `127.0.0.1:<backend-port>` socket.
+P2 bridges accepted IPv4/IPv6 public streams to an ordinary nonblocking `127.0.0.1:<backend-port>` socket. Public->backend bytes remain in lwIP pbufs until backend `writev()` commits them; backend->public bytes are removed only after `tcp_write(..., COPY)` accepts them. The bridge therefore adds no fixed bidirectional application buffer.
 
-Public->backend data remains in lwIP pbufs until backend `writev()` commits it. Backend->public removes host bytes only after `tcp_write(..., COPY)` accepts them. The bridge therefore adds no fixed bidirectional application buffer and preserves bounded transport backpressure.
+P2 qualifies stream integrity, real bidirectional blocking, half-close, refusal/reset recovery, concurrent flows, active-flow shutdown, and long-lived reuse without sustained RSS ratcheting.
 
-P2 qualifies IPv4/IPv6 stream integrity, real bidirectional blocking, half-close, backend refusal recovery, public/backend reset recovery, concurrent flows, active-flow shutdown, and long-lived reuse without RSS ratcheting.
+## P3: memory/capacity baseline — complete and rerun each transport increment
 
-## P3: memory/capacity baseline — complete
+P3 separates tcp-shift process residency from backend Linux TCP/kernel state and measures idle flows, both active-window directions, repeated load/drain floors, and CPU.
 
-P3 separates tcp-shift process residency from backend Linux TCP/kernel state and measures idle flows, both active-window directions, repeated load/drain floors, and representative CPU.
-
-Original admission baseline:
+Latest P5c-head evidence:
 
 ```text
-warm fixed process PSS: 315 KiB
-fully-window-resident slope: 37.523438 KiB/flow
-32-MiB host / 25% tcp-shift process budget: 8192 KiB
-128-active projected PSS: 5118 KiB
-remaining process budget: 3074 KiB ~= 24.0 KiB/flow
+warm fixed process PSS:           367 KiB
+fully-window-resident slope:      37.773438 KiB/flow
+128-active projected PSS:        5202 KiB
+8-MiB process budget remaining:  2990 KiB = 23.359 KiB/flow
+3x128 first-to-last drain growth: 5 KiB
+idle CPU:                        0 ticks/s
 ```
 
-This is a process-PSS planning model, not a full-host capacity guarantee. Backend kernel/application memory and provider overhead remain outside it.
+This remains a process-PSS planning model, not a full-host capacity guarantee.
 
 ## P4: generic CC boundary + lwIP adapter — complete
 
-P4 is fully runner-qualified on behavior head `0a3054159db03b017526b3faabfbe7f6a6c826ac`.
+P4 established an independently buildable pure-C controller boundary. The generic controller consumes transport-neutral MSS, inflight, peer send window, and cwnd limit; events are init/ACK/loss/RTO; policy publishes cwnd, ssthresh, and optional pacing rate. Conventional Reno uses 16 bytes caller-owned state and requests zero pacing.
 
-`src/cc/` is independently buildable with caller-owned state, an allowlisted ISO-C include surface, `-ffreestanding -fno-builtin`, and zero unresolved archive symbols. The generic controller consumes MSS, inflight, peer send window, and a transport cwnd limit. Events are init/ACK/loss/RTO. Policy publishes cwnd, ssthresh, and optional pacing rate. The conventional Reno baseline uses 16 bytes and requests no pacing.
-
-Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. A repository-owned patch is confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4 delegates ACK cwnd growth, fast-loss cwnd/ssthresh, and RTO cwnd/ssthresh while retransmission execution, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output remain native lwIP mechanics.
-
-External TUN fault injection qualifies:
-
-```text
-fast-loss: cc_loss_events=1 cc_timeout_events=0 payload_bytes=262144 recovery=ok
-RTO:       cc_loss_events=0 cc_timeout_events=2 payload_bytes=262144 recovery=ok
-```
+Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. The controlled patch is confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. lwIP retains retransmission execution, duplicate-ACK processing, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output.
 
 ## P5a: retransmission-safe delivery ledger — complete
 
-P5a supplied the accounting substrate for rate estimation without changing controller behavior or adding pacing.
+P5a supplied high-resolution send/ACK timestamps, unique delivered-byte accounting, and lazy per-flow sidecar metadata outside upstream `struct tcp_seg`. Retransmission reuses the same slot and cannot double-count payload delivery.
 
-The project keeps metadata outside upstream `struct tcp_seg`, using a lazy per-flow sidecar keyed by stable `tcp_seg *`, initially 8 slots and bounded by `TCP_SND_QUEUELEN=90`. P5a slots were 32 bytes. Retransmission reuses a slot and cannot double-count delivered payload; teardown must leave zero live slots.
-
-Final P5a behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed provenance/P0/P1/P2/P3/P4 and P5 run `34821205375`, job `103903019956`, artifact `10338108552`:
-
-```text
-normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
-fast-loss: first_tx=180 retransmit=1 acked=180 delivered=262144 live_slots=0
-RTO:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
-metadata_bytes_per_slot=32
-```
-
-The first P5 workflow exposed and then fixed a false-green harness bug: a parser matched `live_slots` inside `peak_live_slots`, and `check_delivery | tee` masked the checker exit status. Qualification was withheld until the checker became fail-closed.
+The first P5 workflow exposed a false-green harness bug; qualification was withheld until exact-token parsing and fail-closed checker exit propagation were fixed.
 
 ## P5b: ACK delivery-rate sampler + app-limited — complete
 
-P5b converts the P5a ledger into a transport-neutral ACK rate observation without changing conventional Reno policy.
+P5b converts the ledger into a transport-neutral ACK rate observation without changing Reno policy. ACK observations carry delivery rate, selected/send/ACK intervals, RTT when valid, newly delivered payload, prior inflight, and validity/app-limited/retransmission flags.
 
-The ACK observation now carries delivery rate, selected interval, send interval, ACK interval, RTT when valid, newly delivered payload, prior inflight, and validity/app-limited/retransmission flags. The lwIP adapter owns all segment/sequence/timestamp mechanics; `src/cc/` sees transport-neutral values only.
+The 56-byte lazy sidecar retains sequence/progress and delivery snapshots. ACK delivery is computed before pinned lwIP frees acknowledged segments; FIN sequence space is excluded. Rate selection uses the larger of send and ACK intervals to resist ACK compression. Retransmitted candidates do not publish RTT.
 
-The lazy sidecar grew to 56 bytes to retain sequence/progress, send-phase snapshots, prior inflight, and app-limited/retransmission state. ACK delivery is calculated from cumulative sequence progress while acknowledged sidecars are still live, before pinned lwIP frees segments. This defines partial-ACK payload accounting without moving queue ownership into project code and excludes FIN sequence space from delivered payload.
+App-limited detection is event-driven from the real backend `EAGAIN` path; there is no product-side periodic flow scan.
 
-Rate selection uses the larger of the send-phase and ACK-phase intervals to resist ACK compression. Retransmitted candidates carry a retransmission flag and do not publish an RTT sample; RTO retains unique delivery accounting.
+## P5c: event-driven pacer — complete
 
-App-limited detection is event-driven. The bridge invokes the marker only when its actual backend read path reaches `EAGAIN`; the adapter then verifies there is no unsent data and that the public TCP still has transport capacity before setting a delivered+inflight marker. There is no product-side periodic flow scan.
+P5c converts nonzero controller pacing policy into real data-send timing through a narrow lwIP eligibility hook while preserving native `tcp_output()` and recovery mechanics.
 
-Final behavior head `327efe7e29adfc230e7d201b466f2bd4980e976c` passed provenance/P0/P1/P2/P3/P4/P5. P5 run `34843586990`, job `103974027867`, artifact `10347003115` retained:
-
-```text
-normal:    samples=138 valid=138 invalid=0 max_rate=696998778 B/s
-fast-loss: samples=121 valid=121 invalid=0 loss_events=1
-RTO:       samples=135 valid=135 invalid=0 retransmitted_samples=3 timeout_events=2
-
-app-pause:
-first_burst=4096 second_burst=131072 delivered=135168
-app_limited_samples=7 app_limited_enters=2 app_limited_exits=2
-pause_cpu_ticks=0 event_driven=ok
-```
-
-Current P3 resource evidence, run `34843587033`, job `103974029078`, artifact `10346739278`:
+Runtime shape:
 
 ```text
-warm fixed process PSS: 347 KiB
-fully-window-resident slope: 37.710938 KiB/flow
-128-active projected process PSS: 5174 KiB
-remaining 8-MiB process budget: 3018 KiB = 23.578 KiB/flow
-3x128 first-to-last drain growth: 5 KiB
-idle CPU: 0 ticks/s
+controller rate
+    -> CC adapter / lwIP send eligibility
+    -> one process-wide min-heap of absolute deadlines
+    -> one one-shot CLOCK_MONOTONIC timerfd
+    -> existing epoll owner
+    -> native tcp_output() resume
 ```
 
-Thus the sampler remains well inside the constrained-process planning budget.
-
-## P5c: event-driven pacer — next
-
-P5c turns controller pacing policy into actual transmission timing without introducing periodic polling.
-
-Target runtime shape:
-
-```text
-all paced flows
-      |
-      v
-process-wide min-heap of next eligible send deadlines
-      |
-      v
-one one-shot CLOCK_MONOTONIC timerfd
-      |
-      v
-existing epoll owner
-```
-
-Rules:
+Qualified invariants:
 
 - one timerfd for the process, not per flow;
-- arm to the earliest pending deadline only;
-- use monotonic absolute one-shot deadlines where practical;
-- disarm when no pacing deadline exists;
-- no fixed pacing tick;
-- no busy spin;
-- fd readiness and lwIP timers remain under the same owner;
-- controller code publishes pacing policy but never sees timerfd/epoll objects;
-- CI records timer arms/disarms/expirations, pacing wakeups, released bytes, deadline lateness, heap residency, idle wakeups, CPU, and memory.
+- one-shot earliest-deadline arm/rearm and empty-heap disarm;
+- no fixed pacing tick, flow scan, per-flow thread, or busy spin;
+- generation-safe cancellation/stale release after teardown;
+- timerfd/epoll mechanics remain outside `src/cc/`;
+- production Reno remains unpaced (`pacing_rate=0`);
+- fast retransmit/RTO execution remains native lwIP;
+- multi-flow overlapping deadlines drain correctly;
+- high-BDP/window-pressure traffic remains event-driven and low-CPU.
 
-The current runtime is already event/deadline driven: epoll timeout comes from `sys_timeouts_sleeptime()`, TUN `EPOLLOUT` is enabled only for real backlog, and P5b app-limited qualification consumed zero CPU ticks during the application pause. P5c must preserve or improve that wakeup profile.
-
-A later optimization may unify lwIP deadlines and the pacer behind one one-shot timerfd only if regression CI proves equal timeout semantics and fewer/equal idle wakeups.
-
-## P6: tcp-shift BBR
-
-After P5c is qualified, BBR becomes the active controller milestone.
-
-P6 implements tcp-shift's bandwidth/min-RTT model, pacing/cwnd policy, mode transitions, probing, loss behavior, and app-limited treatment over the generic CC boundary.
-
-Reference order: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c` / `tcp_rate.c` as TCP behavior cross-checks.
-
-Validation compares cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, timer wakeups, and memory against native Linux reference runs under reproducible RTT/loss/bandwidth scenarios.
-
-## Distance to BBR
-
-The remaining pre-BBR path is now one infrastructure increment:
+Final behavior head `046152dbaba56a0be3b1d2a1902fee6f2bbf9044` passed provenance/P0/P1/P2/P3/P4/P5/P5c on the same head. P5c run `34870859911`, job `104066140125`, artifact `10358951402` retained:
 
 ```text
-P5a delivery ledger        complete
-P5b rate/app-limited       complete
-P5c event-driven pacing    next
-P6 tcp-shift BBR           then active
+fixed qualification pacing rate: 65536 B/s
+4-flow heap peak:                 4
+fast-loss:                       loss=1 timeout=0 paced recovery=ok
+RTO:                             timeout=2 paced recovery=ok
+teardown:                        cancels=1 stale-generation-safe=1
+scheduler/stale/controller errors: 0
 ```
 
-The difficult TCP ownership/recovery and rate-sampling boundaries are qualified. The largest remaining pre-BBR risk is pacing accuracy/wakeup efficiency under high BDP, ACK aggregation, and loss.
+High-BDP fixture:
+
+```text
+ACK-path delay:       750 ms
+nominal BDP:          49152 B
+current TCP window:   32768 B
+payload:              262144 B exact
+wall time:            15.067 s
+runtime CPU:          0.066%
+max pacing lateness:  65199 ns
+loss/timeout:         0/0
+heap final:           0
+```
+
+The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. This qualifies pacer correctness under BDP pressure; it does not remove the later need to evaluate window scaling for high-throughput/high-RTT scenarios.
+
+## P6: tcp-shift BBR — next
+
+P6 is now the active controller milestone. It implements tcp-shift's bandwidth/min-RTT model, pacing/cwnd policy, mode transitions, probing, loss behavior, and app-limited treatment over the already-qualified generic CC boundary and P5 pacer.
+
+Reference order remains: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c` / `tcp_rate.c` as TCP behavior cross-checks.
+
+Qualification must compare bandwidth estimate, min RTT, cwnd, pacing rate, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, timer wakeups, and memory against reproducible references. P5 completion does not establish BBR equivalence.
+
+## Milestone state
+
+```text
+P0 reproducible lwIP       complete
+P1 dual-stack L3 TUN       complete
+P2 bridge                  complete
+P3 resource baseline       complete / continuously rerun
+P4 generic CC boundary     complete
+P5a delivery ledger        complete
+P5b rate/app-limited       complete
+P5c event-driven pacing    complete
+P6 tcp-shift BBR           next
+```
 
 ## Stop criteria
 
-Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, unavoidable BDP buffering dominates the fixed-memory advantage, or pacing accuracy requires per-flow timers / periodic polling / busy spinning.
+Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, unavoidable BDP buffering dominates the fixed-memory advantage, or pacing/controller accuracy requires per-flow timers, periodic polling, or busy spinning.
 
 The project is still successful if evidence supports only a very small conventional-CC userspace TCP endpoint and rejects BBR.

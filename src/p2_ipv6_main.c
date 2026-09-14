@@ -57,6 +57,61 @@ static void usage(const char *program)
             program, program);
 }
 
+static int tcp_shift_p2_ipv6_pacer_schedule(void *arg,
+                                             uint64_t flow_id,
+                                             uint32_t generation,
+                                             uint64_t deadline_ns,
+                                             uint32_t bytes)
+{
+    struct tcp_shift_lwip_loop *loop = arg;
+    struct tcp_shift_pacer_event event;
+
+    event.deadline_ns = deadline_ns;
+    event.flow_id = flow_id;
+    event.generation = generation;
+    event.bytes = bytes;
+    return tcp_shift_lwip_loop_pacer_schedule(loop, &event);
+}
+
+static int tcp_shift_p2_ipv6_pacer_cancel(void *arg,
+                                           uint64_t flow_id,
+                                           uint32_t generation,
+                                           size_t *cancelled)
+{
+    return tcp_shift_lwip_loop_pacer_cancel(arg, flow_id, generation,
+                                             cancelled);
+}
+
+static int tcp_shift_p2_ipv6_pacer_release(
+    void *arg,
+    const struct tcp_shift_pacer_event *event,
+    uint64_t actual_release_ns)
+{
+    (void)arg;
+    if (event == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    return tcp_shift_lwip_cc_resume_paced(event->flow_id,
+                                          event->generation,
+                                          actual_release_ns);
+}
+
+static const struct tcp_shift_lwip_cc_pacer_ops tcp_shift_p2_ipv6_pacer_ops = {
+    .schedule = tcp_shift_p2_ipv6_pacer_schedule,
+    .cancel = tcp_shift_p2_ipv6_pacer_cancel,
+};
+
+static int tcp_shift_p2_ipv6_configure_pacer(struct tcp_shift_lwip_loop *loop)
+{
+    if (tcp_shift_lwip_loop_set_pacer_release(
+            loop, tcp_shift_p2_ipv6_pacer_release, NULL) < 0) {
+        return -1;
+    }
+    return tcp_shift_lwip_cc_configure_pacer(&tcp_shift_p2_ipv6_pacer_ops,
+                                              loop);
+}
+
 int main(int argc, char **argv)
 {
     struct tcp_shift_tun tun;
@@ -69,6 +124,7 @@ int main(int argc, char **argv)
     uint16_t backend_port;
     int l3_attached = 0;
     int loop_started = 0;
+    int pacer_configured = 0;
     int bridge_started = 0;
     int status = EXIT_FAILURE;
 
@@ -116,6 +172,12 @@ int main(int argc, char **argv)
     }
     loop_started = 1;
 
+    if (tcp_shift_p2_ipv6_configure_pacer(&loop) < 0) {
+        fprintf(stderr, "configure IPv6 P5c pacer service failed\n");
+        goto out;
+    }
+    pacer_configured = 1;
+
     if (tcp_shift_bridge_start_ipv6(&bridge, &loop, public_port,
                                     backend_port) < 0) {
         perror("start IPv6 TCP bridge");
@@ -158,7 +220,8 @@ int main(int argc, char **argv)
             "cc_bindings=%llu cc_bind_failures=%llu cc_ack_events=%llu "
             "cc_loss_events=%llu cc_timeout_events=%llu "
             "cc_policy_updates=%llu cc_controller_errors=%llu "
-            "cc_last_cwnd=%u cc_last_ssthresh=%u\n",
+            "cc_last_cwnd=%u cc_last_ssthresh=%u "
+            "pacing_wakeups=%llu pacing_scheduler_errors=%llu\n",
             (unsigned long long)l3.rx_packets,
             (unsigned long long)l3.rx_drops,
             (unsigned long long)l3.rx_errors,
@@ -193,11 +256,17 @@ int main(int argc, char **argv)
             (unsigned long long)cc_stats->policy_updates,
             (unsigned long long)cc_stats->controller_errors,
             cc_stats->last_cwnd_bytes,
-            cc_stats->last_ssthresh_bytes);
+            cc_stats->last_ssthresh_bytes,
+            (unsigned long long)loop.pacing_wakeups,
+            (unsigned long long)cc_stats->pacing_scheduler_errors);
 
 out:
     if (bridge_started != 0) {
         tcp_shift_bridge_stop(&bridge);
+    }
+    if (pacer_configured != 0 && tcp_shift_lwip_cc_clear_pacer() < 0) {
+        fprintf(stderr,
+                "tcp-shift-p2-ipv6: pacer_service_retained_until_process_exit=1\n");
     }
     if (loop_started != 0) {
         tcp_shift_lwip_loop_close(&loop);

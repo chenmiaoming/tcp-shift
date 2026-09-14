@@ -8,6 +8,7 @@
 
 #define TCP_SHIFT_LWIP_CC_MAX_LISTENERS 2U
 #define TCP_SHIFT_DELIVERY_INITIAL_SLOTS 8U
+#define TCP_SHIFT_PACING_INITIAL_REGISTRY 32U
 #define TCP_SHIFT_NSEC_PER_SEC UINT64_C(1000000000)
 
 struct tcp_shift_lwip_cc_listener_binding {
@@ -36,9 +37,23 @@ struct tcp_shift_delivery_slot {
     uint8_t retransmitted;
 };
 
+struct tcp_shift_pacing_registry_entry {
+    struct tcp_shift_lwip_cc_adapter *adapter;
+    uint32_t generation;
+};
+
+struct tcp_shift_pacing_service {
+    const struct tcp_shift_lwip_cc_pacer_ops *ops;
+    void *arg;
+    struct tcp_shift_pacing_registry_entry *entries;
+    size_t capacity;
+    size_t active;
+};
+
 static struct tcp_shift_lwip_cc_listener_binding
     tcp_shift_lwip_cc_listeners[TCP_SHIFT_LWIP_CC_MAX_LISTENERS];
 static struct tcp_shift_lwip_cc_stats tcp_shift_lwip_cc_stats;
+static struct tcp_shift_pacing_service tcp_shift_pacing_service;
 
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 {
@@ -73,28 +88,6 @@ static void tcp_shift_lwip_cc_transport_from_pcb(
     transport->cwnd_limit_bytes = tcp_shift_lwip_cc_cwnd_limit();
 }
 
-static int tcp_shift_lwip_cc_apply_policy(
-    struct tcp_shift_lwip_cc_adapter *adapter,
-    const struct tcp_shift_cc_policy *policy)
-{
-    uint32_t limit = tcp_shift_lwip_cc_cwnd_limit();
-
-    if (adapter == NULL || adapter->pcb == NULL || policy == NULL ||
-        policy->cwnd_bytes == 0U || policy->ssthresh_bytes == 0U ||
-        policy->cwnd_bytes > limit || policy->ssthresh_bytes > limit) {
-        return -1;
-    }
-
-    adapter->pcb->cwnd = (tcpwnd_size_t)policy->cwnd_bytes;
-    adapter->pcb->ssthresh = (tcpwnd_size_t)policy->ssthresh_bytes;
-    adapter->pcb->bytes_acked = 0U;
-    if (adapter->stats != NULL) {
-        adapter->stats->last_cwnd_bytes = policy->cwnd_bytes;
-        adapter->stats->last_ssthresh_bytes = policy->ssthresh_bytes;
-    }
-    return 0;
-}
-
 static uint64_t tcp_shift_delivery_now_ns(struct tcp_shift_lwip_cc_adapter *adapter)
 {
     struct timespec now;
@@ -117,6 +110,315 @@ static uint64_t tcp_shift_delivery_now_ns(struct tcp_shift_lwip_cc_adapter *adap
         adapter->delivery_last_event_ns = value;
     }
     return value;
+}
+
+static void tcp_shift_pacing_cancel(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    size_t cancelled = 0U;
+
+    if (adapter == NULL || adapter->pacing_scheduled == 0U) {
+        return;
+    }
+    if (tcp_shift_pacing_service.ops == NULL ||
+        tcp_shift_pacing_service.ops->cancel == NULL ||
+        adapter->pacing_flow_id == 0U ||
+        tcp_shift_pacing_service.ops->cancel(tcp_shift_pacing_service.arg,
+                                             adapter->pacing_flow_id,
+                                             adapter->pacing_generation,
+                                             &cancelled) < 0) {
+        if (adapter->stats != NULL) {
+            adapter->stats->pacing_scheduler_errors++;
+        }
+    }
+    adapter->pacing_scheduled = 0U;
+}
+
+static int tcp_shift_pacing_registry_grow(void)
+{
+    struct tcp_shift_pacing_registry_entry *entries;
+    size_t next_capacity;
+    size_t old_bytes;
+    size_t new_bytes;
+
+    if (tcp_shift_pacing_service.capacity == 0U) {
+        next_capacity = TCP_SHIFT_PACING_INITIAL_REGISTRY;
+    } else {
+        if (tcp_shift_pacing_service.capacity > SIZE_MAX / 2U) {
+            return -1;
+        }
+        next_capacity = tcp_shift_pacing_service.capacity * 2U;
+    }
+    if (next_capacity > SIZE_MAX / sizeof(*entries)) {
+        return -1;
+    }
+
+    old_bytes = tcp_shift_pacing_service.capacity * sizeof(*entries);
+    new_bytes = next_capacity * sizeof(*entries);
+    entries = realloc(tcp_shift_pacing_service.entries, new_bytes);
+    if (entries == NULL) {
+        return -1;
+    }
+    memset((unsigned char *)entries + old_bytes, 0, new_bytes - old_bytes);
+    tcp_shift_pacing_service.entries = entries;
+    tcp_shift_pacing_service.capacity = next_capacity;
+    return 0;
+}
+
+static int tcp_shift_pacing_register(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    size_t index;
+    uint32_t generation;
+
+    if (adapter == NULL) {
+        return -1;
+    }
+    if (tcp_shift_pacing_service.ops == NULL) {
+        return 0;
+    }
+
+    for (;;) {
+        for (index = 0U; index < tcp_shift_pacing_service.capacity; index++) {
+            if (tcp_shift_pacing_service.entries[index].adapter == NULL) {
+                generation = tcp_shift_pacing_service.entries[index].generation + 1U;
+                if (generation == 0U) {
+                    generation = 1U;
+                }
+                tcp_shift_pacing_service.entries[index].generation = generation;
+                tcp_shift_pacing_service.entries[index].adapter = adapter;
+                adapter->pacing_flow_id = (uint64_t)index + 1U;
+                adapter->pacing_generation = generation;
+                tcp_shift_pacing_service.active++;
+                return 0;
+            }
+        }
+        if (tcp_shift_pacing_registry_grow() < 0) {
+            return -1;
+        }
+    }
+}
+
+static void tcp_shift_pacing_unregister(struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    size_t index;
+    struct tcp_shift_pacing_registry_entry *entry;
+
+    if (adapter == NULL || adapter->pacing_flow_id == 0U) {
+        return;
+    }
+
+    tcp_shift_pacing_cancel(adapter);
+    index = (size_t)(adapter->pacing_flow_id - 1U);
+    if (index < tcp_shift_pacing_service.capacity) {
+        entry = &tcp_shift_pacing_service.entries[index];
+        if (entry->adapter == adapter &&
+            entry->generation == adapter->pacing_generation) {
+            entry->adapter = NULL;
+            if (tcp_shift_pacing_service.active != 0U) {
+                tcp_shift_pacing_service.active--;
+            }
+        }
+    }
+    adapter->pacing_flow_id = 0U;
+    adapter->pacing_generation = 0U;
+}
+
+int tcp_shift_lwip_cc_configure_pacer(
+    const struct tcp_shift_lwip_cc_pacer_ops *ops,
+    void *arg)
+{
+    if (ops == NULL || ops->schedule == NULL || ops->cancel == NULL) {
+        return -1;
+    }
+    if (tcp_shift_pacing_service.ops != NULL) {
+        return tcp_shift_pacing_service.ops == ops &&
+                       tcp_shift_pacing_service.arg == arg
+                   ? 0
+                   : -1;
+    }
+    if (tcp_shift_pacing_service.active != 0U) {
+        return -1;
+    }
+    tcp_shift_pacing_service.ops = ops;
+    tcp_shift_pacing_service.arg = arg;
+    return 0;
+}
+
+int tcp_shift_lwip_cc_clear_pacer(void)
+{
+    if (tcp_shift_pacing_service.active != 0U) {
+        return -1;
+    }
+    tcp_shift_pacing_service.ops = NULL;
+    tcp_shift_pacing_service.arg = NULL;
+    return 0;
+}
+
+static uint64_t tcp_shift_pacing_spacing_ns(uint16_t payload_bytes,
+                                             uint64_t rate_bytes_per_sec)
+{
+    uint64_t numerator;
+    uint64_t spacing;
+
+    if (payload_bytes == 0U || rate_bytes_per_sec == 0U) {
+        return 0U;
+    }
+    numerator = (uint64_t)payload_bytes * TCP_SHIFT_NSEC_PER_SEC;
+    spacing = numerator / rate_bytes_per_sec;
+    if ((numerator % rate_bytes_per_sec) != 0U) {
+        spacing++;
+    }
+    return spacing == 0U ? 1U : spacing;
+}
+
+static void tcp_shift_pacing_note_tx(struct tcp_shift_lwip_cc_adapter *adapter,
+                                     uint16_t payload_bytes,
+                                     uint64_t now_ns)
+{
+    uint64_t spacing;
+
+    if (adapter == NULL || payload_bytes == 0U ||
+        adapter->pacing_rate_bytes_per_sec == 0U || now_ns == 0U) {
+        return;
+    }
+
+    spacing = tcp_shift_pacing_spacing_ns(payload_bytes,
+                                           adapter->pacing_rate_bytes_per_sec);
+    if (UINT64_MAX - now_ns < spacing) {
+        adapter->pacing_next_send_ns = UINT64_MAX;
+    } else {
+        adapter->pacing_next_send_ns = now_ns + spacing;
+    }
+    if (adapter->stats != NULL) {
+        adapter->stats->pacing_tx_events++;
+        adapter->stats->pacing_tx_bytes += payload_bytes;
+        adapter->stats->pacing_last_rate_bytes_per_sec =
+            adapter->pacing_rate_bytes_per_sec;
+        adapter->stats->pacing_last_deadline_ns =
+            adapter->pacing_next_send_ns;
+    }
+}
+
+static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
+                                                       struct tcp_pcb *pcb,
+                                                       u16_t payload_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    uint64_t now_ns;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        payload_bytes == 0U || adapter->pacing_rate_bytes_per_sec == 0U) {
+        return 1;
+    }
+
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U || adapter->pacing_next_send_ns == 0U ||
+        now_ns >= adapter->pacing_next_send_ns) {
+        return 1;
+    }
+
+    if (tcp_shift_pacing_service.ops == NULL ||
+        tcp_shift_pacing_service.ops->schedule == NULL ||
+        adapter->pacing_flow_id == 0U) {
+        if (adapter->stats != NULL) {
+            adapter->stats->pacing_scheduler_errors++;
+        }
+        adapter->pacing_rate_bytes_per_sec = 0U;
+        adapter->pacing_next_send_ns = 0U;
+        return 1;
+    }
+
+    if (adapter->pacing_scheduled == 0U) {
+        if (tcp_shift_pacing_service.ops->schedule(
+                tcp_shift_pacing_service.arg,
+                adapter->pacing_flow_id,
+                adapter->pacing_generation,
+                adapter->pacing_next_send_ns,
+                payload_bytes) < 0) {
+            if (adapter->stats != NULL) {
+                adapter->stats->pacing_scheduler_errors++;
+            }
+            adapter->pacing_rate_bytes_per_sec = 0U;
+            adapter->pacing_next_send_ns = 0U;
+            return 1;
+        }
+        adapter->pacing_scheduled = 1U;
+    }
+    if (adapter->stats != NULL) {
+        adapter->stats->pacing_deferrals++;
+        adapter->stats->pacing_last_deadline_ns =
+            adapter->pacing_next_send_ns;
+    }
+    return 0;
+}
+
+int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
+                                   uint32_t generation,
+                                   uint64_t actual_release_ns)
+{
+    struct tcp_shift_pacing_registry_entry *entry;
+    struct tcp_shift_lwip_cc_adapter *adapter;
+    size_t index;
+    err_t err;
+
+    if (flow_id == 0U || flow_id > tcp_shift_pacing_service.capacity) {
+        tcp_shift_lwip_cc_stats.pacing_stale_releases++;
+        return 0;
+    }
+    index = (size_t)(flow_id - 1U);
+    entry = &tcp_shift_pacing_service.entries[index];
+    if (entry->adapter == NULL || entry->generation != generation) {
+        tcp_shift_lwip_cc_stats.pacing_stale_releases++;
+        return 0;
+    }
+
+    adapter = entry->adapter;
+    adapter->pacing_scheduled = 0U;
+    if (adapter->bound == 0U || adapter->pcb == NULL) {
+        if (adapter->stats != NULL) {
+            adapter->stats->pacing_stale_releases++;
+        }
+        return 0;
+    }
+    if (adapter->stats != NULL) {
+        adapter->stats->pacing_resume_events++;
+        adapter->stats->pacing_last_actual_release_ns = actual_release_ns;
+    }
+
+    err = tcp_output(adapter->pcb);
+    if (err != ERR_OK && adapter->stats != NULL) {
+        adapter->stats->pacing_scheduler_errors++;
+    }
+    return 0;
+}
+
+static int tcp_shift_lwip_cc_apply_policy(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_shift_cc_policy *policy)
+{
+    uint32_t limit = tcp_shift_lwip_cc_cwnd_limit();
+
+    if (adapter == NULL || adapter->pcb == NULL || policy == NULL ||
+        policy->cwnd_bytes == 0U || policy->ssthresh_bytes == 0U ||
+        policy->cwnd_bytes > limit || policy->ssthresh_bytes > limit) {
+        return -1;
+    }
+
+    if (policy->pacing_rate_bytes_per_sec == 0U &&
+        adapter->pacing_rate_bytes_per_sec != 0U) {
+        tcp_shift_pacing_cancel(adapter);
+        adapter->pacing_next_send_ns = 0U;
+    }
+    adapter->pacing_rate_bytes_per_sec = policy->pacing_rate_bytes_per_sec;
+    adapter->pcb->cwnd = (tcpwnd_size_t)policy->cwnd_bytes;
+    adapter->pcb->ssthresh = (tcpwnd_size_t)policy->ssthresh_bytes;
+    adapter->pcb->bytes_acked = 0U;
+    if (adapter->stats != NULL) {
+        adapter->stats->last_cwnd_bytes = policy->cwnd_bytes;
+        adapter->stats->last_ssthresh_bytes = policy->ssthresh_bytes;
+        adapter->stats->pacing_last_rate_bytes_per_sec =
+            policy->pacing_rate_bytes_per_sec;
+    }
+    return 0;
 }
 
 static struct tcp_shift_delivery_slot *
@@ -337,6 +639,7 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     if (now_ns == 0U) {
         return;
     }
+    tcp_shift_pacing_note_tx(adapter, payload_bytes, now_ns);
     if (adapter->stats != NULL) {
         adapter->stats->delivery_last_tx_ns = now_ns;
     }
@@ -594,6 +897,9 @@ static void tcp_shift_lwip_cc_disable_on_error(
     if (adapter->stats != NULL) {
         adapter->stats->controller_errors++;
     }
+    tcp_shift_pacing_cancel(adapter);
+    adapter->pacing_rate_bytes_per_sec = 0U;
+    adapter->pacing_next_send_ns = 0U;
     /* Keep the ext-arg attached until PCB destruction so heap-owned adapter
      * storage and delivery metadata are still released. bound=0 makes later
      * policy calls fall back to native lwIP rather than stale controller state. */
@@ -690,6 +996,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack = tcp_shift_lwip_cc_on_ack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+    .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,
     .on_segment_tx = tcp_shift_lwip_cc_on_segment_tx,
     .on_segment_acked = tcp_shift_lwip_cc_on_segment_acked,
 };
@@ -710,6 +1017,7 @@ static void tcp_shift_lwip_cc_pcb_destroyed(u8_t id, void *data)
     }
 
     heap_owned = adapter->heap_owned;
+    tcp_shift_pacing_unregister(adapter);
     tcp_shift_delivery_release_all(adapter);
     adapter->bound = 0U;
     adapter->pcb = NULL;
@@ -758,7 +1066,8 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
     if (tcp_shift_cc_init(&adapter->controller, &tcp_shift_reno_ops,
                           &adapter->reno, sizeof(adapter->reno), &transport,
                           &init, &policy) != 0 ||
-        tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
+        tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0 ||
+        tcp_shift_pacing_register(adapter) < 0) {
         adapter->pcb = NULL;
         adapter->stats = NULL;
         return -1;
@@ -782,11 +1091,14 @@ void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
 
     if (tcp_ext_arg_get(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID) ==
         &adapter->hook) {
-        tcp_ext_arg_set_callbacks(adapter->pcb,
-                                  (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID, NULL);
+        /* Pinned lwIP requires a non-NULL ext-arg callback table. Keep the
+         * static callbacks installed and clear only the data pointer; a later
+         * PCB destroy will invoke the callback with NULL data, which is a
+         * deliberate no-op in tcp_shift_lwip_cc_pcb_destroyed(). */
         tcp_ext_arg_set(adapter->pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID,
                         NULL);
     }
+    tcp_shift_pacing_unregister(adapter);
     tcp_shift_delivery_release_all(adapter);
     adapter->bound = 0U;
     adapter->pcb = NULL;

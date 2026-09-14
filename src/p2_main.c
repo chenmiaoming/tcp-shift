@@ -57,6 +57,60 @@ static void usage(const char *program)
             program, program);
 }
 
+static int tcp_shift_p2_pacer_schedule(void *arg,
+                                       uint64_t flow_id,
+                                       uint32_t generation,
+                                       uint64_t deadline_ns,
+                                       uint32_t bytes)
+{
+    struct tcp_shift_lwip_loop *loop = arg;
+    struct tcp_shift_pacer_event event;
+
+    event.deadline_ns = deadline_ns;
+    event.flow_id = flow_id;
+    event.generation = generation;
+    event.bytes = bytes;
+    return tcp_shift_lwip_loop_pacer_schedule(loop, &event);
+}
+
+static int tcp_shift_p2_pacer_cancel(void *arg,
+                                     uint64_t flow_id,
+                                     uint32_t generation,
+                                     size_t *cancelled)
+{
+    return tcp_shift_lwip_loop_pacer_cancel(arg, flow_id, generation,
+                                             cancelled);
+}
+
+static int tcp_shift_p2_pacer_release(void *arg,
+                                      const struct tcp_shift_pacer_event *event,
+                                      uint64_t actual_release_ns)
+{
+    (void)arg;
+    if (event == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    return tcp_shift_lwip_cc_resume_paced(event->flow_id,
+                                          event->generation,
+                                          actual_release_ns);
+}
+
+static const struct tcp_shift_lwip_cc_pacer_ops tcp_shift_p2_pacer_ops = {
+    .schedule = tcp_shift_p2_pacer_schedule,
+    .cancel = tcp_shift_p2_pacer_cancel,
+};
+
+static int tcp_shift_p2_configure_pacer(struct tcp_shift_lwip_loop *loop)
+{
+    if (tcp_shift_lwip_loop_set_pacer_release(loop,
+                                              tcp_shift_p2_pacer_release,
+                                              NULL) < 0) {
+        return -1;
+    }
+    return tcp_shift_lwip_cc_configure_pacer(&tcp_shift_p2_pacer_ops, loop);
+}
+
 static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
 {
     fprintf(stderr,
@@ -118,6 +172,54 @@ static void print_rate_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->rate_last_flags);
 }
 
+static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
+                               const struct tcp_shift_lwip_loop *loop)
+{
+    const struct tcp_shift_pacer_stats *pacer =
+        tcp_shift_lwip_loop_pacer_stats(loop);
+
+    if (pacer == NULL) {
+        return;
+    }
+    fprintf(stderr,
+            "tcp-shift-p2-pacing: deferrals=%llu resume_events=%llu "
+            "stale_releases=%llu scheduler_errors=%llu tx_events=%llu "
+            "tx_bytes=%llu last_rate_bytes_per_sec=%llu "
+            "last_deadline_ns=%llu last_actual_release_ns=%llu "
+            "loop_pacing_wakeups=%llu loop_release_callbacks=%llu "
+            "loop_callback_errors=%llu timerfd_creates=%llu "
+            "timer_arms=%llu timer_rearms=%llu timer_disarms=%llu "
+            "timer_expirations=%llu scheduled_events=%llu "
+            "released_events=%llu cancelled_events=%llu "
+            "released_bytes=%llu heap_current=%zu heap_peak=%zu "
+            "heap_capacity=%zu max_lateness_ns=%llu\n",
+            (unsigned long long)stats->pacing_deferrals,
+            (unsigned long long)stats->pacing_resume_events,
+            (unsigned long long)stats->pacing_stale_releases,
+            (unsigned long long)stats->pacing_scheduler_errors,
+            (unsigned long long)stats->pacing_tx_events,
+            (unsigned long long)stats->pacing_tx_bytes,
+            (unsigned long long)stats->pacing_last_rate_bytes_per_sec,
+            (unsigned long long)stats->pacing_last_deadline_ns,
+            (unsigned long long)stats->pacing_last_actual_release_ns,
+            (unsigned long long)loop->pacing_wakeups,
+            (unsigned long long)loop->pacing_release_callbacks,
+            (unsigned long long)loop->pacing_callback_errors,
+            (unsigned long long)pacer->timerfd_creates,
+            (unsigned long long)pacer->timer_arms,
+            (unsigned long long)pacer->timer_rearms,
+            (unsigned long long)pacer->timer_disarms,
+            (unsigned long long)pacer->timer_expirations,
+            (unsigned long long)pacer->scheduled_events,
+            (unsigned long long)pacer->released_events,
+            (unsigned long long)pacer->cancelled_events,
+            (unsigned long long)pacer->released_bytes,
+            pacer->heap_current,
+            pacer->heap_peak,
+            pacer->heap_capacity,
+            (unsigned long long)pacer->max_lateness_ns);
+}
+
 int main(int argc, char **argv)
 {
     struct tcp_shift_tun tun;
@@ -132,6 +234,7 @@ int main(int argc, char **argv)
     uint16_t backend_port;
     int l3_attached = 0;
     int loop_started = 0;
+    int pacer_configured = 0;
     int bridge_started = 0;
     int status = EXIT_FAILURE;
 
@@ -181,6 +284,12 @@ int main(int argc, char **argv)
         goto out;
     }
     loop_started = 1;
+
+    if (tcp_shift_p2_configure_pacer(&loop) < 0) {
+        fprintf(stderr, "configure P5c pacer service failed\n");
+        goto out;
+    }
+    pacer_configured = 1;
 
     if (tcp_shift_bridge_start_ipv4(&bridge, &loop, public_port,
                                     backend_port) < 0) {
@@ -262,6 +371,7 @@ int main(int argc, char **argv)
             cc_stats->last_ssthresh_bytes);
     print_delivery_stats(cc_stats);
     print_rate_stats(cc_stats);
+    print_pacing_stats(cc_stats, &loop);
 
 out:
     if (bridge_started != 0) {
@@ -271,6 +381,15 @@ out:
                 "shutdown_bridge_pending_public_bytes=%llu\n",
                 (unsigned long long)bridge.active_flows,
                 (unsigned long long)bridge.pending_public_bytes);
+    }
+    if (pacer_configured != 0 && tcp_shift_lwip_cc_clear_pacer() < 0) {
+        /* A bridge flow may already be gone while its lwIP PCB still owns the
+         * ext-arg through LAST_ACK/TIME_WAIT. The service must outlive those
+         * adapters. Since no more event-loop cycles run after this point and
+         * the process exits immediately, retain the static service instead of
+         * treating normal PCB lifetime as a shutdown failure. */
+        fprintf(stderr,
+                "tcp-shift-p2: pacer_service_retained_until_process_exit=1\n");
     }
     if (loop_started != 0) {
         tcp_shift_lwip_loop_close(&loop);
