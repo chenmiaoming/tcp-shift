@@ -27,10 +27,10 @@ The initial `src/cc/` API contains:
 - `tcp_shift_cc_transport`: MSS, bytes in flight, and peer send-window observations;
 - init parameters: initial cwnd, initial ssthresh, and minimum cwnd;
 - ACK, loss, and retransmission-timeout events;
-- policy output: cwnd in bytes and optional pacing rate in bytes/second;
+- policy output: cwnd, ssthresh, and optional pacing rate in bytes/second;
 - an ops table and caller-owned opaque controller state.
 
-A pacing rate of zero means the controller does not request pacing. P4's conventional controller leaves it zero; no timer or scheduler is introduced here.
+`ssthresh` is explicit policy so a native transport recovery engine can consume the controller's threshold without inspecting opaque controller state. A pacing rate of zero means the controller does not request pacing. P4's conventional controller leaves pacing zero; no timer or scheduler is introduced here.
 
 The first controller is a small byte-counting Reno baseline. It exists to validate the generic boundary, not to claim Linux Reno equivalence. Its state is four `uint32_t` values (16 bytes): cwnd, ssthresh, congestion-avoidance ACK accumulator, and configured minimum cwnd.
 
@@ -43,6 +43,8 @@ The conventional behavior contract covers:
 - path-MSS changes without platform callbacks;
 - saturating 32-bit byte accounting;
 - rejected invalid input/state-size contracts;
+- failed initialization leaving the generic CC handle non-callable;
+- explicit cwnd/ssthresh publication;
 - no pacing request.
 
 ## Standalone qualification
@@ -51,7 +53,7 @@ The conventional behavior contract covers:
 
 The script also scans every C/header include in `src/cc/` against an explicit allowlist. This prevents a later convenience include from silently coupling the policy library to lwIP or Linux.
 
-Behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed P4 run `34806148317`, job `103858312293`; artifact `10333074163` retained the standalone evidence. The key output was:
+Final standalone behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed P4 run `34810033939`, job `103869414629`; artifact `10334775895` retained the standalone evidence. The key output was:
 
 ```text
 cc_contract=ok controller=reno state_bytes=16 pacing=none
@@ -62,7 +64,7 @@ external_symbols=0
 P4 standalone congestion-control boundary passed
 ```
 
-P0 run `34806148285` and full P1 run `34806148306` also passed on the same head. This qualifies the standalone generic boundary only. The archive size is an object-code diagnostic, not a P3 process-memory replacement; native lwIP still owns the public-side cwnd until the adapter increment is qualified.
+P0 run `34810033921` and full P1 run `34810033970` also passed on the same head. This qualifies the standalone generic boundary only. The archive size is an object-code diagnostic, not a P3 process-memory replacement; native lwIP still owns the public-side cwnd until the adapter increment is qualified.
 
 ## Next increment: lwIP adapter
 
