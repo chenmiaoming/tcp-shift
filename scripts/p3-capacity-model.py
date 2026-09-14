@@ -66,6 +66,18 @@ def main() -> None:
         type=Path,
         default=Path(".build/p3-capacity-model"),
     )
+    parser.add_argument(
+        "--max-ratchet-kb",
+        type=float,
+        default=32.0,
+        help="maximum allowed first-to-last drained PSS growth",
+    )
+    parser.add_argument(
+        "--max-warm-floor-delta-kb",
+        type=float,
+        default=128.0,
+        help="maximum allowed drained PSS floor above the ready process",
+    )
     args = parser.parse_args()
 
     idle = load_json(args.idle)
@@ -99,9 +111,24 @@ def main() -> None:
         repeated_idle_slopes.append(idle_delta / flows)
         warm_floor_candidates.append(drained_pss)
 
+    ratchet_growth_kb = float(repeated["first_to_last_drain_pss_growth_kb"])
+    warm_floor_delta_kb = float(repeated["max_drain_pss_delta_from_ready_kb"])
+    if ratchet_growth_kb > args.max_ratchet_kb:
+        raise SystemExit(
+            "P3 repeated-drain ratchet exceeded gate: "
+            f"growth={ratchet_growth_kb:.3f} KiB limit={args.max_ratchet_kb:.3f} KiB"
+        )
+    if warm_floor_delta_kb > args.max_warm_floor_delta_kb:
+        raise SystemExit(
+            "P3 repeated-drain warm floor exceeded gate: "
+            f"delta={warm_floor_delta_kb:.3f} KiB "
+            f"limit={args.max_warm_floor_delta_kb:.3f} KiB"
+        )
+
     idle_slope = max(idle_slope, *repeated_idle_slopes)
     warm_fixed_pss_kb = max(
         float(idle["drained"]["pss_kb"]),
+        repeated_ready_pss + warm_floor_delta_kb,
         *warm_floor_candidates,
     )
     active_payload_delta_kb_per_flow = max(p2b_active_delta, b2p_active_delta)
@@ -194,9 +221,10 @@ def main() -> None:
             active_total_kb_per_flow, 6
         ),
         "qualified_window_bytes_per_flow": 32768,
-        "repeated_first_to_last_drain_pss_growth_kb": repeated[
-            "first_to_last_drain_pss_growth_kb"
-        ],
+        "repeated_first_to_last_drain_pss_growth_kb": ratchet_growth_kb,
+        "repeated_max_warm_floor_delta_kb": warm_floor_delta_kb,
+        "repeated_ratchet_gate_kb": args.max_ratchet_kb,
+        "repeated_warm_floor_gate_kb": args.max_warm_floor_delta_kb,
         "cpu_work_us_per_operation": round(work_cpu_us_per_op, 6),
         "cpu_idle_ms_per_second_observation": cpu["idle_cpu_ms"],
         "projections": projections,
