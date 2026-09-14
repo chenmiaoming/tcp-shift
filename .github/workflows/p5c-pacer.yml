@@ -6,10 +6,18 @@ on:
       - main
     paths:
       - '.github/workflows/p5c-pacer.yml'
+      - 'CMakeLists.txt'
       - 'src/runtime/pacer.c'
       - 'src/runtime/pacer.h'
+      - 'src/runtime/lwip_loop.c'
+      - 'src/runtime/lwip_loop.h'
       - 'src/tests/pacer_scheduler_test.c'
+      - 'src/tests/pacer_loop_test.c'
+      - 'src/platform.c'
       - 'scripts/p5-pacer-contract.sh'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
   push:
     branches:
       - main
@@ -25,22 +33,48 @@ concurrency:
 jobs:
   scheduler-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Checkout tcp-shift
         uses: actions/checkout@v4
 
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git
+
       - name: Validate pacer harness
-        run: sh -n scripts/p5-pacer-contract.sh
+        run: |
+          sh -n scripts/p5-pacer-contract.sh
+          sh -n scripts/fetch-lwip.sh
 
       - name: Qualify bounded one-shot scheduler
         run: sh scripts/p5-pacer-contract.sh
+
+      - name: Build pinned runtime and epoll contract
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p5-pacer-loop-contract --parallel
+
+      - name: Qualify timerfd through the epoll owner
+        run: |
+          .build/tcp-shift-p5-pacer-loop-contract | tee .build/p5-pacer-loop-summary.txt
+          grep -F 'pacer_loop_contract=ok ' .build/p5-pacer-loop-summary.txt
 
       - name: Upload pacer diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tcp-shift-p5c-pacer-contract
-          path: .build/p5-pacer-contract
+          path: |
+            .build/p5-pacer-contract
+            .build/p5-pacer-loop-summary.txt
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
           if-no-files-found: warn
           include-hidden-files: true
