@@ -168,18 +168,14 @@ static int tcp_shift_reno_on_timeout(void *opaque_state,
     return 0;
 }
 
-static int tcp_shift_fixed_pacing_reno_publish(
-    struct tcp_shift_fixed_pacing_reno_state *state,
-    int result,
-    struct tcp_shift_cc_policy *policy)
+static int tcp_shift_fixed_pacing_publish(int result,
+                                          struct tcp_shift_cc_policy *policy)
 {
     if (result != 0) {
         return result;
     }
-    if (state->pacing_rate_bytes_per_sec == 0U) {
-        return -1;
-    }
-    policy->pacing_rate_bytes_per_sec = state->pacing_rate_bytes_per_sec;
+    policy->pacing_rate_bytes_per_sec =
+        TCP_SHIFT_FIXED_PACING_RENO_RATE_BYTES_PER_SEC;
     return 0;
 }
 
@@ -189,14 +185,8 @@ static int tcp_shift_fixed_pacing_reno_init(
     const struct tcp_shift_cc_init *init,
     struct tcp_shift_cc_policy *policy)
 {
-    struct tcp_shift_fixed_pacing_reno_state *state = opaque_state;
-    int result;
-
-    if (state->pacing_rate_bytes_per_sec == 0U) {
-        return -1;
-    }
-    result = tcp_shift_reno_init(&state->reno, transport, init, policy);
-    return tcp_shift_fixed_pacing_reno_publish(state, result, policy);
+    return tcp_shift_fixed_pacing_publish(
+        tcp_shift_reno_init(opaque_state, transport, init, policy), policy);
 }
 
 static int tcp_shift_fixed_pacing_reno_on_ack(
@@ -205,10 +195,8 @@ static int tcp_shift_fixed_pacing_reno_on_ack(
     const struct tcp_shift_cc_ack *ack,
     struct tcp_shift_cc_policy *policy)
 {
-    struct tcp_shift_fixed_pacing_reno_state *state = opaque_state;
-    int result = tcp_shift_reno_on_ack(&state->reno, transport, ack, policy);
-
-    return tcp_shift_fixed_pacing_reno_publish(state, result, policy);
+    return tcp_shift_fixed_pacing_publish(
+        tcp_shift_reno_on_ack(opaque_state, transport, ack, policy), policy);
 }
 
 static int tcp_shift_fixed_pacing_reno_on_loss(
@@ -217,10 +205,8 @@ static int tcp_shift_fixed_pacing_reno_on_loss(
     const struct tcp_shift_cc_loss *loss,
     struct tcp_shift_cc_policy *policy)
 {
-    struct tcp_shift_fixed_pacing_reno_state *state = opaque_state;
-    int result = tcp_shift_reno_on_loss(&state->reno, transport, loss, policy);
-
-    return tcp_shift_fixed_pacing_reno_publish(state, result, policy);
+    return tcp_shift_fixed_pacing_publish(
+        tcp_shift_reno_on_loss(opaque_state, transport, loss, policy), policy);
 }
 
 static int tcp_shift_fixed_pacing_reno_on_timeout(
@@ -228,10 +214,8 @@ static int tcp_shift_fixed_pacing_reno_on_timeout(
     const struct tcp_shift_cc_transport *transport,
     struct tcp_shift_cc_policy *policy)
 {
-    struct tcp_shift_fixed_pacing_reno_state *state = opaque_state;
-    int result = tcp_shift_reno_on_timeout(&state->reno, transport, policy);
-
-    return tcp_shift_fixed_pacing_reno_publish(state, result, policy);
+    return tcp_shift_fixed_pacing_publish(
+        tcp_shift_reno_on_timeout(opaque_state, transport, policy), policy);
 }
 
 const struct tcp_shift_cc_ops tcp_shift_reno_ops = {
@@ -245,7 +229,7 @@ const struct tcp_shift_cc_ops tcp_shift_reno_ops = {
 
 const struct tcp_shift_cc_ops tcp_shift_fixed_pacing_reno_ops = {
     .name = "fixed-pacing-reno",
-    .state_size = sizeof(struct tcp_shift_fixed_pacing_reno_state),
+    .state_size = sizeof(struct tcp_shift_reno_state),
     .init = tcp_shift_fixed_pacing_reno_init,
     .on_ack = tcp_shift_fixed_pacing_reno_on_ack,
     .on_loss = tcp_shift_fixed_pacing_reno_on_loss,
