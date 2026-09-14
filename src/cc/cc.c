@@ -21,20 +21,35 @@ int tcp_shift_cc_init(struct tcp_shift_cc *cc,
                       const struct tcp_shift_cc_init *init,
                       struct tcp_shift_cc_policy *policy)
 {
-    if (cc == NULL || ops == NULL || state == NULL || init == NULL ||
-        policy == NULL || !tcp_shift_cc_valid_transport(transport) ||
-        ops->name == NULL || ops->state_size == 0U ||
-        state_size < ops->state_size || ops->init == NULL ||
-        ops->on_ack == NULL || ops->on_loss == NULL ||
+    int result;
+
+    if (cc == NULL) {
+        return -1;
+    }
+
+    /* A failed initialization must never leave a callable controller handle.
+     * Commit ops/state only after the controller accepts its configuration. */
+    cc->ops = NULL;
+    cc->state = NULL;
+
+    if (ops == NULL || state == NULL || init == NULL || policy == NULL ||
+        !tcp_shift_cc_valid_transport(transport) || ops->name == NULL ||
+        ops->state_size == 0U || state_size < ops->state_size ||
+        ops->init == NULL || ops->on_ack == NULL || ops->on_loss == NULL ||
         ops->on_timeout == NULL) {
         return -1;
     }
 
     policy->cwnd_bytes = 0U;
     policy->pacing_rate_bytes_per_sec = 0U;
+    result = ops->init(state, transport, init, policy);
+    if (result != 0) {
+        return result;
+    }
+
     cc->ops = ops;
     cc->state = state;
-    return ops->init(state, transport, init, policy);
+    return 0;
 }
 
 int tcp_shift_cc_on_ack(struct tcp_shift_cc *cc,
