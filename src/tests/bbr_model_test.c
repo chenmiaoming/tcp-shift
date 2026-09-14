@@ -200,6 +200,7 @@ static int check_round_and_startup_contract(struct tcp_shift_bbr_model *model)
     CHECK(model->full_bw_count == TCP_SHIFT_BBR_FULL_BW_ROUNDS);
     CHECK(model->full_bw_now == 1U);
     CHECK(model->full_bw_reached == 1U);
+    CHECK(model->ignored_app_limited_bw_samples == 1U);
 
     /* full_bw_now is an event flag: a later ACK clears it while the durable
      * full_bw_reached latch remains set. */
@@ -221,12 +222,14 @@ int main(void)
 
     printf("bbr_model_contract=ok mode=startup state_bytes=%zu "
            "round_count=%u full_bw_bytes_per_sec=%llu full_bw_count=%u "
-           "full_bw_reached=%u next_round_delivered=%llu\n",
+           "full_bw_reached=%u ignored_app_limited=%llu "
+           "next_round_delivered=%llu\n",
            sizeof(round_model),
            round_model.round_count,
            (unsigned long long)round_model.full_bw_bytes_per_sec,
            round_model.full_bw_count,
            (unsigned)round_model.full_bw_reached,
+           (unsigned long long)round_model.ignored_app_limited_bw_samples,
            (unsigned long long)round_model.next_round_delivered);
     return 0;
 }
