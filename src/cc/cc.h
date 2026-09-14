@@ -35,13 +35,21 @@ struct tcp_shift_cc_init {
 
 /* Transport-neutral delivery-rate observation. The transport adapter owns the
  * timestamp/sequence mechanics; controllers consume only the resulting sample.
- * A sample without VALID set must be ignored for bandwidth estimation. */
+ * A sample without VALID set must be ignored for bandwidth estimation.
+ *
+ * prior_delivered_bytes is the cumulative delivered counter captured when the
+ * sample's reference packet/segment was sent. delivered_total_bytes is the
+ * cumulative delivered counter after this ACK. Their explicit publication lets
+ * packet-timed controllers detect round boundaries without transport objects.
+ */
 struct tcp_shift_cc_rate_sample {
     uint64_t delivery_rate_bytes_per_sec;
     uint64_t interval_ns;
     uint64_t send_interval_ns;
     uint64_t ack_interval_ns;
     uint64_t rtt_ns;
+    uint64_t prior_delivered_bytes;
+    uint64_t delivered_total_bytes;
     uint32_t delivered_bytes;
     uint32_t prior_inflight_bytes;
     uint32_t flags;

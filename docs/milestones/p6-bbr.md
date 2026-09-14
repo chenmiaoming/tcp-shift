@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; model/state contract in progress**.
+Status: **active; P6a model estimation merged, P6b packet-timed rounds / Startup full-bandwidth detection in progress**.
 
 ## Reference semantics
 
@@ -8,11 +8,11 @@ The primary algorithm reference for P6 is `draft-ietf-ccwg-bbr-06` (BBRv3, 2026-
 
 P6 must not be described as Linux BBR-equivalent unless the relevant TCP semantics are demonstrated. The project controller continues to consume transport-neutral observations from P5 while lwIP retains sequence space, packet construction, retransmission, fast recovery, SACK/recovery, RTT/RTO calculation, and segment queues.
 
-## Increment P6a: pure-C model state
+## Increment P6a: pure-C model estimation — merged
 
-The first increment deliberately stops before publishing BBR cwnd/pacing policy or binding a BBR controller to live lwIP PCBs.
+PR #14 established the first BBR model checkpoint and was squash-merged into `main` as `58a9138786f2859efd9b0d61870ef60667bad9b6`.
 
-New pure-C state in `src/cc/bbr.*` establishes:
+Pure-C state in `src/cc/bbr.*` establishes:
 
 - explicit BBR mode representation, initially `STARTUP`;
 - `max_bw` estimation using a two-ProbeBW-cycle windowed maximum;
@@ -23,32 +23,52 @@ New pure-C state in `src/cc/bbr.*` establishes:
 - deterministic sample counters for qualification;
 - no controller-owned heap allocation, POSIX dependency, lwIP object, fd, timer, or pacer dependency.
 
-The two-cycle bandwidth window is advanced by an explicit model API in this increment. A later ProbeBW state machine will own the exact cycle-advance event after its round/cycle semantics are independently qualified.
+The P6a behavior head `83640cf86687af1ec9b2fccceb13c470a360daf2` passed P0, P1, P2, P4, P5 rate sampler, P5c pacer, and the dedicated P6 BBR model workflow. The retained model contract reported 112 bytes of BBR model state and the pure-C archive retained zero undefined external symbols.
 
-## P6a deterministic contract
+The two-cycle bandwidth window remains advanced by an explicit model API. A later ProbeBW state machine will own the exact cycle-advance event after its round/cycle semantics are independently qualified.
 
-`scripts/p6-bbr-model-contract.sh` compiles the model freestanding with warnings-as-errors and verifies:
+## Increment P6b: packet-timed rounds and Startup full-bandwidth detection
 
-1. initialization begins in `STARTUP` with no bandwidth/min-RTT estimate;
-2. an RTT-valid sample can update RTT state independently of a delivery-rate-valid sample;
-3. a normal valid sample establishes `max_bw` and `min_rtt`;
-4. a lower app-limited delivery-rate sample is ignored for `max_bw`;
-5. a higher app-limited sample can raise `max_bw`;
-6. the current and prior bandwidth-filter cycle are retained and an older maximum ages out after the window advances;
-7. ProbeRTT candidate refresh uses the draft's strict `>` 5-second expiration rule;
-8. the 10-second `min_rtt` interval allows the estimate to rise only after expiry;
-9. a sample without `RTT_VALID` cannot alter RTT model state;
-10. caller-time regression is rejected before mutating the model;
-11. the initial model state remains bounded to at most 128 bytes on the qualification ABI.
+P6b adds only the next model semantics required before publishing live BBR policy.
 
-The P6 workflow also reruns `scripts/validate-p4-cc.sh`, so adding the model cannot silently introduce non-ISO-C dependencies or undefined external symbols into the independently buildable CC archive.
+### Transport-neutral round snapshots
 
-## Explicitly out of scope for P6a
+`struct tcp_shift_cc_rate_sample` now reserves two cumulative delivery snapshots:
 
-P6a does not yet implement:
+- `prior_delivered_bytes`: cumulative delivered bytes captured when the sample's reference packet/segment was sent;
+- `delivered_total_bytes`: cumulative delivered bytes after the current ACK.
 
-- round-trip boundary tracking;
-- Startup full-bandwidth detection;
+These fields are transport semantics, not lwIP objects. They are intentionally added to the generic observation surface before live adapter population is enabled. Existing controllers ignore them.
+
+### Packet-timed round tracking
+
+The BBR model tracks:
+
+- `next_round_delivered`;
+- `round_count`;
+- transient `round_start`.
+
+When a sample publishes nonzero cumulative delivery snapshots and `prior_delivered_bytes >= next_round_delivered`, the ACK starts a new packet-timed round, advances `next_round_delivered` to the current cumulative delivered total, and increments `round_count`. ACKs for packets sent within that marker do not start another round.
+
+### Startup full-bandwidth detector
+
+P6b adds the draft's Startup bandwidth-growth plateau rule without changing mode or publishing pacing/cwnd policy yet:
+
+- only a valid, non-app-limited sample at a packet-timed round start contributes;
+- the baseline resets when bandwidth grows by at least 25%;
+- the integer threshold is computed as `ceil(5 * full_bw / 4)` without overflowing `uint64_t`;
+- otherwise `full_bw_count` increments;
+- after three qualifying rounds without 25% growth, `full_bw_reached` latches true;
+- app-limited rounds still advance the packet-timed round counter but do not contribute plateau evidence;
+- `full_bw_now` is a transient detection event while `full_bw_reached` is durable state.
+
+The P6b deterministic contract explicitly proves same-round ACK suppression, exact 25% growth acceptance, app-limited plateau suppression, and the three-round full-pipe latch.
+
+## Still out of scope after P6b
+
+P6b still does not implement:
+
+- automatic population of the new cumulative delivery snapshots by the lwIP adapter;
 - Drain transition;
 - ProbeBW phase/state machine;
 - ProbeRTT entry/exit;
@@ -57,22 +77,22 @@ P6a does not yet implement:
 - BDP/cwnd target calculation;
 - pacing gain or cwnd gain;
 - BBR policy publication through `struct tcp_shift_cc_policy`;
-- live lwIP controller selection;
+- live lwIP BBR controller selection;
 - provider/OpenVZ qualification.
 
-These are intentionally split into later independently qualified increments rather than being introduced as one opaque controller.
+These remain independently qualified increments rather than one opaque controller change.
 
-## Planned order after P6a
+## Planned order after P6b
 
-1. packet-timed round tracking and Startup bandwidth-growth/full-pipe detection;
-2. safe integer BDP/gain arithmetic plus Startup pacing/cwnd policy publication;
+1. populate prior/current delivered snapshots from the already-existing P5 delivery sidecar and qualify their live ACK semantics without selecting BBR;
+2. safe integer BDP/gain arithmetic plus Startup pacing/cwnd policy publication in a pure-C controller contract;
 3. deterministic Startup -> Drain transition and Drain exit;
 4. ProbeBW cycle/phase state and max-bandwidth filter advancement at the correct event;
 5. ProbeRTT scheduling/state integration;
 6. loss/upper-bound model state and app-limited edge cases;
 7. qualification-only live BBR binding to the existing P5 pacer;
 8. reproducible RTT/bandwidth/loss scenarios compared with current reference behavior;
-9. P0-P5 regression, P3 memory/CPU, pacer wakeup/lateness, and high-BDP reruns before any merge-ready claim.
+9. P0-P5 regression, P3 memory/CPU, pacer wakeup/lateness, and high-BDP reruns before any merge-ready live-controller claim.
 
 ## Stop criteria
 

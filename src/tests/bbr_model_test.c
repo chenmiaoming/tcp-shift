@@ -26,7 +26,19 @@ static struct tcp_shift_cc_rate_sample sample(uint64_t rate,
     return value;
 }
 
-int main(void)
+static struct tcp_shift_cc_rate_sample round_sample(uint64_t rate,
+                                                     uint64_t prior_delivered,
+                                                     uint64_t delivered_total,
+                                                     uint32_t flags)
+{
+    struct tcp_shift_cc_rate_sample value = sample(rate, 0U, flags);
+
+    value.prior_delivered_bytes = prior_delivered;
+    value.delivered_total_bytes = delivered_total;
+    return value;
+}
+
+static int check_estimator_contract(void)
 {
     struct tcp_shift_bbr_model model;
     struct tcp_shift_cc_rate_sample rate;
@@ -126,19 +138,98 @@ int main(void)
     CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 15000000000ULL) < 0);
     CHECK(model.max_bw_bytes_per_sec == previous_bw);
     CHECK(model.min_rtt_ns == previous_min_rtt);
+    return 0;
+}
 
-    CHECK(sizeof(model) <= 128U);
+static int check_round_and_startup_contract(struct tcp_shift_bbr_model *model)
+{
+    struct tcp_shift_cc_rate_sample rate;
+    const uint32_t valid = TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+
+    tcp_shift_bbr_model_init(model);
+
+    /* First ACK with transport-published delivery snapshots starts round 1. */
+    rate = round_sample(100U, 0U, 1000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 1U) == 0);
+    CHECK(model->round_start == 1U);
+    CHECK(model->round_count == 1U);
+    CHECK(model->next_round_delivered == 1000U);
+    CHECK(model->full_bw_bytes_per_sec == 100U);
+    CHECK(model->full_bw_count == 0U);
+
+    /* An ACK for a packet sent inside the same delivery round must not advance
+     * the packet-timed round counter or Startup plateau detector. */
+    rate = round_sample(110U, 500U, 1500U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 2U) == 0);
+    CHECK(model->round_start == 0U);
+    CHECK(model->round_count == 1U);
+    CHECK(model->full_bw_count == 0U);
+
+    /* Exactly 25% growth resets the plateau counter and raises the baseline. */
+    rate = round_sample(125U, 1000U, 2000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 3U) == 0);
+    CHECK(model->round_start == 1U);
+    CHECK(model->round_count == 2U);
+    CHECK(model->full_bw_bytes_per_sec == 125U);
+    CHECK(model->full_bw_count == 0U);
+
+    /* Below 25% growth starts plateau counting. */
+    rate = round_sample(150U, 2000U, 3000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 4U) == 0);
+    CHECK(model->round_count == 3U);
+    CHECK(model->full_bw_count == 1U);
+    CHECK(model->full_bw_reached == 0U);
+
+    /* App-limited rounds still advance packet-timed round_count but do not
+     * contribute evidence that Startup has filled the path. */
+    rate = round_sample(140U, 3000U, 4000U,
+                        valid | TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 5U) == 0);
+    CHECK(model->round_count == 4U);
+    CHECK(model->full_bw_count == 1U);
+    CHECK(model->full_bw_reached == 0U);
+
+    rate = round_sample(155U, 4000U, 5000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 6U) == 0);
+    CHECK(model->full_bw_count == 2U);
+    CHECK(model->full_bw_reached == 0U);
+
+    rate = round_sample(156U, 5000U, 6000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 7U) == 0);
+    CHECK(model->round_count == 6U);
+    CHECK(model->full_bw_count == TCP_SHIFT_BBR_FULL_BW_ROUNDS);
+    CHECK(model->full_bw_now == 1U);
+    CHECK(model->full_bw_reached == 1U);
+    CHECK(model->ignored_app_limited_bw_samples == 1U);
+
+    /* full_bw_now is an event flag: a later ACK clears it while the durable
+     * full_bw_reached latch remains set. */
+    rate = round_sample(200U, 5500U, 6500U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(model, &rate, 8U) == 0);
+    CHECK(model->round_start == 0U);
+    CHECK(model->full_bw_now == 0U);
+    CHECK(model->full_bw_reached == 1U);
+    return 0;
+}
+
+int main(void)
+{
+    struct tcp_shift_bbr_model round_model;
+
+    CHECK(check_estimator_contract() == 0);
+    CHECK(check_round_and_startup_contract(&round_model) == 0);
+    CHECK(sizeof(round_model) <= 160U);
 
     printf("bbr_model_contract=ok mode=startup state_bytes=%zu "
-           "max_bw_bytes_per_sec=%llu min_rtt_ns=%llu "
-           "valid_rate_samples=%llu accepted_bw_samples=%llu "
-           "ignored_app_limited=%llu valid_rtt_samples=%llu\n",
-           sizeof(model),
-           (unsigned long long)model.max_bw_bytes_per_sec,
-           (unsigned long long)model.min_rtt_ns,
-           (unsigned long long)model.valid_rate_samples,
-           (unsigned long long)model.accepted_bw_samples,
-           (unsigned long long)model.ignored_app_limited_bw_samples,
-           (unsigned long long)model.valid_rtt_samples);
+           "round_count=%u full_bw_bytes_per_sec=%llu full_bw_count=%u "
+           "full_bw_reached=%u ignored_app_limited=%llu "
+           "next_round_delivered=%llu\n",
+           sizeof(round_model),
+           round_model.round_count,
+           (unsigned long long)round_model.full_bw_bytes_per_sec,
+           round_model.full_bw_count,
+           (unsigned)round_model.full_bw_reached,
+           (unsigned long long)round_model.ignored_app_limited_bw_samples,
+           (unsigned long long)round_model.next_round_delivered);
     return 0;
 }
