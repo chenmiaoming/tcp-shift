@@ -39,7 +39,7 @@ The production direction is routed L3 TUN plus narrow DNAT/conntrack rules. TUN 
 
 TAP/Ethernet is not part of the current design. Physical ARP/NDP stays with the outer Linux network stack. The TUN boundary carries complete IPv4 or IPv6 packets only.
 
-P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. P2 now qualifies the same public families through one address-family-independent bridge state machine.
+P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. P2 qualifies the same public families through one address-family-independent bridge state machine. P3 adds no alternate datapath; it measures that same bridge/runtime under staged idle, active-window, repeated-drain, and CPU workloads.
 
 ## Process model versus module model
 
@@ -57,17 +57,19 @@ cc/                   generic congestion-control core
 
 The temporary public-ingress P1 executable runs with root privileges because `src/host/nft_ingress.*` briefly execs the system `nft` command during setup and cleanup. The established packet datapath itself remains the single lwIP owner and does not invoke nftables after setup.
 
-The P2 qualification executables intentionally exercise bridge behavior on directly addressed TUN endpoints, so they need TUN administration but do not own public nftables ingress. Product integration can later combine the already-qualified host ingress lifecycle and bridge without merging their source responsibilities.
+The P2/P3 qualification executables intentionally exercise bridge behavior on directly addressed TUN endpoints, so they need TUN administration but do not own public nftables ingress. Product integration can later combine the already-qualified host ingress lifecycle and bridge without merging their source responsibilities.
 
 A future root helper may own TUN/netfilter setup and pass a TUN fd to an unprivileged runtime. That would be a process-boundary hardening change only; it is not required for congestion-control portability.
 
 ## Congestion-control portability boundary
 
-The future `cc/` code is intended to become an independently buildable pure-C static library. It may be linked into the same `tcp-shift` process; an independent library does not imply an independent process.
+P4 introduces the `cc/` boundary as an independently buildable pure-C static library. It may be linked into the same `tcp-shift` process; an independent library does not imply an independent process.
 
 The generic CC core must not depend on TUN, nftables, epoll, timerfd, host socket descriptors, backend bridge objects, or Linux syscalls. It consumes transport observations such as sent/acked/lost bytes, delivery-rate samples, RTT samples, inflight state, app-limited state, and monotonic timestamps, and produces policy outputs such as cwnd and pacing rate.
 
-Linux-specific pacing uses a runtime scheduler. An embedded port may use an RTOS or hardware timer. The controller must not own that scheduler directly. This boundary is what permits a later extraction into a reusable `lwip-cc` project if the API proves stable.
+Linux-specific pacing belongs to the runtime scheduler introduced later. An embedded port may use an RTOS or hardware timer. The controller must not own that scheduler directly. This boundary is what permits a later extraction into a reusable `lwip-cc` project if the API proves stable.
+
+P4 must first establish generic transport event/policy interfaces and validate them with a conventional controller. High-resolution delivery sampling, per-segment rate metadata, app-limited detection, and process-wide pacing are P5 prerequisites; BBR-specific state does not belong in the initial generic boundary.
 
 ## lwIP ownership and threading
 
@@ -139,19 +141,31 @@ P1b behavior head `6a9d82feb1f3faead580f560ae1d076999a64b0f` and run `3476738666
 
 P2 behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, the full P1 regression run `34769960302`, and P2 run `34769960275`.
 
-P2 runner evidence now covers IPv4 and IPv6 public-stream integrity to an IPv4 loopback backend, 1-MiB bounded bidirectional backpressure, both half-close directions, backend refusal recovery, public/backend resets, eight concurrent flows, active-flow process shutdown, and 64 sequential reuse flows without VmRSS ratcheting. The retained reuse samples were 1800 KiB after warm-up, 32 flows, and 64 flows.
+P2 runner evidence covers IPv4 and IPv6 public-stream integrity to an IPv4 loopback backend, 1-MiB bounded bidirectional backpressure, both half-close directions, backend refusal recovery, public/backend resets, eight concurrent flows, active-flow process shutdown, and 64 sequential reuse flows without VmRSS ratcheting. The retained reuse samples were 1800 KiB after warm-up, 32 flows, and 64 flows.
 
-This is GitHub-runner qualification, not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, or capability surface. Provider qualification remains separate.
+P3 behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`. It runner-qualifies staged process PSS/private-dirty/fd observations, both directional active-window residency workloads, three repeated 128-flow load/drain rounds, a small-operation CPU baseline, and the constrained-host process-PSS planning model.
+
+This is GitHub-runner qualification, not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, capability, memory-accounting, or scheduling surface. Provider qualification remains separate.
 
 ## Memory and CPU model
 
-Demand-backed libc allocation is the initial Linux baseline so RSS follows real use. Static/custom pools are introduced only when measurements justify them.
+Demand-backed libc allocation remains the Linux baseline so RSS/PSS follows real use. Static/custom pools are introduced only when measurements justify them.
 
 P1 has mechanical bounds for its event loop and TUN retry queue: at most 64 queued packets / 96 KiB, real `EAGAIN` FIFO qualification, and a two-second idle gate with zero writable wakeups and a deliberately loose ceiling of 32 total waits. IPv6 PMTU integration reuses lwIP's already-allocated fixed destination cache rather than introducing another fixed table.
 
 P2 adds bridge-level accounting for active/peak flow objects, current/peak public pbuf residency, blocked-read/write events, and actual backend socket buffer sizes. Its 64-flow reuse gate is specifically a lifecycle/no-ratcheting check; it is not the product's per-connection memory number.
 
-P3 is the active next milestone. It must measure ready/idle RSS, PSS, private dirty, established-idle incremental cost, active-flow residency at controlled inflight data, repeated load/drain floors, and CPU under explicit workloads for 32/64/128-MiB targets. Those measurements decide whether there is enough headroom to proceed to the generic CC and later BBR machinery.
+P3 establishes the pre-CC process baseline. Final run `34805306193` measured 262 KiB ready PSS, 307 KiB at 128 idle flows, and a maximum direct idle slope of 0.3515625 KiB/flow. Repeated rounds make the conservative idle slope about 0.398 KiB/flow and set a 315-KiB warm fixed process floor for planning.
+
+Controlled active residency is the dominant userspace cost. Public-to-backend pressure added 36.5 KiB/flow; backend-to-public pressure added 37.125 KiB/flow. The conservative fully-window-resident process slope used for planning is therefore about 37.52 KiB/flow, including the idle slope. The corresponding qualified public-side data residency is one 32-KiB lwIP window per flow.
+
+The repeated-drain regression gate permits at most 32 KiB first-to-last drained PSS growth across three 128-flow rounds and at most 128 KiB warm drain floor above ready. The final run observed 5 KiB and 57 KiB respectively, with fd count returning to 5 every round.
+
+The CPU baseline observed zero process CPU ticks during a one-second idle interval and about 34.18 microseconds of process CPU per operation for 2048 synchronous 64-byte request/echo operations across four flows. It is a runner comparison point, not a provider SLA.
+
+For P4 admission, the model assigns only 25% of a 32-MiB host to tcp-shift process PSS. Under the 315-KiB fixed floor and 37.52-KiB active slope, 128 fully-window-resident flows project to about 5118 KiB, leaving about 3074 KiB or 24.0 KiB/flow inside the 8-MiB process budget for later CC/sampler/pacer structures.
+
+That projection is not total host residency. Backend Linux TCP kernel memory, backend application memory, public-client kernel memory, and provider-specific overhead are intentionally outside process PSS and must fit in the remaining host budget. P4/P5 changes must report their incremental fixed/per-flow/per-segment process cost against this P3 baseline.
 
 ## Documentation as project memory
 
