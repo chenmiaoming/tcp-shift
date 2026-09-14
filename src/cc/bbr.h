@@ -12,6 +12,7 @@ extern "C" {
 #define TCP_SHIFT_BBR_MAX_BW_FILTER_CYCLES 2U
 #define TCP_SHIFT_BBR_PROBE_RTT_INTERVAL_NS UINT64_C(5000000000)
 #define TCP_SHIFT_BBR_MIN_RTT_FILTER_NS UINT64_C(10000000000)
+#define TCP_SHIFT_BBR_FULL_BW_ROUNDS 3U
 
 enum tcp_shift_bbr_mode {
     TCP_SHIFT_BBR_MODE_STARTUP = 0,
@@ -22,9 +23,9 @@ enum tcp_shift_bbr_mode {
 
 /* Pure transport-independent BBRv3 model state.
  *
- * This first P6 increment deliberately contains only model estimation state.
- * It does not own timers, packet queues, recovery, or pacing mechanics. Wall
- * clock time is supplied explicitly by the caller as monotonic nanoseconds.
+ * Runtime clocks, timers, packet queues, recovery and pacing remain outside
+ * this state. The caller supplies monotonic time and cumulative delivery
+ * snapshots through transport-neutral ACK observations.
  */
 struct tcp_shift_bbr_model {
     uint64_t max_bw_bytes_per_sec;
@@ -41,7 +42,12 @@ struct tcp_shift_bbr_model {
     uint64_t ignored_app_limited_bw_samples;
     uint64_t valid_rtt_samples;
 
+    uint64_t next_round_delivered;
+    uint64_t full_bw_bytes_per_sec;
+
     uint32_t cycle_count;
+    uint32_t round_count;
+    uint32_t full_bw_count;
     enum tcp_shift_bbr_mode mode;
 
     uint8_t has_min_rtt;
@@ -49,6 +55,9 @@ struct tcp_shift_bbr_model {
     uint8_t has_update_time;
     uint8_t probe_rtt_expired;
     uint8_t min_rtt_expired;
+    uint8_t round_start;
+    uint8_t full_bw_now;
+    uint8_t full_bw_reached;
 };
 
 void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
