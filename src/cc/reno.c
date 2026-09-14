@@ -34,6 +34,7 @@ static void tcp_shift_reno_publish(const struct tcp_shift_reno_state *state,
                                    struct tcp_shift_cc_policy *policy)
 {
     policy->cwnd_bytes = state->cwnd_bytes;
+    policy->ssthresh_bytes = state->ssthresh_bytes;
     policy->pacing_rate_bytes_per_sec = 0U;
 }
 
