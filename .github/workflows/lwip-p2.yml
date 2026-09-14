@@ -7,12 +7,14 @@ on:
     paths:
       - '.github/workflows/lwip-p2.yml'
       - 'CMakeLists.txt'
+      - 'src/cc/**'
       - 'src/bridge/**'
       - 'src/runtime/**'
       - 'src/lwip/**'
       - 'src/host/**'
       - 'src/p2_main.c'
       - 'src/p2_ipv6_main.c'
+      - 'patches/lwip-p4-cc-hooks.patch'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p2-ipv6-bridge-smoke.sh'
@@ -23,6 +25,7 @@ on:
       - 'scripts/p2-concurrency-smoke.sh'
       - 'scripts/p2-active-shutdown-smoke.sh'
       - 'scripts/p2-reuse-rss-smoke.sh'
+      - 'scripts/validate-p4-adapter-p2-evidence.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -67,6 +70,7 @@ jobs:
           sh -n scripts/p2-concurrency-smoke.sh
           sh -n scripts/p2-active-shutdown-smoke.sh
           sh -n scripts/p2-reuse-rss-smoke.sh
+          sh -n scripts/validate-p4-adapter-p2-evidence.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
@@ -114,6 +118,9 @@ jobs:
           sudo env TCP_SHIFT_P2_IPV6_BINARY="$PWD/.build/tcp-shift-p2-ipv6" \
             sh scripts/p2-ipv6-bridge-smoke.sh
 
+      - name: Enforce integrated controller ownership across P2 workloads
+        run: sh scripts/validate-p4-adapter-p2-evidence.sh
+
       - name: Upload P2 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -130,4 +137,5 @@ jobs:
             .build/p2-active-shutdown-ci
             .build/p2-reuse-rss-ci
             .build/p2-ipv6-bridge-ci
+            .build/p4-adapter-p2-evidence
           if-no-files-found: warn
