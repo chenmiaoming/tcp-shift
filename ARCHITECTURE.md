@@ -32,7 +32,7 @@ ordinary AF_INET socket
 
 The public and backend TCP connections are distinct. Public-side congestion control belongs to tcp-shift/lwIP. Backend loopback congestion control is outside the product contract. Public IPv6 therefore does not require an IPv6 application backend.
 
-The deployment target includes small 32/64/128-MiB systems and IPv6-only low-cost VPSes. Memory, idle CPU, cleanup behavior, forwarding prerequisites, and firewall ownership are product properties.
+The deployment target includes small 32/64/128-MiB systems and IPv6-only low-cost VPSes. Memory, idle CPU, cleanup behavior, forwarding prerequisites, firewall ownership, and wakeup behavior are product properties.
 
 ## Packet path and host ownership
 
@@ -44,13 +44,21 @@ The product-owned public ingress resource is narrow DNAT/conntrack state. IPv4 u
 
 TUN interfaces are nonpersistent. nftables ownership is exclusive: a pre-existing product table is a collision, never an adopted resource. Cleanup deletes only state recorded as owned by the current process.
 
-## Single-owner runtime
+## Single-owner event-driven runtime
 
 lwIP runs with `NO_SYS=1`. There is no lwIP socket API, netconn layer, `tcpip_thread`, or per-flow forwarding thread. One event loop owns all mutable lwIP state.
 
-The event loop uses epoll readiness plus lwIP timer deadlines. It does not spin on a fixed polling tick. TUN `EPOLLOUT` is armed only while the bounded complete-packet TX queue is non-empty. Backend socket watchers use the same owner; callbacks may remove/free their own watcher because one ready fd is processed per `epoll_wait` iteration.
+The event loop is readiness/deadline driven rather than fixed-polling:
 
-The same owner is the future home for a process-wide pacing scheduler. Linux timerfd/epoll mechanics must remain outside the generic congestion-control library.
+- `epoll_wait()` blocks until an fd becomes ready or the next lwIP timeout returned by `sys_timeouts_sleeptime()` expires;
+- `sys_check_timeouts()` runs after that readiness/timeout wakeup;
+- TUN `EPOLLOUT` is armed only while the bounded complete-packet TX queue is non-empty;
+- backend read/write interest is removed or suppressed when the flow cannot make progress;
+- one ready fd is consumed per `epoll_wait` call so a callback may safely unregister/free its own watcher.
+
+P5 pacing must preserve this property. The target scheduler is one process-wide deadline heap plus one one-shot `timerfd` registered in the same epoll owner. The timerfd is armed to the earliest pacing deadline and disarmed when no pacing work exists. There is no fixed 1-ms/10-ms pacing tick, no per-flow timerfd/thread, and no busy spin.
+
+A later runtime cleanup may unify lwIP and pacing deadlines behind one absolute monotonic timerfd if CI proves that this reduces wakeups without changing lwIP timeout behavior. That is an optimization, not a prerequisite for P5b sampling.
 
 ## Source/module boundaries
 
@@ -58,8 +66,8 @@ The current product is one process, but source responsibilities are separate:
 
 ```text
 host/       Linux TUN/interface/netfilter/lifecycle integration
-runtime/    event loop and process lifecycle
-lwip/       L3/TCP integration and lwIP-specific adapters
+runtime/    event loop, timer/pacing scheduling, process lifecycle
+lwip/       L3/TCP integration, PMTU, CC and delivery adapters
 bridge/     public-stream <-> loopback-backend forwarding
 cc/         platform-independent congestion-control policy core
 ```
@@ -94,38 +102,33 @@ Flow failure is isolated. Backend refusal/reset or public reset tears down only 
 
 P4 establishes `src/cc/` as a separately buildable pure-C library. It must not depend on lwIP objects, Linux/POSIX APIs, TUN, epoll, timerfd, nftables, bridge objects, or process lifecycle. Controller state is caller-owned and the core has no controller-owned heap allocation.
 
-The generic transport observation currently includes:
-
-- MSS;
-- bytes in flight;
-- peer send window;
-- transport-representable cwnd limit.
-
-The event surface currently includes init, ACK, loss, and retransmission timeout. Policy output includes cwnd, ssthresh, and optional pacing rate in bytes/second. The conventional Reno baseline publishes zero pacing rate and uses 16 bytes of caller-owned state.
+The generic transport observation currently includes MSS, bytes in flight, peer send window, and the transport-representable cwnd limit. The event surface currently includes init, ACK, loss, and retransmission timeout. Policy output includes cwnd, ssthresh, and optional pacing rate in bytes/second. The conventional Reno baseline publishes zero pacing rate and uses 16 bytes of caller-owned state.
 
 `cwnd_limit_bytes` is a transport capability, not an lwIP-specific field. It prevents 32-bit controller state from silently diverging from the current unscaled 16-bit lwIP `tcpwnd_size_t`.
 
 The standalone CC archive is built with `-ffreestanding -fno-builtin`; its include surface is allowlisted and the archive must have zero undefined external symbols.
 
-## lwIP CC adapter and patch boundary
+## Controlled lwIP integration surface
 
 Pinned lwIP remains at commit `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. tcp-shift does not vendor a broad lwIP fork. `scripts/fetch-lwip.sh` records pristine critical-source hashes, then applies the repository-owned `patches/lwip-p4-cc-hooks.patch`.
 
-The controlled patch changes exactly three upstream policy sites:
+The permitted upstream modification surface remains exactly three files:
 
-1. ACK cwnd growth in `tcp_in.c`;
-2. fast-retransmit loss cwnd/ssthresh policy in `tcp_out.c`;
-3. RTO cwnd/ssthresh reduction in `tcp.c`.
+- `src/core/tcp.c`;
+- `src/core/tcp_in.c`;
+- `src/core/tcp_out.c`.
 
-Unbound PCBs execute the native upstream policy path. The patch does not move retransmission execution, duplicate-ACK processing, fast-recovery flags/inflation/deflation, SACK/recovery, RTT/RTO calculation, segment queues, sequence-space management, packet construction, or `tcp_output()` out of lwIP.
+P4 inserted base congestion-policy delegation at ACK growth, fast-loss cwnd/ssthresh, and RTO cwnd/ssthresh sites. P5a adds segment-send and fully-ACKed-segment observation calls in the already-controlled `tcp_out.c` / `tcp_in.c` surface. No new upstream file is patched.
 
-One PCB ext-arg slot stores a small tcp-shift hook pointer. `src/lwip/cc_adapter.c` translates lwIP PCB state/events into generic observations and applies returned cwnd/ssthresh policy. The adapter may depend on lwIP; `src/cc/` may not.
+Unbound PCBs execute native upstream congestion control and transport behavior. Project hooks do not move retransmission execution, duplicate-ACK processing, fast-recovery flags/inflation/deflation, SACK/recovery, RTT/RTO calculation, segment queues, sequence-space management, packet construction, or `tcp_output()` out of lwIP.
+
+One PCB ext-arg slot stores a tcp-shift hook pointer. `src/lwip/cc_adapter.c` translates lwIP PCB state/events into project observations and applies returned policy. The adapter may depend on lwIP; `src/cc/` may not.
 
 Passive-open timing is explicit: pinned lwIP calls the accept callback before assigning `LWIP_TCP_CALC_INITIAL_CWND(pcb->mss)`. The adapter initializes the controller with the same pinned-lwIP initial-cwnd formula so the generic invariant `initial_cwnd >= MSS` remains intact. lwIP writes the same value immediately after the callback.
 
-Controller state allocated for an accepted public PCB follows PCB lifetime through the ext-arg destroy callback. A bind failure rejects the child rather than silently falling back to native policy, preventing false-positive bridge tests.
+Controller/sidecar state allocated for an accepted public PCB follows PCB lifetime through the ext-arg destroy callback. A bind failure rejects the child rather than silently falling back to native policy, preventing false-positive bridge tests.
 
-## Qualified P4 ownership
+## P4 ownership boundary — qualified
 
 Final P4 behavior head `0a3054159db03b017526b3faabfbe7f6a6c826ac` proves integrated ownership:
 
@@ -134,11 +137,39 @@ Final P4 behavior head `0a3054159db03b017526b3faabfbe7f6a6c826ac` proves integra
 - external RTO injection completes the same-sized stream with `cc_timeout_events=2`;
 - no test calls generic loss/timeout handlers directly to manufacture those events.
 
-This means tcp-shift policy owns public-side base cwnd/ssthresh decisions for ACK, fast loss, and RTO, while lwIP still owns recovery mechanics.
+Thus tcp-shift policy owns public-side base cwnd/ssthresh decisions for ACK, fast loss, and RTO, while lwIP still owns recovery mechanics.
+
+## P5a delivery ledger — qualified
+
+P5a establishes the retransmission-safe accounting required by later delivery-rate sampling without enlarging upstream `struct tcp_seg`.
+
+Per bound public flow, `src/lwip/cc_adapter.*` owns a lazy growable sidecar vector keyed by the stable `tcp_seg *`. The vector starts at 8 entries and grows only when needed, bounded by current `TCP_SND_QUEUELEN=90`. Each entry is 32 bytes and contains segment identity plus first-transmit timestamp and delivery-state snapshots.
+
+Lifecycle rules:
+
+- create metadata only for a successful transmitted data segment;
+- retransmission of the same `tcp_seg *` reuses the existing entry and increments retransmission diagnostics only;
+- consume the entry when the fully acknowledged segment is about to be freed;
+- cumulative delivered payload advances only once per unique acknowledged segment;
+- PCB teardown releases any remaining sidecar allocation;
+- zero live entries after normal flow teardown is a hard gate.
+
+Final P5a behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed provenance/P0/P1/P2/P3/P4 and P5 run `34821205375`, job `103903019956`. Artifact `10338108552` retains the corrected fail-closed normal / fast-loss / RTO evidence:
+
+```text
+normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
+fast-loss: first_tx=180 retransmit=1 acked=180 delivered=262144 live_slots=0
+RTO:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
+metadata_bytes_per_slot=32
+```
+
+All three paths additionally require zero allocation failures, metadata misses, abandoned slots, clock errors, and timestamp regressions.
+
+The first P5 workflow version was not accepted as qualification even though GitHub marked it green: its parser matched `live_slots` inside `peak_live_slots`, and `check_delivery | tee` masked the checker's nonzero exit status. The final harness uses exact key tokens and fail-closed summary generation before `cat`; CI also explicitly includes hidden `.build` diagnostics in retained artifacts.
 
 ## Provenance contract
 
-The lwIP provenance workflow now proves both the upstream pin and the controlled modification:
+The lwIP provenance workflow proves both the upstream pin and the controlled modification:
 
 - `HEAD` equals `.lwip-baseline` exactly;
 - pristine critical-source hashes are retained before patching;
@@ -146,80 +177,54 @@ The lwIP provenance workflow now proves both the upstream pin and the controlled
 - only `tcp.c`, `tcp_in.c`, and `tcp_out.c` are modified;
 - no untracked dependency files exist;
 - reverse-apply check succeeds;
-- an independent worktree created from the same pinned commit, after applying the repository patch, is byte-identical for all three modified files.
+- an independent worktree created from the same pinned commit, after applying the repository patch, is byte-identical for all modified files.
 
-This is the permitted upstream modification surface. Additional lwIP patches require explicit architecture review and new provenance evidence.
+Additional lwIP files in the patch require explicit architecture review and new provenance evidence.
 
 ## Memory/CPU planning boundary
 
-P3 is the pre-CC baseline, not a full-host guarantee. It measures tcp-shift process PSS separately from backend Linux TCP/kernel memory and backend application memory.
+P3 measures tcp-shift process PSS separately from backend Linux TCP/kernel memory and backend application memory. It is not a full-host guarantee.
 
-Original P3 admission values were approximately:
-
-```text
-warm fixed process PSS: 315 KiB
-fully-window-resident process slope: 37.523438 KiB/flow
-32-MiB host / 25% process budget: 8192 KiB
-128-active projected PSS: 5118 KiB
-remaining process budget: 3074 KiB ~= 24.0 KiB/flow
-```
-
-With the integrated P4 adapter, final P3 rerun `34815149825` retained:
+Final P4 adapter baseline:
 
 ```text
 warm fixed process PSS: 335 KiB
-conservative idle slope: 0.523438 KiB/flow
-controlled active payload delta: 36.625 KiB/flow
 fully-window-resident process slope: 37.148438 KiB/flow
 128-active projected PSS: 5090 KiB
 remaining 8-MiB process budget: 3102 KiB = 24.234 KiB/flow
-three-round 128-flow drain growth: 5 KiB
-maximum warm drain floor above ready: 69 KiB
 ```
 
-The adapter therefore adds a small fixed cost but does not consume the active-flow admission headroom. Window/pbuf/send-segment residency still dominates active memory.
-
-P5/P6 must report incremental fixed, per-flow, and per-segment memory against this baseline. The remaining process budget cannot be treated as available host RAM because kernel/backend/provider residency is excluded.
-
-## Qualification state
-
-Runner-qualified milestones:
-
-- P0: constrained lwIP build/config/source surface;
-- P1: IPv4/IPv6 L3 TUN, product-owned ingress lifecycle, PMTU;
-- P2: dual-stack public stream bridge to `127.0.0.1`, backpressure and lifecycle;
-- P3: process memory/CPU/capacity baseline;
-- P4: generic pure-C CC boundary plus real lwIP ACK/loss/RTO integration.
-
-Final P4 behavior-head runs:
+P5a rerun:
 
 ```text
-upstream provenance  34815149550  success
-P0                   34815149474  success
-P1                   34815149646  success
-P2                   34815149444  success
-P3                   34815149825  success
-P4                   34815149645  success
+warm fixed process PSS: 343 KiB
+fully-window-resident process slope: 37.679688 KiB/flow
+128-active projected PSS: 5166 KiB
+remaining 8-MiB process budget: 3026 KiB = 23.641 KiB/flow
 ```
 
+P5a therefore consumes about 8 KiB fixed PSS and about 76 KiB of the conservative 128-flow process budget in the retained runner sample. Window/pbuf/send-segment residency still dominates active memory.
+
+P5b/P5c/P6 must continue reporting incremental fixed, per-flow, and per-segment memory. The remaining process budget cannot be treated as available host RAM because kernel/backend/provider residency is excluded.
+
+## Current qualification state and next work
+
+Runner-qualified:
+
+- P0: constrained lwIP build/config/source surface;
+- P1: IPv4/IPv6 L3 TUN, ingress lifecycle, PMTU;
+- P2: dual-stack public stream bridge to `127.0.0.1`, backpressure/lifecycle;
+- P3: process memory/CPU/capacity baseline;
+- P4: generic pure-C CC boundary plus real lwIP ACK/loss/RTO integration;
+- P5a: high-resolution delivery ledger and retransmission-safe segment metadata.
+
+Next:
+
+- P5b: ACK-derived delivery-rate sample + app-limited semantics;
+- P5c: event-driven process-wide pacer and integrated loss/inflight/sample publication;
+- P6: tcp-shift BBR state/model implementation and native-Linux reference comparison.
+
 This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, and memory behavior on the target VPS class.
-
-## P5: delivery-rate sampling and pacing prerequisites
-
-P5 is next. It must add the information and scheduling primitives needed by BBR without moving Linux runtime dependencies into `src/cc/`.
-
-Required capabilities include:
-
-- high-resolution monotonic send/ACK timestamps;
-- cumulative delivered-byte accounting;
-- per-segment metadata sufficient to reconstruct delivery intervals;
-- ACK delivery-rate samples;
-- app-limited detection/marking;
-- loss/inflight observations suitable for later model-based controllers;
-- a process-wide pacing queue/scheduler with one timerfd rather than one timer per flow;
-- mechanical memory/CPU accounting for fixed, per-flow, and per-segment additions.
-
-The sampler should publish transport-neutral observations to controllers. The runtime owns timerfd/epoll pacing. BBR-specific state/modes are deferred until these primitives are independently qualified.
 
 ## Stop criteria
 
@@ -229,4 +234,4 @@ Stop and reassess before BBR if any of the following becomes necessary:
 - a large or hard-to-rebase permanent lwIP fork;
 - memory approaching the hosted-Linux alternative for the target connection counts;
 - unavoidable BDP/window buffers dominating constrained-host RAM;
-- per-flow timers or scheduler structures that violate the single-owner/low-fixed-cost model.
+- per-flow timers, periodic pacing polling, or busy spinning for pacing accuracy.
