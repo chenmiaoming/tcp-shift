@@ -95,17 +95,20 @@ static int test_reno_transitions(void)
     CHECK(strcmp(tcp_shift_reno_ops.name, "reno") == 0);
     CHECK(tcp_shift_reno_ops.state_size == sizeof(state));
     CHECK(policy.cwnd_bytes == 4000U);
+    CHECK(policy.ssthresh_bytes == 8000U);
     CHECK(policy.pacing_rate_bytes_per_sec == 0U);
 
     /* Byte-counted slow start is capped at two MSS per ACK. */
     ack.acked_bytes = 4000U;
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == 6000U);
+    CHECK(policy.ssthresh_bytes == 8000U);
     CHECK(state.ca_acked_bytes == 0U);
 
     ack.acked_bytes = 2000U;
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == 8000U);
+    CHECK(policy.ssthresh_bytes == 8000U);
 
     /* Congestion avoidance accumulates one cwnd of ACKed bytes before
      * increasing by one MSS. */
@@ -115,6 +118,7 @@ static int test_reno_transitions(void)
     CHECK(state.ca_acked_bytes == 4000U);
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == 9000U);
+    CHECK(policy.ssthresh_bytes == 8000U);
     CHECK(state.ca_acked_bytes == 0U);
 
     /* Congestion loss reduces the effective min(cwnd, peer window) by half,
@@ -122,6 +126,7 @@ static int test_reno_transitions(void)
     transport.send_window_bytes = 6000U;
     CHECK(tcp_shift_cc_on_loss(&cc, &transport, &loss, &policy) == 0);
     CHECK(state.ssthresh_bytes == 3000U);
+    CHECK(policy.ssthresh_bytes == 3000U);
     CHECK(policy.cwnd_bytes == 3000U);
     CHECK(state.ca_acked_bytes == 0U);
 
@@ -129,6 +134,7 @@ static int test_reno_transitions(void)
      * minimum. */
     CHECK(tcp_shift_cc_on_timeout(&cc, &transport, &policy) == 0);
     CHECK(state.ssthresh_bytes == 2000U);
+    CHECK(policy.ssthresh_bytes == 2000U);
     CHECK(policy.cwnd_bytes == 1000U);
     CHECK(policy.pacing_rate_bytes_per_sec == 0U);
 
@@ -139,6 +145,7 @@ static int test_reno_transitions(void)
     ack.acked_bytes = 1400U;
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == 2800U);
+    CHECK(policy.ssthresh_bytes == 2000U);
     return 0;
 }
 
@@ -164,8 +171,10 @@ static int test_saturating_accounting(void)
                             &policy) == 0);
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == UINT32_MAX);
+    CHECK(policy.ssthresh_bytes == UINT32_MAX - 1000U);
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
     CHECK(policy.cwnd_bytes == UINT32_MAX);
+    CHECK(policy.ssthresh_bytes == UINT32_MAX - 1000U);
     CHECK(policy.pacing_rate_bytes_per_sec == 0U);
     return 0;
 }
