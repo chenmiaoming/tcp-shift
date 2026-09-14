@@ -80,18 +80,23 @@ wait_for_line()
     return 1
 }
 
-backend_established_count()
+# The public client deliberately half-closes its write direction before the
+# backend sends. That puts the server-side loopback sockets into CLOSE-WAIT,
+# even though they are still live and their transmit direction is usable.
+# Count every live server-side socket while excluding only the listener and
+# post-close TIME-WAIT state.
+backend_open_count()
 {
     ip netns exec "$RUNTIME_NS" \
-        ss -Htan state established "( sport = :$BACKEND_PORT )" 2>/dev/null \
-        | wc -l | tr -d ' '
+        ss -Htan "( sport = :$BACKEND_PORT )" 2>/dev/null \
+        | awk '$1 != "LISTEN" && $1 != "TIME-WAIT" {count++} END {print count + 0}'
 }
 
 backend_sendq_bytes()
 {
     ip netns exec "$RUNTIME_NS" \
-        ss -Htn state established "( sport = :$BACKEND_PORT )" 2>/dev/null \
-        | awk '{sum += $3} END {print sum + 0}'
+        ss -Htan "( sport = :$BACKEND_PORT )" 2>/dev/null \
+        | awk '$1 != "LISTEN" && $1 != "TIME-WAIT" {sum += $3} END {print sum + 0}'
 }
 
 wait_for_backend_count()
@@ -99,14 +104,15 @@ wait_for_backend_count()
     wanted=$1
     count=0
     while [ "$count" -lt 200 ]; do
-        current=$(backend_established_count)
+        current=$(backend_open_count)
         if [ "$current" -eq "$wanted" ]; then
             return 0
         fi
         count=$((count + 1))
         sleep 0.05
     done
-    echo "backend established count did not reach $wanted; got $(backend_established_count)" >&2
+    echo "backend live socket count did not reach $wanted; got $(backend_open_count)" >&2
+    ip netns exec "$RUNTIME_NS" ss -Htan "( sport = :$BACKEND_PORT )" >&2 || true
     return 1
 }
 
@@ -127,15 +133,15 @@ sample_process()
     private_dirty=$(awk '/^Private_Dirty:/ {print $2; exit}' "$smaps")
     anonymous=$(awk '/^Anonymous:/ {print $2; exit}' "$smaps")
     sendq=$(backend_sendq_bytes)
-    established=$(backend_established_count)
+    open_connections=$(backend_open_count)
     fd_count=$(find "/proc/$PID/fd" -mindepth 1 -maxdepth 1 -printf x 2>/dev/null | wc -c | tr -d ' ')
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$FLOW_COUNT" "$vmrss" "$rss" "$pss" "$private_dirty" \
-        "$anonymous" "$fd_count" "$established" "$sendq" >> "$OUT/measurements.tsv"
+        "$anonymous" "$fd_count" "$open_connections" "$sendq" >> "$OUT/measurements.tsv"
 }
 
-printf 'stage\tflows\tvmrss_kb\trss_kb\tpss_kb\tprivate_dirty_kb\tanonymous_kb\tfd_count\tbackend_established\tbackend_sendq_bytes\n' \
+printf 'stage\tflows\tvmrss_kb\trss_kb\tpss_kb\tprivate_dirty_kb\tanonymous_kb\tfd_count\tbackend_open_connections\tbackend_sendq_bytes\n' \
     >> "$OUT/measurements.tsv"
 
 ip netns add "$RUNTIME_NS"
