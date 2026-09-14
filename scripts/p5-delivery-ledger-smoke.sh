@@ -4,6 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 PAYLOAD_BYTES=${TCP_SHIFT_P5_PAYLOAD_BYTES:-262144}
+METADATA_BYTES_PER_SLOT=${TCP_SHIFT_P5_METADATA_BYTES_PER_SLOT:-56}
 MODE=${1:-normal}
 
 fail()
@@ -74,8 +75,8 @@ check_delivery()
     [ "$last_tx" -gt 0 ] || fail "last tx timestamp missing"
     [ "$last_ack" -ge "$last_tx" ] ||
         fail "last ack timestamp $last_ack precedes last tx $last_tx"
-    [ "$bytes_per_slot" -eq 32 ] ||
-        fail "delivery slot size changed from 32 bytes to $bytes_per_slot"
+    [ "$bytes_per_slot" -eq "$METADATA_BYTES_PER_SLOT" ] ||
+        fail "delivery slot size $bytes_per_slot != expected P5 layout $METADATA_BYTES_PER_SLOT"
     [ "$live" -eq 0 ] || fail "live metadata after natural teardown=$live"
     [ "$peak" -gt 0 ] || fail "no peak metadata residency observed"
     [ "$capacity" -ge "$peak" ] ||
