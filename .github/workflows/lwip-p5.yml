@@ -99,3 +99,4 @@ jobs:
             .build/lwip-patch.env
             .build/lwip-p4-cc-hooks.applied.diff
           if-no-files-found: warn
+          include-hidden-files: true
