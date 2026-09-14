@@ -1,4 +1,4 @@
-name: lwIP P5 delivery ledger
+name: lwIP P5 rate sampler
 
 on:
   pull_request:
@@ -7,6 +7,8 @@ on:
     paths:
       - '.github/workflows/lwip-p5.yml'
       - 'CMakeLists.txt'
+      - 'src/cc/**'
+      - 'src/bridge/**'
       - 'src/lwip/**'
       - 'src/lwipopts.h'
       - 'src/p2_main.c'
@@ -14,6 +16,7 @@ on:
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
       - 'scripts/p5-delivery-ledger-smoke.sh'
+      - 'scripts/p5-rate-sampler-smoke.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
       - '.lwip-baseline'
       - 'docs/milestones/p5-rate-sampler-pacer.md'
@@ -30,9 +33,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  delivery-ledger:
+  rate-sampler:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - name: Checkout tcp-shift
         uses: actions/checkout@v4
@@ -57,40 +60,45 @@ jobs:
           sh -n scripts/p2-bridge-smoke.sh
           sh -n scripts/p4-cc-recovery-smoke.sh
           sh -n scripts/p5-delivery-ledger-smoke.sh
+          sh -n scripts/p5-rate-sampler-smoke.sh
 
-      - name: Build pinned bridge runtime with delivery hooks
+      - name: Build pinned bridge runtime with sampler hooks
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target tcp-shift-p2 --parallel
 
-      - name: Grant TUN administration capability for natural delivery path
+      - name: Grant TUN administration capability for natural paths
         run: |
           sudo setcap cap_net_admin+ep .build/tcp-shift-p2
           getcap .build/tcp-shift-p2 | tee .build/p5-capability.txt
           grep -F 'cap_net_admin=ep' .build/p5-capability.txt
 
-      - name: Qualify natural unique delivery accounting
+      - name: Qualify natural unique delivery and rate sampling
         run: sh scripts/p5-delivery-ledger-smoke.sh normal
 
-      - name: Qualify metadata reuse across fast retransmit
+      - name: Qualify sampler across fast retransmit
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
             sh scripts/p5-delivery-ledger-smoke.sh fast-loss
 
-      - name: Qualify metadata reuse across RTO retransmission
+      - name: Qualify sampler across RTO retransmission
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
             sh scripts/p5-delivery-ledger-smoke.sh rto
+
+      - name: Qualify event-driven app-limited sampling
+        run: sh scripts/p5-rate-sampler-smoke.sh
 
       - name: Upload P5 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tcp-shift-p5-delivery-ledger
+          name: tcp-shift-p5-rate-sampler
           path: |
             .build/p5-capability.txt
             .build/p5-delivery-*-summary.txt
+            .build/p5-rate-sampler-ci
             .build/p2-bridge-ci
             .build/p4-fast-loss-ci
             .build/p4-rto-ci
