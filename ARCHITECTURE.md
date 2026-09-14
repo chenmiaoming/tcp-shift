@@ -39,7 +39,7 @@ The production direction is routed L3 TUN plus narrow DNAT/conntrack rules. TUN 
 
 TAP/Ethernet is not part of the current design. Physical ARP/NDP stays with the outer Linux network stack. The TUN boundary carries complete IPv4 or IPv6 packets only.
 
-P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. P2 qualifies the same public families through one address-family-independent bridge state machine. P3 adds no alternate datapath; it measures that same bridge/runtime under staged idle, active-window, repeated-drain, and CPU workloads.
+P1 runner qualification covers IPv4 and IPv6 through the same L3 adapter/runtime. P2 qualifies the same public families through one address-family-independent bridge state machine. P3 adds no alternate datapath; it measures that same bridge/runtime under staged idle, active-window, repeated-drain, and CPU workloads. The first P4 increment is policy-only and therefore also adds no alternate datapath.
 
 ## Process model versus module model
 
@@ -63,13 +63,27 @@ A future root helper may own TUN/netfilter setup and pass a TUN fd to an unprivi
 
 ## Congestion-control portability boundary
 
-P4 introduces the `cc/` boundary as an independently buildable pure-C static library. It may be linked into the same `tcp-shift` process; an independent library does not imply an independent process.
+P4 contains `src/cc/` as an independently buildable pure-C static library. It may be linked into the same `tcp-shift` process; an independent library does not imply an independent process.
 
-The generic CC core must not depend on TUN, nftables, epoll, timerfd, host socket descriptors, backend bridge objects, or Linux syscalls. It consumes transport observations such as sent/acked/lost bytes, delivery-rate samples, RTT samples, inflight state, app-limited state, and monotonic timestamps, and produces policy outputs such as cwnd and pacing rate.
+The generic CC core must not depend on TUN, nftables, epoll, timerfd, host socket descriptors, backend bridge objects, lwIP objects, or Linux syscalls. The standalone gate permits only its own headers plus ISO C integer/size/limits headers. Controller state is caller-owned; the library has no controller-owned heap allocation and its qualified static archive has zero undefined external symbols.
 
-Linux-specific pacing belongs to the runtime scheduler introduced later. An embedded port may use an RTOS or hardware timer. The controller must not own that scheduler directly. This boundary is what permits a later extraction into a reusable `lwip-cc` project if the API proves stable.
+The generic interface separates transport observations from policy. The first increment exposes MSS, inflight and peer-window transport state; init, ACK, loss and timeout events; and policy outputs for cwnd plus an optional pacing rate. A pacing rate of zero means no pacing request. The first conventional byte-counting Reno controller uses 16 bytes of caller-owned state and always publishes zero pacing rate.
 
-P4 must first establish generic transport event/policy interfaces and validate them with a conventional controller. High-resolution delivery sampling, per-segment rate metadata, app-limited detection, and process-wide pacing are P5 prerequisites; BBR-specific state does not belong in the initial generic boundary.
+Dedicated run `34806148317`, job `103858312293`, qualified this standalone boundary on behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8`:
+
+```text
+cc_contract=ok controller=reno state_bytes=16 pacing=none
+cc_boundary=pure-c
+external_symbols=0
+```
+
+Artifact `10333074163` retains the include-surface, archive-symbol and object-size diagnostics. P0 run `34806148285` and full P1 run `34806148306` remained green on the same head.
+
+This standalone qualification does not yet move public-side congestion-window ownership out of native lwIP. The active P4 work is a thin lwIP adapter/hook surface that translates native transport events into generic CC observations and applies policy back to cwnd/ssthresh or an equally narrow hook. The adapter may depend on lwIP; `src/cc/` may not.
+
+lwIP must continue to own retransmission execution, fast-recovery mechanics, send/receive sequence space, segment queues, SACK/recovery machinery, packet construction, and output. The CC library owns policy only. If conventional-controller integration requires copying or rebuilding those mechanisms instead of narrow hooks, that is a P4 stop signal.
+
+Linux-specific pacing belongs to the runtime scheduler introduced in P5. An embedded port may use an RTOS or hardware timer. The controller must not own that scheduler directly. High-resolution delivery sampling, per-segment rate metadata, app-limited detection and process-wide pacing are P5 prerequisites; BBR-specific state does not belong in P4.
 
 ## lwIP ownership and threading
 
@@ -145,6 +159,8 @@ P2 runner evidence covers IPv4 and IPv6 public-stream integrity to an IPv4 loopb
 
 P3 behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`. It runner-qualifies staged process PSS/private-dirty/fd observations, both directional active-window residency workloads, three repeated 128-flow load/drain rounds, a small-operation CPU baseline, and the constrained-host process-PSS planning model.
 
+P4 standalone behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed P4 run `34806148317`, job `103858312293`, with P0 run `34806148285` and full P1 run `34806148306` green. It runner-qualifies the independent pure-C CC library, conventional 16-byte Reno state-machine contract, include allowlist, no-pacing output, and zero-external-symbol archive. It does not yet qualify integrated lwIP controller ownership.
+
 This is GitHub-runner qualification, not evidence that every target OpenVZ/VPS provider exposes the required TUN, forwarding, nftables, conntrack, capability, memory-accounting, or scheduling surface. Provider qualification remains separate.
 
 ## Memory and CPU model
@@ -164,6 +180,8 @@ The repeated-drain regression gate permits at most 32 KiB first-to-last drained 
 The CPU baseline observed zero process CPU ticks during a one-second idle interval and about 34.18 microseconds of process CPU per operation for 2048 synchronous 64-byte request/echo operations across four flows. It is a runner comparison point, not a provider SLA.
 
 For P4 admission, the model assigns only 25% of a 32-MiB host to tcp-shift process PSS. Under the 315-KiB fixed floor and 37.52-KiB active slope, 128 fully-window-resident flows project to about 5118 KiB, leaving about 3074 KiB or 24.0 KiB/flow inside the 8-MiB process budget for later CC/sampler/pacer structures.
+
+The standalone P4 controller state is 16 bytes per flow and the archive itself is small, but those are not substitutes for integrated process-PSS measurement. The lwIP-adapter increment must remeasure fixed/per-flow process cost once controller state is attached to live public flows.
 
 That projection is not total host residency. Backend Linux TCP kernel memory, backend application memory, public-client kernel memory, and provider-specific overhead are intentionally outside process PSS and must fit in the remaining host budget. P4/P5 changes must report their incremental fixed/per-flow/per-segment process cost against this P3 baseline.
 
