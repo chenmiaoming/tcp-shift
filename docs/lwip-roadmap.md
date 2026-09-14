@@ -111,20 +111,37 @@ bridge_reuse_no_ratcheting=ok
 
 The reuse RSS result is a lifecycle/no-ratcheting gate, not a connection-capacity claim. Exact established-flow memory cost is intentionally measured in P3.
 
-## P3: memory/capacity baseline — active next milestone
+## P3: memory/capacity baseline — complete
 
-Measure idle RSS/PSS/private dirty, incremental memory per idle established connection, active-flow residency at fixed in-flight data, peak/post-drain floors, and CPU under idle/small-packet loads. Test stages are chosen for 32/64/128-MiB target hosts.
+P3 runner-qualifies a measurement-first userspace memory/CPU baseline before congestion-control modifications. Run `34805306193` on behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` retains process PSS, private dirty, fd/socket state, directional window-pressure residency, repeated drain floors, CPU, and a constrained-host sensitivity model.
 
-P3 should distinguish at least four memory contributors instead of collapsing them into one RSS number:
+Key retained observations are:
 
-1. fixed process/lwIP/runtime cost;
-2. per-public-flow lwIP PCB/segment/pbuf/control cost;
-3. per-backend-flow Linux socket/kernel cost where observable from the host;
-4. application data residency caused by configured TCP windows and controlled inflight traffic.
+```text
+ready PSS=262 KiB
+128 idle flows PSS=307 KiB
+max idle PSS slope=0.3515625 KiB/flow
 
-The first P3 increment should establish a long-lived measurement harness with `/proc/<pid>/smaps_rollup` plus process RSS, explicit connection-count stages, a stable idle-established state, and repeated load/drain rounds. Capacity thresholds must come from those measurements before being promoted to hard product limits.
+public->backend active delta=36.5 KiB/flow
+backend->public active delta=37.125 KiB/flow
+qualified active window residency=32768 bytes/flow
 
-## P4: generic congestion-control library boundary
+3 x 128-flow first-to-last drain growth=5 KiB
+maximum drain floor above ready=57 KiB
+ratchet gate=32 KiB
+warm-floor gate=128 KiB
+
+1-second idle CPU=0 ms
+2048 x 64-byte request/echo CPU=34.18 us/op
+```
+
+The capacity model takes the conservative repeated-idle and active directional maxima, yielding a warm fixed process PSS of 315 KiB and a fully-window-resident process slope of about 37.52 KiB/flow. In the P4 admission scenario, only 25% of a 32-MiB host (8 MiB) is assigned to tcp-shift process PSS. 128 fully-window-resident flows project to about 5118 KiB, leaving about 3074 KiB, or 24.0 KiB/flow, for later CC/sampler/pacer process structures.
+
+This is deliberately not a full-host capacity guarantee. Backend Linux TCP kernel memory, backend application memory, public-client kernel memory, and provider-specific host overhead are excluded from process PSS and remain in the reserved host budget.
+
+P3 therefore provides adequate userspace headroom to enter P4 while preserving the stop criterion: every later CC/sampler/pacer increment must be measured against this baseline.
+
+## P4: generic congestion-control library boundary — active next milestone
 
 Introduce an independently buildable pure-C CC interface instead of scattering policy through lwIP TCP code. The core consumes transport events/samples and emits cwnd/pacing policy. It does not call Linux host APIs and it does not own the pacing scheduler.
 
