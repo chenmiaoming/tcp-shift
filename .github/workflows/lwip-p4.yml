@@ -1,0 +1,57 @@
+name: lwIP P4 CC boundary
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p4.yml'
+      - 'src/cc/**'
+      - 'src/tests/cc_contract_test.c'
+      - 'scripts/validate-p4-cc.sh'
+      - 'docs/milestones/p4-cc-boundary.md'
+      - 'ARCHITECTURE.md'
+      - 'docs/lwip-roadmap.md'
+      - 'docs/ci.md'
+      - 'docs/development.md'
+      - 'README.md'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pure-c-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            cmake
+
+      - name: Validate standalone CC boundary
+        run: |
+          sh -n scripts/validate-p4-cc.sh
+          sh scripts/validate-p4-cc.sh
+
+      - name: Upload P4 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p4-cc-boundary
+          path: .build/p4-cc/evidence
+          if-no-files-found: warn
