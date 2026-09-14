@@ -15,13 +15,17 @@ on:
       - 'src/runtime/lwip_loop.c'
       - 'src/runtime/lwip_loop.h'
       - 'src/p2_main.c'
+      - 'src/p2_ipv6_main.c'
       - 'src/tests/fixed_pacing_policy_test.c'
       - 'src/tests/pacer_scheduler_test.c'
       - 'src/tests/pacer_loop_test.c'
       - 'src/platform.c'
       - 'scripts/p2-bridge-smoke.sh'
+      - 'scripts/p2-concurrency-smoke.sh'
+      - 'scripts/p4-cc-recovery-smoke.sh'
       - 'scripts/p5-pacer-contract.sh'
       - 'scripts/p5-paced-bridge-smoke.sh'
+      - 'scripts/p5-paced-regression-smoke.sh'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
       - '.lwip-baseline'
@@ -40,7 +44,7 @@ concurrency:
 jobs:
   scheduler-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - name: Checkout tcp-shift
         uses: actions/checkout@v4
@@ -53,6 +57,7 @@ jobs:
             cmake \
             git \
             iproute2 \
+            iptables \
             libcap2-bin \
             python3
           sudo modprobe tun || true
@@ -62,7 +67,10 @@ jobs:
         run: |
           sh -n scripts/p5-pacer-contract.sh
           sh -n scripts/p5-paced-bridge-smoke.sh
+          sh -n scripts/p5-paced-regression-smoke.sh
           sh -n scripts/p2-bridge-smoke.sh
+          sh -n scripts/p2-concurrency-smoke.sh
+          sh -n scripts/p4-cc-recovery-smoke.sh
           sh -n scripts/fetch-lwip.sh
 
       - name: Qualify bounded one-shot scheduler
@@ -101,6 +109,19 @@ jobs:
       - name: Qualify fixed-rate pacing through the real bridge datapath
         run: sh scripts/p5-paced-bridge-smoke.sh
 
+      - name: Qualify overlapping deadlines across paced flows
+        run: sh scripts/p5-paced-regression-smoke.sh multi
+
+      - name: Qualify pacing across fast retransmit recovery
+        run: |
+          sudo env TCP_SHIFT_P5C_BINARY="$PWD/.build/tcp-shift-p5c-paced" \
+            sh scripts/p5-paced-regression-smoke.sh fast-loss
+
+      - name: Qualify pacing across RTO recovery
+        run: |
+          sudo env TCP_SHIFT_P5C_BINARY="$PWD/.build/tcp-shift-p5c-paced" \
+            sh scripts/p5-paced-regression-smoke.sh rto
+
       - name: Upload pacer diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -111,8 +132,14 @@ jobs:
             .build/p5-pacer-loop-summary.txt
             .build/p5-fixed-pacing-policy-summary.txt
             .build/p5c-paced-summary.txt
+            .build/p5c-paced-multi-summary.txt
+            .build/p5c-paced-fast-loss-summary.txt
+            .build/p5c-paced-rto-summary.txt
             .build/p5c-capability.txt
             .build/p2-bridge-ci
+            .build/p2-concurrency-ci
+            .build/p4-fast-loss-ci
+            .build/p4-rto-ci
             .build/upstream.env
             .build/lwip-critical.sha256
             .build/lwip-patch.env
