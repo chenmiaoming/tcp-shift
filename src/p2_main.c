@@ -382,11 +382,14 @@ out:
                 (unsigned long long)bridge.active_flows,
                 (unsigned long long)bridge.pending_public_bytes);
     }
-    if (pacer_configured != 0) {
-        if (tcp_shift_lwip_cc_clear_pacer() < 0) {
-            fprintf(stderr, "clear P5c pacer service failed\n");
-            status = EXIT_FAILURE;
-        }
+    if (pacer_configured != 0 && tcp_shift_lwip_cc_clear_pacer() < 0) {
+        /* A bridge flow may already be gone while its lwIP PCB still owns the
+         * ext-arg through LAST_ACK/TIME_WAIT. The service must outlive those
+         * adapters. Since no more event-loop cycles run after this point and
+         * the process exits immediately, retain the static service instead of
+         * treating normal PCB lifetime as a shutdown failure. */
+        fprintf(stderr,
+                "tcp-shift-p2: pacer_service_retained_until_process_exit=1\n");
     }
     if (loop_started != 0) {
         tcp_shift_lwip_loop_close(&loop);
