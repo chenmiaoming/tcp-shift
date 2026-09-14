@@ -16,7 +16,21 @@ field()
 {
     key=$1
     file=$2
-    value=$(sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p" "$file" | tail -n 1)
+    value=$(awk -v key="$key" '
+        $1 == "tcp-shift-p2-delivery:" {
+            for (i = 2; i <= NF; i++) {
+                split($i, pair, "=")
+                if (pair[1] == key) {
+                    value = pair[2]
+                }
+            }
+        }
+        END {
+            if (value ~ /^[0-9]+$/) {
+                print value
+            }
+        }
+    ' "$file")
     case "$value" in
         ''|*[!0-9]*) fail "missing/invalid ${key} in $file" ;;
     esac
@@ -77,23 +91,25 @@ check_delivery()
             fail "fault workload did not reuse segment metadata on retransmit"
     fi
 
-    printf 'mode=%s payload_bytes=%s first_tx_events=%s retransmit_events=%s acked_segment_events=%s delivered_payload_bytes=%s metadata_bytes_per_slot=%s peak_slots_per_flow=%s peak_capacity_slots_per_flow=%s live_slots=0 ledger=ok\n' \
+    printf 'mode=%s payload_bytes=%s first_tx_events=%s retransmit_events=%s acked_segment_events=%s delivered_payload_bytes=%s metadata_bytes_per_slot=%s peak_slots_per_flow=%s peak_capacity_slots_per_flow=%s live_slots=%s ledger=ok\n' \
         "$MODE" "$delivered" "$first_tx" "$retransmit" "$acked" \
-        "$delivered" "$bytes_per_slot" "$peak" "$capacity"
+        "$delivered" "$bytes_per_slot" "$peak" "$capacity" "$live"
 }
 
 case "$MODE" in
     normal)
         TCP_SHIFT_P2_PAYLOAD_BYTES="$PAYLOAD_BYTES" \
             sh "$ROOT/scripts/p2-bridge-smoke.sh"
-        check_delivery "$BUILD/p2-bridge-ci/runtime.stderr" 0 |
-            tee "$BUILD/p5-delivery-normal-summary.txt"
+        check_delivery "$BUILD/p2-bridge-ci/runtime.stderr" 0 \
+            > "$BUILD/p5-delivery-normal-summary.txt"
+        cat "$BUILD/p5-delivery-normal-summary.txt"
         ;;
     fast-loss|rto)
         TCP_SHIFT_P4_PAYLOAD_BYTES="$PAYLOAD_BYTES" \
             sh "$ROOT/scripts/p4-cc-recovery-smoke.sh" "$MODE"
-        check_delivery "$BUILD/p4-${MODE}-ci/runtime.stderr" 1 |
-            tee "$BUILD/p5-delivery-${MODE}-summary.txt"
+        check_delivery "$BUILD/p4-${MODE}-ci/runtime.stderr" 1 \
+            > "$BUILD/p5-delivery-${MODE}-summary.txt"
+        cat "$BUILD/p5-delivery-${MODE}-summary.txt"
         ;;
     *)
         fail "usage: $0 {normal|fast-loss|rto}"
