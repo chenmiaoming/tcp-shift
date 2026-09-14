@@ -17,12 +17,14 @@ on:
       - 'src/p2_main.c'
       - 'src/p2_ipv6_main.c'
       - 'src/tests/fixed_pacing_policy_test.c'
+      - 'src/tests/pacer_adapter_lifecycle_test.c'
       - 'src/tests/pacer_scheduler_test.c'
       - 'src/tests/pacer_loop_test.c'
       - 'src/platform.c'
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p2-concurrency-smoke.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
+      - 'scripts/p5-pacer-adapter-contract.sh'
       - 'scripts/p5-pacer-contract.sh'
       - 'scripts/p5-paced-bridge-smoke.sh'
       - 'scripts/p5-paced-regression-smoke.sh'
@@ -66,6 +68,7 @@ jobs:
       - name: Validate P5c harnesses
         run: |
           sh -n scripts/p5-pacer-contract.sh
+          sh -n scripts/p5-pacer-adapter-contract.sh
           sh -n scripts/p5-paced-bridge-smoke.sh
           sh -n scripts/p5-paced-regression-smoke.sh
           sh -n scripts/p2-bridge-smoke.sh
@@ -94,6 +97,15 @@ jobs:
             .build/p5-fixed-pacing-policy-summary.txt
           grep -F 'rate_bytes_per_sec=65536' \
             .build/p5-fixed-pacing-policy-summary.txt
+
+      - name: Qualify teardown cancellation and stale-generation safety
+        run: |
+          sh scripts/p5-pacer-adapter-contract.sh \
+            | tee .build/p5-pacer-adapter-summary.txt
+          grep -F 'pacer_adapter_lifecycle=ok ' \
+            .build/p5-pacer-adapter-summary.txt
+          grep -F 'cancels=1 stale_release_safe=1' \
+            .build/p5-pacer-adapter-summary.txt
 
       - name: Qualify timerfd through the epoll owner
         run: |
@@ -129,6 +141,7 @@ jobs:
           name: tcp-shift-p5c-pacer-contract
           path: |
             .build/p5-pacer-contract
+            .build/p5-pacer-adapter-summary.txt
             .build/p5-pacer-loop-summary.txt
             .build/p5-fixed-pacing-policy-summary.txt
             .build/p5c-paced-summary.txt
