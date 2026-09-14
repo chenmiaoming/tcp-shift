@@ -12,19 +12,49 @@ HOST_IP=${TCP_SHIFT_P2_HOST_IP:-10.233.0.1}
 PUBLIC_PORT=${TCP_SHIFT_P2_PUBLIC_PORT:-18090}
 BACKEND_PORT=${TCP_SHIFT_P2_BACKEND_PORT:-19090}
 PAYLOAD_BYTES=${TCP_SHIFT_P2_PAYLOAD_BYTES:-131072}
+NETEM_DELAY_MS=${TCP_SHIFT_P2_NETEM_DELAY_MS:-0}
+SOCKET_TIMEOUT_SECONDS=${TCP_SHIFT_P2_SOCKET_TIMEOUT_SECONDS:-8}
+CAPTURE_RUNTIME_CPU=${TCP_SHIFT_P2_CAPTURE_RUNTIME_CPU:-0}
 PID=
 BACKEND_PID=
+RUNTIME_CPU_START_TICKS=
+RUNTIME_CPU_START_NS=
+RUNTIME_CPU_CLK_TCK=
 
 mkdir -p "$OUT"
 : > "$OUT/runtime.stdout"
 : > "$OUT/runtime.stderr"
 : > "$OUT/backend.stdout"
 : > "$OUT/backend.stderr"
+rm -f "$OUT/runtime-cpu.txt" "$OUT/netem-before.txt" "$OUT/netem-after.txt"
 
 [ -x "$BINARY" ] || {
     echo "missing P2 binary: $BINARY" >&2
     exit 1
 }
+case "$NETEM_DELAY_MS" in
+    ''|*[!0-9]*)
+        echo "TCP_SHIFT_P2_NETEM_DELAY_MS must be a nonnegative integer" >&2
+        exit 1
+        ;;
+esac
+case "$SOCKET_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "TCP_SHIFT_P2_SOCKET_TIMEOUT_SECONDS must be a positive integer" >&2
+        exit 1
+        ;;
+esac
+[ "$SOCKET_TIMEOUT_SECONDS" -gt 0 ] || {
+    echo "TCP_SHIFT_P2_SOCKET_TIMEOUT_SECONDS must be positive" >&2
+    exit 1
+}
+case "$CAPTURE_RUNTIME_CPU" in
+    0|1) ;;
+    *)
+        echo "TCP_SHIFT_P2_CAPTURE_RUNTIME_CPU must be 0 or 1" >&2
+        exit 1
+        ;;
+esac
 
 stop_runtime()
 {
@@ -62,7 +92,7 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-python3 - "$BACKEND_PORT" "$OUT/backend-payload.bin" \
+python3 - "$BACKEND_PORT" "$OUT/backend-payload.bin" "$SOCKET_TIMEOUT_SECONDS" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -70,13 +100,14 @@ import sys
 
 port = int(sys.argv[1])
 path = sys.argv[2]
+timeout = float(sys.argv[3])
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind(("127.0.0.1", port))
 server.listen(1)
 print(f"backend-ready 127.0.0.1:{port}", flush=True)
 conn, peer = server.accept()
-conn.settimeout(8.0)
+conn.settimeout(timeout)
 chunks = []
 while True:
     chunk = conn.recv(16384)
@@ -145,7 +176,26 @@ done
     exit 1
 }
 
-python3 - "$LWIP_IP" "$PUBLIC_PORT" "$PAYLOAD_BYTES" \
+if [ "$NETEM_DELAY_MS" -gt 0 ]; then
+    [ "$(id -u)" -eq 0 ] || {
+        echo "P2 netem qualification requires root" >&2
+        exit 1
+    }
+    command -v tc >/dev/null 2>&1 || {
+        echo "tc is required for P2 netem qualification" >&2
+        exit 1
+    }
+    tc qdisc replace dev "$TUN_NAME" root netem delay "${NETEM_DELAY_MS}ms"
+    tc -s qdisc show dev "$TUN_NAME" > "$OUT/netem-before.txt"
+fi
+
+if [ "$CAPTURE_RUNTIME_CPU" -eq 1 ]; then
+    RUNTIME_CPU_CLK_TCK=$(getconf CLK_TCK)
+    RUNTIME_CPU_START_TICKS=$(awk '{print $14 + $15}' "/proc/$PID/stat")
+    RUNTIME_CPU_START_NS=$(date +%s%N)
+fi
+
+python3 - "$LWIP_IP" "$PUBLIC_PORT" "$PAYLOAD_BYTES" "$SOCKET_TIMEOUT_SECONDS" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
 import hashlib
 import socket
@@ -154,9 +204,10 @@ import sys
 host = sys.argv[1]
 port = int(sys.argv[2])
 length = int(sys.argv[3])
+timeout = float(sys.argv[4])
 payload = bytes(((index * 31 + 7) & 0xFF) for index in range(length))
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    sock.settimeout(8.0)
+    sock.settimeout(timeout)
     sock.connect((host, port))
     sock.sendall(payload)
     sock.shutdown(socket.SHUT_WR)
@@ -186,6 +237,22 @@ if ! wait "$BACKEND_PID"; then
     exit 1
 fi
 BACKEND_PID=
+
+if [ "$CAPTURE_RUNTIME_CPU" -eq 1 ]; then
+    runtime_cpu_end_ticks=$(awk '{print $14 + $15}' "/proc/$PID/stat")
+    runtime_cpu_end_ns=$(date +%s%N)
+    runtime_cpu_elapsed_ticks=$((runtime_cpu_end_ticks - RUNTIME_CPU_START_TICKS))
+    runtime_cpu_elapsed_ns=$((runtime_cpu_end_ns - RUNTIME_CPU_START_NS))
+    printf 'clk_tck=%s start_ticks=%s end_ticks=%s elapsed_ticks=%s start_ns=%s end_ns=%s elapsed_ns=%s\n' \
+        "$RUNTIME_CPU_CLK_TCK" "$RUNTIME_CPU_START_TICKS" \
+        "$runtime_cpu_end_ticks" "$runtime_cpu_elapsed_ticks" \
+        "$RUNTIME_CPU_START_NS" "$runtime_cpu_end_ns" \
+        "$runtime_cpu_elapsed_ns" > "$OUT/runtime-cpu.txt"
+fi
+
+if [ "$NETEM_DELAY_MS" -gt 0 ]; then
+    tc -s qdisc show dev "$TUN_NAME" > "$OUT/netem-after.txt"
+fi
 
 # Client EOF means the bridge propagated backend EOF to lwIP. Give the same
 # single-owner loop a short chance to process the client's final ACK/close path;
