@@ -6,7 +6,7 @@
 
 1. **Pin and prove upstream provenance.** A normal product build consumes one exact lwIP commit. CI records that commit and hashes TCP files whose behavior matters to the project.
 2. **Validate contracts before behavior.** Shell syntax, baseline format, compile-time lwIP options, and source-surface boundaries fail before network tests.
-3. **Reuse exact artifacts once a milestone has a stable artifact boundary.** P0 builds once and smoke-tests the same artifact on another runner. P1/P2 still build milestone bring-up binaries inside privileged jobs; later release-oriented milestones should move toward explicit artifact handoff.
+3. **Reuse exact artifacts once a milestone has a stable artifact boundary.** P0 builds once and smoke-tests the same artifact on another runner. P1/P2/P3 still build milestone bring-up binaries inside privileged jobs; later release-oriented milestones should move toward explicit artifact handoff.
 4. **Make the product surface mechanical.** Source expansion is deliberate and milestone-qualified rather than inherited from broad upstream build targets.
 5. **Preserve diagnostics on failure.** Provenance, source manifests, symbols, ELF metadata, memory samples, packet captures, routes, counters, firewall state, conntrack state, and milestone reports are retained where applicable.
 6. **Separate pinned qualification from moving-upstream compatibility.** A scheduled canary tests current lwIP independently of the pinned production baseline.
@@ -103,6 +103,60 @@ bridge_reuse_no_ratcheting=ok
 
 That VmRSS result is only a lifecycle/no-ratcheting gate. It must not be reused as the P3 per-connection memory baseline.
 
+### `lwip-p3.yml`
+
+P3 is the dedicated memory/capacity/CPU qualification workflow. It builds the unchanged P2 bridge runtime against the pinned lwIP baseline and then uses separate runtime/backend and public-client network namespaces so public client Linux sockets cannot be mistaken for backend socket state.
+
+The retained P3 gate set is:
+
+- staged idle-established memory at 0/8/32/64/128 flows using `VmRSS` plus `smaps_rollup` RSS/PSS/private-clean/private-dirty/anonymous metrics;
+- exact backend socket counts and runtime-namespace `sockstat` observations beside every memory stage;
+- public-to-backend pressure with eight 1-MiB senders, a deliberately blocked backend, real backend `EAGAIN`, and 32-KiB/flow lwIP pending-pbuf residency;
+- backend-to-public pressure with eight 1-MiB senders, deliberately blocked public reads, small advertised receive windows, and real lwIP send-memory backpressure;
+- three rounds of 128 connect/idle/drain flows in one long-lived process, requiring fd count and backend established count to return to their ready floors;
+- a one-second idle CPU sample plus 2048 synchronous 64-byte request/echo operations across four flows;
+- a machine-readable constrained-host process-PSS model for 32/64/128-MiB planning targets.
+
+Behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed run `34805306193`, job `103855926986`; artifact `10332963208` retains 64 diagnostic files/directories across all P3 workloads.
+
+Final retained memory evidence included:
+
+```text
+ready_pss_kb=262
+idle_128_pss_kb=307
+max_idle_pss_kb_per_flow=0.3515625
+public_to_backend_active_pss_delta_kb_per_flow=36.5
+backend_to_public_active_pss_delta_kb_per_flow=37.125
+bridge_peak_pending_public_bytes=262144
+```
+
+Repeated drain evidence included:
+
+```text
+round_1_drain_pss_kb=310
+round_2_drain_pss_kb=310
+round_3_drain_pss_kb=315
+first_to_last_drain_pss_growth_kb=5
+max_drain_pss_delta_from_ready_kb=57
+ratchet_gate_kb=32
+warm_floor_gate_kb=128
+```
+
+CPU evidence included:
+
+```text
+idle_cpu_ms=0.0
+operations=2048
+payload_bytes=64
+work_cpu_ms=70.0
+work_cpu_us_per_operation=34.1796875
+wall_operations_per_second~=26066
+```
+
+The capacity model deliberately covers tcp-shift process PSS only. It excludes backend Linux kernel memory, backend application memory, public-client kernel memory, and provider-specific overhead. Its conservative 32-MiB planning case assigns only 25% of host RAM (8 MiB) to tcp-shift process PSS. With a 315-KiB warm fixed floor and about 37.52 KiB/flow fully-window-resident slope, 128 active flows project to 5118 KiB, leaving 3074 KiB (about 24.0 KiB/flow) for P4/P5 CC/sampler/pacer process structures.
+
+P3 therefore qualifies entry to P4. It is not a full-host 32-MiB connection-capacity guarantee.
+
 ## Retained P1 evidence
 
 ### IPv4 progression
@@ -155,15 +209,13 @@ The P2 artifact for run `34769960275` retains 72 diagnostic files covering the b
 
 ## Milestone CI growth
 
-### P3: memory and capacity — active next
+### P4: generic congestion-control boundary — active next
 
-Introduce staged connection counts chosen for 32/64/128-MiB target hosts. Record ready/idle RSS, PSS/private dirty, established-idle and active-flow residency, verified traffic, peak/post-drain floors, and repeated load/drain rounds in one long-lived process. A single fast RSS drop is not sufficient evidence by itself.
+P4 CI must keep the controller core independently buildable as pure C and prove that the lwIP adapter does not pull Linux runtime/host dependencies into the CC library. The first controller should be conventional and mechanically testable; controller events/policy outputs should be retained as structured evidence before BBR-specific logic is introduced.
 
-Use `/proc/<pid>/smaps_rollup` where available so PSS/private dirty can distinguish allocator/process growth from shared mappings. Keep public-flow counts, backend socket state, and traffic residency explicit beside each memory sample. Initial observations should remain reports until enough repeated runs exist to justify hard thresholds.
+### P5-P6: sampler, pacing, and BBR
 
-### P4-P6: congestion control, sampler, and pacing
-
-Congestion-control CI separates correctness from headline throughput. Retain structured traces for delivery-rate samples, RTT samples, cwnd, pacing rate, inflight/loss state, and mode transitions. Native Linux CUBIC/BBR runs are reference baselines, not byte-for-byte expected output.
+Congestion-control CI separates correctness from headline throughput. Retain structured traces for delivery-rate samples, RTT samples, cwnd, pacing rate, inflight/loss state, app-limited state, and mode transitions. Native Linux CUBIC/BBR runs are reference baselines, not byte-for-byte expected output.
 
 CPU and timer behavior become dedicated gates once the pacer exists. Tests run under explicit CPU quotas and include idle, small-packet, and high-BDP workloads so pacing accuracy cannot be obtained by busy spinning.
 

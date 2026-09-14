@@ -1,0 +1,114 @@
+name: lwIP P3 memory baseline
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p3.yml'
+      - 'CMakeLists.txt'
+      - 'src/bridge/**'
+      - 'src/runtime/**'
+      - 'src/lwip/**'
+      - 'src/host/**'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p3-memory-baseline.sh'
+      - 'scripts/p3-public-to-backend-residency.sh'
+      - 'scripts/p3-backend-to-public-residency.sh'
+      - 'scripts/p3-repeated-drain.sh'
+      - 'scripts/p3-cpu-baseline.sh'
+      - 'scripts/p3-capacity-model.py'
+      - 'docs/milestones/p3-memory-capacity.md'
+      - '.lwip-baseline'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  staged-memory-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install P3 dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            python3
+
+      - name: Validate P3 harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p3-memory-baseline.sh
+          sh -n scripts/p3-public-to-backend-residency.sh
+          sh -n scripts/p3-backend-to-public-residency.sh
+          sh -n scripts/p3-repeated-drain.sh
+          sh -n scripts/p3-cpu-baseline.sh
+          python3 -m py_compile scripts/p3-capacity-model.py
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          test -r /proc/self/smaps_rollup
+
+      - name: Build pinned bridge runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Measure staged idle connection memory
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-memory-baseline.sh
+
+      - name: Measure public-to-backend active residency
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-public-to-backend-residency.sh
+
+      - name: Measure backend-to-public active residency
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-backend-to-public-residency.sh
+
+      - name: Measure repeated load and drain floors
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-repeated-drain.sh
+
+      - name: Measure idle and small-operation CPU
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-cpu-baseline.sh
+
+      - name: Build constrained-host capacity model
+        run: |
+          python3 scripts/p3-capacity-model.py
+
+      - name: Upload P3 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p3-memory-baseline
+          path: |
+            .build/p3-memory-baseline
+            .build/p3-public-to-backend-residency
+            .build/p3-backend-to-public-residency
+            .build/p3-repeated-drain
+            .build/p3-cpu-baseline
+            .build/p3-capacity-model
+          if-no-files-found: warn

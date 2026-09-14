@@ -41,7 +41,7 @@ A separate privileged helper process is a possible later security boundary, not 
 
 ## Congestion-control plan
 
-The packet path and stream bridge are now runner-qualified. Before modifying congestion control, the next milestone establishes the actual memory/capacity envelope for 32/64/128-MiB targets. After that:
+The packet path, stream bridge, and pre-CC memory/capacity envelope are now runner-qualified. P3 leaves explicit userspace headroom for congestion-control metadata, so the active next milestone is the generic controller boundary. After that:
 
 1. introduce a platform-independent CC interface;
 2. establish high-resolution transport timestamps and per-segment delivery accounting;
@@ -71,7 +71,7 @@ ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
 P1b routed IPv6 Packet Too Big/PMTU qualification passed
 ```
 
-P2 now replaces the probe-only listener with a real public-stream-to-loopback bridge. IPv4 and IPv6 public flows share one bridge state machine and both connect to an ordinary nonblocking `127.0.0.1` backend socket. The bridge keeps public-to-backend bytes in lwIP pbufs until the backend accepts them and consumes backend bytes only after `tcp_write()` accepts them into lwIP, so backpressure is tied to transport windows rather than unbounded userspace buffers.
+P2 replaces the probe-only listener with a real public-stream-to-loopback bridge. IPv4 and IPv6 public flows share one bridge state machine and both connect to an ordinary nonblocking `127.0.0.1` backend socket. The bridge keeps public-to-backend bytes in lwIP pbufs until the backend accepts them and consumes backend bytes only after `tcp_write()` accepts them into lwIP, so backpressure is tied to transport windows rather than unbounded userspace buffers.
 
 Behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, the full P1 regression run `34769960302`, and P2 run `34769960275`. P2 qualifies 128-KiB IPv4 and IPv6 bidirectional integrity, a 1-MiB blocked-peer gate, backend-first half-close without RDHUP spin, backend refusal recovery, public/backend reset recovery, eight simultaneous flows, explicit cleanup with an active flow, and 64 sequential reuse flows.
 
@@ -87,7 +87,11 @@ rss_final_kb=1800
 bridge_reuse_no_ratcheting=ok
 ```
 
-Those RSS values are only a P2 lifecycle/no-ratcheting gate, not the product capacity baseline. P3 is now the active milestone: measure idle RSS/PSS/private dirty, incremental established-flow memory, controlled active-flow residency, repeated load/drain floors, connection-count capacity, and CPU for 32/64/128-MiB targets.
+P3 now runner-qualifies the actual pre-CC userspace memory and CPU envelope. Behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` passed P3 run `34805306193`. The final run measured 262 KiB ready PSS and 307 KiB at 128 idle flows. Under controlled window pressure, public-to-backend residency added 36.5 KiB/flow and backend-to-public added 37.125 KiB/flow. Three rounds of 128 flows returned fd count to 5 and showed only 5 KiB first-to-last drained PSS growth.
+
+The conservative capacity model uses a 315-KiB warm fixed PSS and about 37.52 KiB/flow for a fully-window-resident flow. In its P4 admission scenario, tcp-shift gets only 25% of a 32-MiB host (8 MiB process-PSS budget): 128 active flows project to about 5.12 MiB, leaving about 3.07 MiB, or 24.0 KiB/flow, for future CC/sampler/pacer process structures. Backend kernel TCP memory, backend application memory, public-client kernel memory, and provider-specific overhead are deliberately excluded, so this is not a full-host capacity guarantee.
+
+P3 also retained 0 runtime CPU ticks over a one-second idle sample and about 34.18 us of runtime CPU per operation for 2048 four-flow 64-byte request/echo operations on the GitHub runner. These are regression baselines, not provider performance claims.
 
 This remains GitHub-runner qualification, not yet provider/OpenVZ qualification.
 
@@ -98,6 +102,7 @@ Start here for project state:
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and agent handoff contract;
 - [`docs/milestones/p1-l3-tun.md`](docs/milestones/p1-l3-tun.md) — completed P1 packet-path state and evidence;
-- [`docs/milestones/p2-bridge.md`](docs/milestones/p2-bridge.md) — completed P2 bridge state and evidence.
+- [`docs/milestones/p2-bridge.md`](docs/milestones/p2-bridge.md) — completed P2 bridge state and evidence;
+- [`docs/milestones/p3-memory-capacity.md`](docs/milestones/p3-memory-capacity.md) — completed P3 memory/capacity state and evidence.
 
-> Status: P0/P1/P2 runner-qualified; P3 memory/capacity baseline next. Do not use on production traffic.
+> Status: P0/P1/P2/P3 runner-qualified; P4 generic congestion-control boundary next. Do not use on production traffic.
