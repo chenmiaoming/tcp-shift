@@ -126,7 +126,9 @@ Final behavior head:
 046152dbaba56a0be3b1d2a1902fee6f2bbf9044
 ```
 
-All provenance/P0/P1/P2/P3/P4/P5/P5c workflows passed on that same head. P5c run `34870859911`, job `104066140125`, artifact `10358951402` retained the scheduler, lifecycle, epoll, real bridge, multi-flow, fast-loss, RTO, and high-BDP gates.
+PR #13 was squash-merged into `main` as `90c6601fb4cbcfc50cbeff41e47310b510237cc2`. The final PR head `8c3ca8cfab5664c6362259e03b3a233ff230bd10` also passed all eight relevant workflows; the behavior qualification remains anchored at the retained evidence head above.
+
+All provenance/P0/P1/P2/P3/P4/P5/P5c workflows passed on that same behavior head. P5c run `34870859911`, job `104066140125`, artifact `10358951402` retained the scheduler, lifecycle, epoll, real bridge, multi-flow, fast-loss, RTO, and high-BDP gates.
 
 Representative results:
 
@@ -165,6 +167,7 @@ Start here:
 - [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and handoff contract;
-- [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — completed P5 evidence.
+- [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — completed P5 evidence;
+- [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff.
 
-> Status: P0-P5 are GitHub-runner-qualified; P6 tcp-shift BBR is the next development milestone. Provider/OpenVZ and production qualification remain separate. Do not use on production traffic.
+> Status: P0-P5 are GitHub-runner-qualified and P5c is merged; P6 tcp-shift BBR is the next development milestone. Provider/OpenVZ and production qualification remain separate. Do not use on production traffic.
