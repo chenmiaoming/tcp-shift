@@ -19,7 +19,17 @@ struct tcp_shift_reno_state {
     uint32_t min_cwnd_bytes;
 };
 
+/* P5c qualification policy: identical Reno cwnd/ssthresh semantics while
+ * publishing a caller-selected fixed nonzero pacing rate. Keeping it in the
+ * pure-C policy boundary proves that pacing is driven through the generic
+ * policy output rather than an lwIP/runtime test hook. */
+struct tcp_shift_fixed_pacing_reno_state {
+    struct tcp_shift_reno_state reno;
+    uint64_t pacing_rate_bytes_per_sec;
+};
+
 extern const struct tcp_shift_cc_ops tcp_shift_reno_ops;
+extern const struct tcp_shift_cc_ops tcp_shift_fixed_pacing_reno_ops;
 
 #ifdef __cplusplus
 }
