@@ -15,11 +15,11 @@
 9. Make harness failures fail closed: parser/check failures must propagate nonzero status even when summaries are retained.
 10. Pacing/timing CI must reject busy spin and periodic-polling designs that inflate wakeups.
 
-## `lwip-upstream.yml`
+## Upstream provenance
 
 The production baseline is `.lwip-baseline`, currently pinning lwIP commit `d08f4773edd0182b7910fc8f046eed82ffcd67c9`.
 
-`scripts/fetch-lwip.sh` checks out that exact commit, records `.build/upstream.env`, and hashes critical pristine TCP sources before applying `patches/lwip-p4-cc-hooks.patch`.
+`scripts/fetch-lwip.sh` checks out that exact commit, records `.build/upstream.env`, hashes critical pristine TCP sources, then applies `patches/lwip-p4-cc-hooks.patch`.
 
 The provenance workflow proves:
 
@@ -30,39 +30,15 @@ The provenance workflow proves:
 - no untracked dependency files exist;
 - an independent worktree created from the same pinned commit, after applying the repository patch, is byte-identical to all modified files in the build workspace.
 
-P5a continues to use the same three-file patch boundary; it adds send/ACK observation calls only inside already-controlled `tcp_in.c` / `tcp_out.c`.
+P5b remains within this same three-file patch boundary. It adds host-order sequence information to the existing successful-TX observation; it does not add a patched upstream file.
 
-## `lwip-p0.yml`
+## P0/P1/P2 regression layers
 
-P0 builds the constrained lwIP source allowlist with warnings-as-errors, runs compile-time configuration contracts, source-surface checks, binary-size/RSS gates, and stages an exact runtime artifact for a separate smoke job.
+P0 builds the constrained dual-stack `NO_SYS=1` lwIP source allowlist with warnings-as-errors, configuration/source contracts, binary-size/RSS gates, and staged smoke artifacts. The two diagnostics caused by intentionally disabled RS/SLAAC in pinned `nd6.c` remain visible but are source-specifically nonfatal; project code remains under `-Werror`.
 
-The pinned `nd6.c` unit emits two diagnostics when RS/SLAAC are deliberately disabled. Only those upstream diagnostics are downgraded from errors; they remain visible. Project code and other warnings stay under `-Werror`.
+P1 qualifies the privileged L3 packet/lifecycle path: real TUN TX `EAGAIN`, bounded FIFO, RX drops, IPv4/IPv6 ICMP/TCP, exact nft ingress, forwarding preflights, extension-header-safe IPv6 TCP traversal, cleanup/collision invariants, and routed ICMPv6 PTB learning.
 
-## `lwip-next-canary.yml`
-
-The scheduled canary tests the constrained build against moving upstream lwIP independently from the pinned production baseline. A canary failure does not change `.lwip-baseline`.
-
-## `lwip-p1.yml`
-
-P1 is the privileged L3 packet/lifecycle workflow. It retains:
-
-- real TUN TX `EAGAIN` and bounded FIFO qualification;
-- nonfatal oversized RX drops;
-- direct IPv4 ICMP/TCP, MTU/checksum behavior;
-- product-owned IPv4 nft ingress lifecycle;
-- direct static IPv6 ICMP/TCP and MTU behavior;
-- product-owned IPv6 exact DNAT/conntrack;
-- actual Hop-by-Hop extension-header TCP traversal;
-- forwarding-disabled preflight/collision/cleanup invariants;
-- routed ICMPv6 PTB learning and subsequent TCP MSS reduction.
-
-## `lwip-p2.yml`
-
-P2 qualifies the real public-stream -> `127.0.0.1` backend bridge for both public address families.
-
-The gate set includes natural IPv4/IPv6 echo, real bidirectional backpressure, half-close without `EPOLLRDHUP` spin, refusal/reset recovery, concurrent flows, active-flow shutdown, and sequential reuse without sustained VmRSS ratcheting.
-
-P4 overlays a controller-ownership gate on every P2 workload:
+P2 qualifies the real public-stream -> `127.0.0.1` bridge for IPv4/IPv6, bidirectional backpressure, half-close, refusal/reset recovery, concurrent flows, active shutdown, and reuse. P4 overlays controller ownership on every P2 workload:
 
 ```text
 cc_bindings == bridge_accepts
@@ -71,155 +47,152 @@ cc_ack_events > 0
 cc_controller_errors = 0
 ```
 
-This prevents a green bridge test from silently exercising native lwIP congestion policy.
-
-## `lwip-p3.yml`
+## P3 resource qualification
 
 P3 measures tcp-shift process residency and CPU separately from backend Linux kernel/application memory. Runtime/backend and public-client sockets are separated in namespaces so socket-state accounting remains interpretable.
 
 Workloads include 0/8/32/64/128 idle flows, both active-window directions, three 128-flow connect/idle/drain rounds, idle/small-operation CPU, and constrained-host process-PSS modeling.
 
-Final P4 adapter baseline:
+Current P5b rerun, `34843587033`, job `103974029078`, artifact `10346739278`:
 
 ```text
-warm fixed process PSS: 335 KiB
-fully-window-resident slope: 37.148438 KiB/flow
-128 active projected PSS: 5090 KiB
-8-MiB process budget remaining: 3102 KiB = 24.234 KiB/flow
+warm fixed process PSS: 347 KiB
+idle 128-flow PSS delta: 65 KiB
+public->backend active: 36.5 KiB/flow
+backend->public active: 37.125 KiB/flow
+conservative active slope: 37.710938 KiB/flow
+128 active projected PSS: 5174 KiB
+8-MiB process budget remaining: 3018 KiB = 23.578 KiB/flow
+3x128 first->last drain growth: 5 KiB
+max warm-floor delta: 77 KiB
+idle CPU: 0 ticks/s
 ```
 
-P5a rerun:
+The model remains tcp-shift process PSS only. Backend kernel/application and provider memory are excluded.
 
-```text
-warm fixed process PSS: 343 KiB
-fully-window-resident slope: 37.679688 KiB/flow
-128 active projected PSS: 5166 KiB
-8-MiB process budget remaining: 3026 KiB = 23.641 KiB/flow
-```
+## P4 controller qualification
 
-The model remains tcp-shift process PSS only. It is not a full-host connection-capacity guarantee.
+`pure-c-contract` builds `src/cc/` as its own CMake project with `-ffreestanding -fno-builtin`, an explicit include allowlist, warnings-as-errors, and zero undefined archive symbols.
 
-## `lwip-p4.yml`
-
-P4 has two independent jobs.
-
-### `pure-c-contract`
-
-`scripts/validate-p4-cc.sh` builds `src/cc/` as its own CMake project with `-ffreestanding -fno-builtin`, an explicit include allowlist, warnings-as-errors, and a zero-undefined-symbol archive gate.
-
-The conventional Reno contract covers init, slow start, congestion avoidance, loss, timeout, MSS changes, transport cwnd limits, saturation, invalid arguments, failed-init handle safety, explicit cwnd/ssthresh publication, and no pacing request.
-
-### `integrated-recovery`
-
-This job builds `tcp-shift-p2` against the pinned+controlled-patch lwIP tree and runs real TUN fault injection.
-
-Retained P4 evidence includes:
+`integrated-recovery` builds the real P2 runtime and uses external TUN packet loss. Retained P4 evidence includes:
 
 ```text
 fast-loss: payload_bytes=262144 cc_loss_events=1 cc_timeout_events=0 recovery=ok
 RTO:       payload_bytes=262144 cc_loss_events=0 cc_timeout_events=2 recovery=ok
 ```
 
-Both require exact stream integrity and external packet drops. They never call controller loss/RTO functions directly.
+The tests do not call controller loss/RTO handlers directly.
 
-## `lwip-p5.yml`: P5a delivery ledger
+## P5a delivery-ledger qualification
 
-P5a builds the real P2 runtime with send/fully-ACKed segment observation hooks and qualifies the delivery ledger through three workloads:
+P5a qualified a retransmission-safe lazy sidecar through natural, fast-loss, and RTO traffic. Final behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38`, run `34821205375`, job `103903019956`, artifact `10338108552` retained exact unique 262144-byte delivery with zero live slots/errors.
 
-1. natural 256-KiB echo;
-2. the already-qualified fast-loss fault injection;
-3. the already-qualified RTO fault injection.
+The first P5 workflow was falsely green despite logging a qualification failure. A greedy parser matched `live_slots` inside `peak_live_slots`, and a `check_delivery | tee` pipeline masked the checker exit status. Qualification was withheld until exact-token parsing and fail-closed summary generation were in place. Hidden `.build` artifacts are explicitly included in uploads.
 
-Every workload requires:
+## P5b rate-sampler qualification — complete
+
+`.github/workflows/lwip-p5.yml` is now the P5 rate-sampler workflow. It builds the real P2 runtime and runs four fail-closed workloads:
+
+1. natural 256-KiB delivery;
+2. fast-loss fault injection;
+3. RTO fault injection;
+4. an event-driven application-pause workload.
+
+The natural/loss/RTO checker requires both delivery and sampler invariants:
 
 ```text
 delivered_payload_bytes == 262144
-metadata_bytes_per_slot == 32
+metadata_bytes_per_slot == 56
 metadata_alloc_failures == 0
 metadata_misses == 0
 metadata_abandoned_slots == 0
 clock_errors == 0
 timestamp_regressions == 0
 live_slots == 0
+rate_samples > 0
+valid_samples > 0
+invalid_samples == 0
+max_rate_bytes_per_sec > 0
+last_interval_ns > 0
+last_ack_interval_ns > 0
 ```
 
-The natural path requires zero retransmit events. Fast-loss/RTO require at least one retransmit event while `acked_segment_events == first_tx_events` and delivered bytes remain unique.
+Fault paths also require real retransmission metadata. RTO must produce at least one retransmitted rate candidate; the retained run produced three.
 
-Final P5a behavior head `ce6c89f399bed3535be52138e3c96ea2ea061b38` passed:
+Final behavior head `327efe7e29adfc230e7d201b466f2bd4980e976c` passed:
 
 ```text
-upstream provenance  34821205386  success
-P0                   34821205401  success
-P1                   34821205357  success
-P2                   34821205366  success
-P3                   34821205396  success
-P4                   34821205367  success
-P5                   34821205375  success
+upstream provenance  34843587049  success
+P0                   34843587091  success
+P1                   34843587026  success
+P2                   34843587113  success
+P3                   34843587033  success
+P4                   34843587045  success
+P5                   34843586990  success
 ```
 
-P5 run `34821205375`, job `103903019956`, artifact `10338108552` retained:
+P5 run `34843586990`, job `103974027867`, artifact `10347003115` retained:
 
 ```text
-normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
-fast-loss: first_tx=180 retransmit=1 acked=180 delivered=262144 live_slots=0
-RTO:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
+normal:
+  samples=138 valid=138 invalid=0
+  delivered=262144 max_rate=696998778 B/s
+
+fast-loss:
+  samples=121 valid=121 invalid=0
+  retransmit_events=1 cc_loss_events=1 recovery=ok
+
+RTO:
+  samples=135 valid=135 invalid=0
+  retransmit_events=4 retransmitted_rate_samples=3
+  cc_timeout_events=2 recovery=ok
 ```
 
-### Harness failure found before qualification
+### Event-driven app-limited gate
 
-The first P5 workflow run was marked success by GitHub even though the log printed `P5 delivery-ledger qualification failed`. Two harness defects caused the false green:
+`scripts/p5-rate-sampler-smoke.sh` uses a backend that sends 4096 bytes, pauses for 0.8 seconds, then sends 131072 bytes. The bridge marks app-limited only when the real `MSG_PEEK | MSG_DONTWAIT` path reaches `EAGAIN`; the adapter still checks transport capacity/no unsent data before setting its delivered+inflight marker.
 
-- a greedy `sed` expression looking for `live_slots=` matched the later token `peak_live_slots=`;
-- `check_delivery ... | tee ...` returned `tee`'s zero status rather than the failed checker's status under POSIX `sh`.
+During a 300-ms interval entirely inside the backend pause, the test samples `/proc/$PID/stat`. Hard gate: CPU delta <= 1 tick. Retained result:
 
-Qualification was withheld. The harness now parses exact whitespace-delimited `key=value` tokens with `awk`, writes the summary directly from `check_delivery`, then `cat`s it. A checker failure therefore terminates the step nonzero.
+```text
+client/backend payload: 135168 bytes exact
+rate_samples=71 valid_samples=71 invalid_samples=0
+app_limited_samples=7
+app_limited_enters=2
+app_limited_exits=2
+max_rate_bytes_per_sec=633180764
+pause_cpu_ticks=0
+event_driven=ok
+```
 
-The artifact upload also originally found no files because `.build` is hidden and `actions/upload-artifact` excluded hidden paths. P5 now sets `include-hidden-files: true`, and the final run retained the full diagnostics.
+This is evidence that app-limited classification does not require a periodic product polling loop.
 
-This failure is part of the CI evidence: workflow conclusion alone is not accepted when log semantics contradict the intended gate.
+## P5c CI: event-driven pacing — next
 
-## P5b CI: rate sample + app-limited — next
+Pacing CI must prove timing correctness and efficient wakeup behavior. The target implementation is one process-wide deadline heap plus one one-shot `CLOCK_MONOTONIC` timerfd registered in the existing epoll owner.
 
-P5b must keep all prior gates and retain structured rate-sample evidence for:
+Required observations:
 
-- newly delivered bytes per ACK;
-- delivery interval and send interval;
-- selected bytes/second sample and validity flag;
-- delayed ACK / ACK aggregation;
-- ACKs covering multiple segments;
-- retransmitted segments without duplicate delivered accounting;
-- partial ACK handling;
-- latest valid RTT observation;
-- prior inflight/loss observations;
-- app-limited enter/exit state.
-
-Normal, delayed/aggregated ACK, fast-loss, RTO, and app-limited workloads must produce inspectable sample traces. A rate value is not qualified merely because it is nonzero.
-
-## P5c CI: event-driven pacing
-
-Pacing CI must prove both timing correctness and efficient wakeup behavior.
-
-Target implementation is one process-wide deadline heap plus one one-shot `CLOCK_MONOTONIC` timerfd registered in the existing epoll owner.
-
-Required observations include:
-
-- timerfd arm/disarm/rearm counts;
+- timerfd create/arm/disarm/rearm counts;
 - timer expirations and pacing wakeups;
 - packets/bytes released per wakeup;
 - requested vs actual send deadline and lateness distribution;
-- heap size/peak size;
+- heap current/peak size;
+- stale/cancelled entry handling;
 - idle epoll wakeups with no paced traffic;
-- CPU under idle, small-packet, and high-BDP loads.
+- CPU under idle, small-packet, and high-BDP loads;
+- P3 memory deltas for scheduler state.
 
 Hard design constraints:
 
-- no one-timerfd-per-flow model;
+- one process-wide timerfd, never one per flow;
 - no periodic 1-ms/10-ms tick;
 - no busy spin;
-- timer is disarmed when no pacing deadline exists;
-- TUN/backend readiness remains event-driven.
+- timer disarmed when no pacing deadline exists;
+- TUN/backend readiness remains event-driven;
+- timerfd/epoll objects remain outside `src/cc/`.
 
-A later experiment may replace epoll's lwIP timeout argument with one unified one-shot timerfd for both lwIP and pacing deadlines, but only if regression CI proves equal timeout semantics and fewer/equal idle wakeups.
+A deterministic integration controller/test policy may request a fixed nonzero pacing rate to qualify scheduler mechanics before BBR exists. The production Reno baseline must continue to request zero pacing and preserve the unpaced regression path.
 
 ## Gate policy
 
