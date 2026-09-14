@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **active**.
+Status: **active; standalone policy-library increment runner-qualified, lwIP adapter next**.
 
 ## Goal
 
@@ -20,7 +20,7 @@ P4 is successful when congestion-control policy can be built and tested as pure 
 
 Controller state is caller-owned. The controller consumes transport observations and publishes policy. P5 may extend ACK observations with qualified delivery-rate samples, but the runtime remains responsible for timestamps and pacing mechanics.
 
-## First increment: standalone policy library
+## First increment: standalone policy library — complete
 
 The initial `src/cc/` API contains:
 
@@ -51,9 +51,20 @@ The conventional behavior contract covers:
 
 The script also scans every C/header include in `src/cc/` against an explicit allowlist. This prevents a later convenience include from silently coupling the policy library to lwIP or Linux.
 
-The standalone archive size is an object-code diagnostic, not a P3 process-memory replacement. Once the adapter is linked into the runtime, real process PSS must be remeasured against P3.
+Behavior head `e6bbfcc2104d63ff9d8b93653e3f7276c409baf8` passed P4 run `34806148317`, job `103858312293`; artifact `10333074163` retained the standalone evidence. The key output was:
 
-## lwIP adapter plan
+```text
+cc_contract=ok controller=reno state_bytes=16 pacing=none
+cc_boundary=pure-c
+controller=reno
+state_bytes=16
+external_symbols=0
+P4 standalone congestion-control boundary passed
+```
+
+P0 run `34806148285` and full P1 run `34806148306` also passed on the same head. This qualifies the standalone generic boundary only. The archive size is an object-code diagnostic, not a P3 process-memory replacement; native lwIP still owns the public-side cwnd until the adapter increment is qualified.
+
+## Next increment: lwIP adapter
 
 Pinned lwIP currently owns cwnd directly in several places:
 
@@ -63,16 +74,16 @@ Pinned lwIP currently owns cwnd directly in several places:
 - retransmission timeout handling in `tcp.c` reduces ssthresh/cwnd;
 - `tcp_out.c` gates transmission with `min(snd_wnd, cwnd)`.
 
-P4 must not fork these paths wholesale. The next increment will identify the smallest explicit hook/adapter surface that lets the conventional controller own the same decisions while lwIP keeps retransmission, recovery, queueing, and sequence-space mechanics.
+P4 must not fork these paths wholesale. The next increment will identify the smallest explicit hook/adapter surface that lets the conventional controller own policy decisions while lwIP keeps retransmission, recovery, queueing, sequence-space, packet output, and SACK/recovery mechanics.
 
-The adapter may depend on lwIP; `src/cc/` may not. Adapter state cost and any `tcp_pcb`/extension-state cost must be measured against the P3 24-KiB/active-flow planning headroom.
+The adapter may depend on lwIP; `src/cc/` may not. Adapter state cost and any `tcp_pcb`/extension-state cost must be measured against the P3 24-KiB/active-flow planning headroom. Integrated CI must demonstrate real public-side traffic, ACK/loss/timeout transitions, and unchanged dual-stack/P2 bridge behavior where affected.
 
 ## Exit criteria
 
 P4 is complete when all of the following are retained in CI:
 
-- standalone pure-C `tcp_shift_cc` library with no lwIP/Linux dependency and no unresolved external symbol;
-- conventional controller state-machine contracts;
+- standalone pure-C `tcp_shift_cc` library with no lwIP/Linux dependency and no unresolved external symbol — **qualified**;
+- conventional controller state-machine contracts — **qualified**;
 - a narrow, documented lwIP adapter/hook surface rather than scattered CC policy;
 - conventional controller ownership of public-side cwnd through the adapter under real P2 bridge traffic;
 - loss/timeout/ACK state-transition evidence through the integrated transport path;
