@@ -83,12 +83,18 @@ target_include_directories(tcp_shift_l3 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_l3 PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_l3 PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_pacer STATIC
+    src/runtime/pacer.c
+)
+target_include_directories(tcp_shift_pacer PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp_shift_pacer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(tcp_shift_runtime STATIC
     src/runtime/lwip_loop.c
 )
 target_include_directories(tcp_shift_runtime PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_runtime PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3)
+target_link_libraries(tcp_shift_runtime PUBLIC tcp_shift_l3 tcp_shift_pacer)
 
 add_library(tcp_shift_probe STATIC
     src/lwip/probe_listener.c
@@ -221,3 +227,24 @@ add_executable(tcp-shift-p1-ipv6-ext-header-probe
 target_compile_options(tcp-shift-p1-ipv6-ext-header-probe PRIVATE
     -Wall -Wextra -Wpedantic -Werror
 )
+
+add_executable(tcp-shift-p5-pacer-contract
+    src/tests/pacer_scheduler_test.c
+)
+target_include_directories(tcp-shift-p5-pacer-contract PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp-shift-p5-pacer-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-p5-pacer-contract PRIVATE tcp_shift_pacer)
+
+add_executable(tcp-shift-p5-pacer-loop-contract
+    src/tests/pacer_loop_test.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p5-pacer-loop-contract PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p5-pacer-loop-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p5-pacer-loop-contract PRIVATE tcp_shift_runtime)
+target_link_options(tcp-shift-p5-pacer-loop-contract PRIVATE -Wl,--gc-sections)
