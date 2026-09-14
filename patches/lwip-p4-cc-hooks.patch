@@ -76,17 +76,18 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -1618,5 +1618,9 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
+@@ -1618,5 +1618,10 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
    err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
                       pcb->tos, IP_PROTO_TCP, netif);
    NETIF_RESET_HINTS(netif);
 +
 +  if (err == ERR_OK) {
-+    tcp_shift_lwip_cc_hook_segment_tx(pcb, seg, seg->len);
++    tcp_shift_lwip_cc_hook_segment_tx(pcb, seg,
++                                      lwip_ntohl(seg->tcphdr->seqno), seg->len);
 +  }
  
  #if TCP_CHECKSUM_ON_COPY
-@@ -1796,19 +1800,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1801,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
