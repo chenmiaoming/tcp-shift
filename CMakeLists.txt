@@ -109,6 +109,12 @@ add_library(tcp_shift_bridge STATIC
 )
 target_include_directories(tcp_shift_bridge PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
+# Only the bridge's raw-API listener is controller-owned in P4. Compile its
+# tcp_accept() call to the adapter wrapper; the adapter target itself sees and
+# calls the real lwIP tcp_accept(), so P0/P1 remain unbound/native.
+target_compile_definitions(tcp_shift_bridge PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept
+)
 target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
