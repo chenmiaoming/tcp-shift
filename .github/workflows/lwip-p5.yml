@@ -1,0 +1,101 @@
+name: lwIP P5 delivery ledger
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/lwip-p5.yml'
+      - 'CMakeLists.txt'
+      - 'src/lwip/**'
+      - 'src/lwipopts.h'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p2-bridge-smoke.sh'
+      - 'scripts/p4-cc-recovery-smoke.sh'
+      - 'scripts/p5-delivery-ledger-smoke.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+      - 'docs/milestones/p5-rate-sampler-pacer.md'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  delivery-ledger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install integration dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            libcap2-bin \
+            python3
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Validate P5 harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p2-bridge-smoke.sh
+          sh -n scripts/p4-cc-recovery-smoke.sh
+          sh -n scripts/p5-delivery-ledger-smoke.sh
+
+      - name: Build pinned bridge runtime with delivery hooks
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Grant TUN administration capability for natural delivery path
+        run: |
+          sudo setcap cap_net_admin+ep .build/tcp-shift-p2
+          getcap .build/tcp-shift-p2 | tee .build/p5-capability.txt
+          grep -F 'cap_net_admin=ep' .build/p5-capability.txt
+
+      - name: Qualify natural unique delivery accounting
+        run: sh scripts/p5-delivery-ledger-smoke.sh normal
+
+      - name: Qualify metadata reuse across fast retransmit
+        run: |
+          sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p5-delivery-ledger-smoke.sh fast-loss
+
+      - name: Qualify metadata reuse across RTO retransmission
+        run: |
+          sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p5-delivery-ledger-smoke.sh rto
+
+      - name: Upload P5 diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p5-delivery-ledger
+          path: |
+            .build/p5-capability.txt
+            .build/p5-delivery-*-summary.txt
+            .build/p2-bridge-ci
+            .build/p4-fast-loss-ci
+            .build/p4-rto-ci
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
+            .build/lwip-p4-cc-hooks.applied.diff
+          if-no-files-found: warn
