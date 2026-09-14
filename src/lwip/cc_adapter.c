@@ -8,6 +8,7 @@
 
 #define TCP_SHIFT_LWIP_CC_MAX_LISTENERS 2U
 #define TCP_SHIFT_DELIVERY_INITIAL_SLOTS 8U
+#define TCP_SHIFT_NSEC_PER_SEC UINT64_C(1000000000)
 
 struct tcp_shift_lwip_cc_listener_binding {
     struct tcp_pcb *listener;
@@ -18,12 +19,21 @@ struct tcp_shift_lwip_cc_listener_binding {
 
 /* P5 keeps delivery metadata outside upstream struct tcp_seg. The existing
  * segment pointer is stable while a sent segment moves between unacked/unsent
- * during fast/RTO retransmission, so it is a sufficient sidecar key. */
+ * during fast/RTO retransmission. Sequence/payload progress is copied into the
+ * sidecar on first transmission so partial ACK accounting never dereferences
+ * the private segment layout. */
 struct tcp_shift_delivery_slot {
     const void *segment;
     uint64_t first_tx_ns;
+    uint64_t first_tx_mstamp_at_send_ns;
     uint64_t delivered_at_send;
     uint64_t delivered_mstamp_at_send_ns;
+    uint32_t seq_start;
+    uint32_t prior_inflight_bytes;
+    uint16_t payload_bytes;
+    uint16_t acked_payload_bytes;
+    uint8_t app_limited;
+    uint8_t retransmitted;
 };
 
 static struct tcp_shift_lwip_cc_listener_binding
@@ -96,7 +106,7 @@ static uint64_t tcp_shift_delivery_now_ns(struct tcp_shift_lwip_cc_adapter *adap
         }
         return 0U;
     }
-    value = (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+    value = (uint64_t)now.tv_sec * TCP_SHIFT_NSEC_PER_SEC +
             (uint64_t)now.tv_nsec;
     if (adapter != NULL) {
         if (adapter->delivery_last_event_ns != 0U &&
@@ -270,14 +280,53 @@ static void tcp_shift_delivery_release_all(
     adapter->delivery_live = 0U;
 }
 
+static uint32_t tcp_shift_delivery_outstanding_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    const struct tcp_shift_delivery_slot *slots =
+        (const struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+    uint64_t total = 0U;
+    uint16_t index;
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        if (slots[index].segment != NULL &&
+            slots[index].payload_bytes > slots[index].acked_payload_bytes) {
+            total += (uint32_t)(slots[index].payload_bytes -
+                                slots[index].acked_payload_bytes);
+        }
+    }
+    return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
+/* Outstanding windows are far below 2^31 bytes in the constrained profile,
+ * so signed modular distance gives a wrap-safe position of ack_seq relative to
+ * this slot's first payload byte. */
+static uint16_t tcp_shift_delivery_acked_payload(
+    const struct tcp_shift_delivery_slot *slot,
+    uint32_t ack_seq)
+{
+    int32_t distance = (int32_t)(ack_seq - slot->seq_start);
+
+    if (distance <= 0) {
+        return 0U;
+    }
+    if ((uint32_t)distance >= slot->payload_bytes) {
+        return slot->payload_bytes;
+    }
+    return (uint16_t)distance;
+}
+
 static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                                              struct tcp_pcb *pcb,
                                              const void *segment,
+                                             u32_t seq_start,
                                              u16_t payload_bytes)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_delivery_slot *slot;
+    uint32_t prior_inflight;
     uint64_t now_ns;
+    unsigned start_of_flight;
 
     if (adapter == NULL || adapter->pcb != pcb || segment == NULL ||
         payload_bytes == 0U) {
@@ -294,21 +343,44 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
 
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
+        slot->retransmitted = 1U;
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
         }
         return;
     }
 
+    start_of_flight = adapter->delivery_live == 0U;
+    if (start_of_flight != 0U) {
+        adapter->rate_first_tx_mstamp_ns = now_ns;
+        adapter->delivered_mstamp_ns = now_ns;
+    }
+
     slot = tcp_shift_delivery_create(adapter, segment);
     if (slot == NULL) {
         return;
     }
+
+    prior_inflight = pcb->snd_nxt - pcb->lastack;
+    if (UINT32_MAX - prior_inflight < payload_bytes) {
+        prior_inflight = UINT32_MAX;
+    } else {
+        prior_inflight += payload_bytes;
+    }
+
     slot->first_tx_ns = now_ns;
+    slot->first_tx_mstamp_at_send_ns =
+        adapter->rate_first_tx_mstamp_ns != 0U
+            ? adapter->rate_first_tx_mstamp_ns
+            : now_ns;
     slot->delivered_at_send = adapter->delivered_bytes;
     slot->delivered_mstamp_at_send_ns =
         adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
                                            : now_ns;
+    slot->seq_start = seq_start;
+    slot->prior_inflight_bytes = prior_inflight;
+    slot->payload_bytes = payload_bytes;
+    slot->app_limited = adapter->app_limited_until_bytes != 0U;
     if (adapter->stats != NULL) {
         adapter->stats->delivery_first_tx_events++;
     }
@@ -321,7 +393,6 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_delivery_slot *slot;
-    uint64_t now_ns;
 
     if (adapter == NULL || adapter->pcb != pcb || segment == NULL ||
         payload_bytes == 0U) {
@@ -339,23 +410,179 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
         return;
     }
 
+    /* The ACK policy hook runs before upstream frees acknowledged segments.
+     * A segment reaching this callback must therefore already have had its
+     * complete payload charged exactly once by the ACK-range accounting. */
+    if (slot->payload_bytes != payload_bytes ||
+        slot->acked_payload_bytes != slot->payload_bytes) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_metadata_misses++;
+        }
+    }
+    tcp_shift_delivery_release_slot(adapter, slot);
+}
+
+static uint64_t tcp_shift_rate_bytes_per_second(uint32_t delivered_bytes,
+                                                 uint64_t interval_ns)
+{
+    if (delivered_bytes == 0U || interval_ns == 0U) {
+        return 0U;
+    }
+    return ((uint64_t)delivered_bytes * TCP_SHIFT_NSEC_PER_SEC) / interval_ns;
+}
+
+static void tcp_shift_rate_record_stats(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_shift_cc_rate_sample *rate)
+{
+    struct tcp_shift_lwip_cc_stats *stats = adapter->stats;
+
+    if (stats == NULL) {
+        return;
+    }
+    stats->rate_samples++;
+    if ((rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_VALID) != 0U) {
+        stats->rate_valid_samples++;
+    } else {
+        stats->rate_invalid_samples++;
+    }
+    if ((rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED) != 0U) {
+        stats->rate_app_limited_samples++;
+    }
+    if ((rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U) {
+        stats->rate_retransmitted_samples++;
+    }
+    stats->rate_last_bytes_per_sec = rate->delivery_rate_bytes_per_sec;
+    if (rate->delivery_rate_bytes_per_sec > stats->rate_max_bytes_per_sec) {
+        stats->rate_max_bytes_per_sec = rate->delivery_rate_bytes_per_sec;
+    }
+    stats->rate_last_interval_ns = rate->interval_ns;
+    stats->rate_last_send_interval_ns = rate->send_interval_ns;
+    stats->rate_last_ack_interval_ns = rate->ack_interval_ns;
+    stats->rate_last_rtt_ns = rate->rtt_ns;
+    stats->rate_last_delivered_bytes = rate->delivered_bytes;
+    stats->rate_last_prior_inflight_bytes = rate->prior_inflight_bytes;
+    stats->rate_last_flags = rate->flags;
+}
+
+static void tcp_shift_delivery_build_rate_sample(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    struct tcp_shift_cc_rate_sample *rate)
+{
+    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
+    struct tcp_shift_delivery_slot *candidate = NULL;
+    uint64_t delivered_delta64;
+    uint64_t delivered_added = 0U;
+    uint64_t now_ns;
+    uint16_t touched = 0U;
+    uint16_t index;
+    unsigned partial = 0U;
+
+    memset(rate, 0, sizeof(*rate));
     now_ns = tcp_shift_delivery_now_ns(adapter);
     if (now_ns == 0U) {
         return;
     }
-    if (slot->first_tx_ns == 0U || now_ns < slot->first_tx_ns) {
-        if (adapter->stats != NULL) {
-            adapter->stats->delivery_timestamp_regressions++;
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        struct tcp_shift_delivery_slot *slot = &slots[index];
+        uint16_t acked_payload;
+        uint16_t newly_acked;
+
+        if (slot->segment == NULL) {
+            continue;
+        }
+        acked_payload = tcp_shift_delivery_acked_payload(slot, pcb->lastack);
+        if (acked_payload <= slot->acked_payload_bytes) {
+            continue;
+        }
+
+        newly_acked = (uint16_t)(acked_payload - slot->acked_payload_bytes);
+        slot->acked_payload_bytes = acked_payload;
+        delivered_added += newly_acked;
+        touched++;
+        if (acked_payload < slot->payload_bytes) {
+            partial = 1U;
+        }
+
+        if (candidate == NULL ||
+            slot->delivered_at_send > candidate->delivered_at_send ||
+            (slot->delivered_at_send == candidate->delivered_at_send &&
+             slot->delivered_mstamp_at_send_ns >
+                 candidate->delivered_mstamp_at_send_ns)) {
+            candidate = slot;
         }
     }
 
-    adapter->delivered_bytes += payload_bytes;
+    if (delivered_added == 0U) {
+        return;
+    }
+    if (adapter->stats != NULL) {
+        if (partial != 0U) {
+            adapter->stats->rate_partial_ack_events++;
+        }
+        if (touched > 1U) {
+            adapter->stats->rate_multi_segment_ack_events++;
+        }
+    }
+
+    adapter->delivered_bytes += delivered_added;
     adapter->delivered_mstamp_ns = now_ns;
     if (adapter->stats != NULL) {
-        adapter->stats->delivery_payload_bytes += payload_bytes;
+        adapter->stats->delivery_payload_bytes += delivered_added;
         adapter->stats->delivery_last_ack_ns = now_ns;
     }
-    tcp_shift_delivery_release_slot(adapter, slot);
+
+    if (adapter->app_limited_until_bytes != 0U &&
+        adapter->delivered_bytes > adapter->app_limited_until_bytes) {
+        adapter->app_limited_until_bytes = 0U;
+        if (adapter->stats != NULL) {
+            adapter->stats->app_limited_exits++;
+        }
+    }
+
+    if (candidate == NULL) {
+        tcp_shift_rate_record_stats(adapter, rate);
+        return;
+    }
+
+    delivered_delta64 = adapter->delivered_bytes - candidate->delivered_at_send;
+    rate->delivered_bytes = delivered_delta64 > UINT32_MAX
+                                ? UINT32_MAX
+                                : (uint32_t)delivered_delta64;
+    rate->prior_inflight_bytes = candidate->prior_inflight_bytes;
+    if (adapter->rate_first_tx_mstamp_ns >=
+        candidate->first_tx_mstamp_at_send_ns) {
+        rate->send_interval_ns = adapter->rate_first_tx_mstamp_ns -
+                                 candidate->first_tx_mstamp_at_send_ns;
+    }
+    if (now_ns >= candidate->delivered_mstamp_at_send_ns) {
+        rate->ack_interval_ns =
+            now_ns - candidate->delivered_mstamp_at_send_ns;
+    }
+    rate->interval_ns = rate->send_interval_ns > rate->ack_interval_ns
+                            ? rate->send_interval_ns
+                            : rate->ack_interval_ns;
+
+    if (candidate->app_limited != 0U) {
+        rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED;
+    }
+    if (candidate->retransmitted != 0U) {
+        rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED;
+    } else if (candidate->first_tx_ns != 0U && now_ns >= candidate->first_tx_ns) {
+        rate->rtt_ns = now_ns - candidate->first_tx_ns;
+        rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID;
+    }
+
+    rate->delivery_rate_bytes_per_sec =
+        tcp_shift_rate_bytes_per_second(rate->delivered_bytes,
+                                        rate->interval_ns);
+    if (rate->delivered_bytes != 0U && rate->interval_ns != 0U &&
+        rate->delivery_rate_bytes_per_sec != 0U) {
+        rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+    }
+    tcp_shift_rate_record_stats(adapter, rate);
 }
 
 static void tcp_shift_lwip_cc_disable_on_error(
@@ -387,6 +614,8 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
         return 0;
     }
 
+    memset(&ack, 0, sizeof(ack));
+    tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack.rate);
     tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
     ack.acked_bytes = acked_bytes;
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
@@ -647,6 +876,46 @@ void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept)
                               &tcp_shift_lwip_cc_listener_callbacks);
     tcp_ext_arg_set(pcb, (u8_t)TCP_SHIFT_LWIP_CC_EXT_ARG_ID, binding);
     tcp_accept(pcb, tcp_shift_lwip_cc_accept_dispatch);
+}
+
+void tcp_shift_lwip_cc_mark_app_limited(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_hook *hook;
+    struct tcp_shift_lwip_cc_adapter *adapter;
+    uint32_t inflight;
+    uint32_t effective_window;
+    uint32_t tracked_payload;
+    uint64_t marker;
+
+    if (pcb == NULL) {
+        return;
+    }
+    hook = tcp_shift_lwip_cc_hook_get(pcb);
+    if (hook == NULL || hook->arg == NULL) {
+        return;
+    }
+    adapter = hook->arg;
+    if (adapter->bound == 0U || adapter->pcb != pcb ||
+        adapter->app_limited_until_bytes != 0U || pcb->unsent != NULL ||
+        tcp_sndbuf(pcb) == 0U) {
+        return;
+    }
+
+    inflight = pcb->snd_nxt - pcb->lastack;
+    effective_window = pcb->cwnd < pcb->snd_wnd ? pcb->cwnd : pcb->snd_wnd;
+    if (effective_window == 0U || inflight >= effective_window) {
+        return;
+    }
+
+    tracked_payload = tcp_shift_delivery_outstanding_payload(adapter);
+    marker = adapter->delivered_bytes + tracked_payload;
+    if (marker == 0U) {
+        marker = 1U;
+    }
+    adapter->app_limited_until_bytes = marker;
+    if (adapter->stats != NULL) {
+        adapter->stats->app_limited_enters++;
+    }
 }
 
 const struct tcp_shift_lwip_cc_stats *tcp_shift_lwip_cc_get_stats(void)
