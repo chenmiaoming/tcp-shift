@@ -25,11 +25,19 @@
  * retransmission. seq_start is the data sequence number in host byte order;
  * carrying it explicitly lets the adapter account partial ACKs without
  * dereferencing the private segment object.
+ *
+ * on_segment_send_eligible is the P5c pacing gate. It runs only after native
+ * window and Nagle checks but before tcp_output_segment() mutates/sends the
+ * current data segment. Returning zero leaves the segment on pcb->unsent; a
+ * later runtime deadline simply calls native tcp_output() again.
  */
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
+    int (*on_segment_send_eligible)(void *arg,
+                                    struct tcp_pcb *pcb,
+                                    u16_t payload_bytes);
     void (*on_segment_tx)(void *arg,
                           struct tcp_pcb *pcb,
                           const void *segment,
@@ -84,6 +92,20 @@ tcp_shift_lwip_cc_hook_timeout(struct tcp_pcb *pcb)
         return 0;
     }
     return hook->ops->on_timeout(hook->arg, pcb) != 0;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_segment_send_eligible(struct tcp_pcb *pcb,
+                                               u16_t payload_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_segment_send_eligible == NULL) {
+        return 1;
+    }
+    return hook->ops->on_segment_send_eligible(hook->arg, pcb,
+                                                payload_bytes) != 0;
 }
 
 static inline void
