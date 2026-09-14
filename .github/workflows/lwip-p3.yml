@@ -17,6 +17,8 @@ on:
       - 'scripts/p3-public-to-backend-residency.sh'
       - 'scripts/p3-backend-to-public-residency.sh'
       - 'scripts/p3-repeated-drain.sh'
+      - 'scripts/p3-cpu-baseline.sh'
+      - 'scripts/p3-capacity-model.py'
       - 'docs/milestones/p3-memory-capacity.md'
       - '.lwip-baseline'
   push:
@@ -56,6 +58,8 @@ jobs:
           sh -n scripts/p3-public-to-backend-residency.sh
           sh -n scripts/p3-backend-to-public-residency.sh
           sh -n scripts/p3-repeated-drain.sh
+          sh -n scripts/p3-cpu-baseline.sh
+          python3 -m py_compile scripts/p3-capacity-model.py
           sudo modprobe tun || true
           test -c /dev/net/tun
           test -r /proc/self/smaps_rollup
@@ -86,6 +90,15 @@ jobs:
           sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
             sh scripts/p3-repeated-drain.sh
 
+      - name: Measure idle and small-operation CPU
+        run: |
+          sudo env TCP_SHIFT_P3_BINARY="$PWD/.build/tcp-shift-p2" \
+            sh scripts/p3-cpu-baseline.sh
+
+      - name: Build constrained-host capacity model
+        run: |
+          python3 scripts/p3-capacity-model.py
+
       - name: Upload P3 diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -96,4 +109,6 @@ jobs:
             .build/p3-public-to-backend-residency
             .build/p3-backend-to-public-residency
             .build/p3-repeated-drain
+            .build/p3-cpu-baseline
+            .build/p3-capacity-model
           if-no-files-found: warn
