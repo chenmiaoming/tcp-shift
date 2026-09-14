@@ -49,7 +49,14 @@ jobs:
             > .build/lwip-expected-modified-files.txt
           cmp .build/lwip-expected-modified-files.txt .build/lwip-modified-files.txt
           test -z "$(git -C .deps/lwip ls-files --others --exclude-standard)"
-          cmp "$LWIP_PATCH" .build/lwip-p4-cc-hooks.applied.diff
+
+          expected="$PWD/.build/lwip-expected-patched"
+          git -C .deps/lwip worktree add --detach "$expected" "$LWIP_COMMIT"
+          git -C "$expected" apply "$PWD/$LWIP_PATCH"
+          for source in src/core/tcp.c src/core/tcp_in.c src/core/tcp_out.c; do
+            cmp ".deps/lwip/$source" "$expected/$source"
+          done
+          git -C .deps/lwip worktree remove --force "$expected"
 
       - name: Show provenance
         run: |
