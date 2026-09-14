@@ -6,6 +6,7 @@
 #include "bridge/bridge.h"
 #include "host/ifconfig.h"
 #include "host/tun.h"
+#include "lwip/cc_adapter.h"
 #include "lwip/init.h"
 #include "lwip/ip6_addr.h"
 #include "lwip/l3_tun.h"
@@ -62,6 +63,7 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_bridge bridge;
+    const struct tcp_shift_lwip_cc_stats *cc_stats;
     ip6_addr_t address;
     uint16_t public_port;
     uint16_t backend_port;
@@ -136,6 +138,7 @@ int main(int argc, char **argv)
         }
     }
 
+    cc_stats = tcp_shift_lwip_cc_get_stats();
     fprintf(stderr,
             "tcp-shift-p2-ipv6: rx_packets=%llu rx_drops=%llu rx_errors=%llu "
             "tx_packets=%llu tx_queue_peak_bytes=%u tx_queue_drops=%llu "
@@ -151,7 +154,11 @@ int main(int argc, char **argv)
             "bridge_backend_socket_rcvbuf_bytes=%u loop_wait_calls=%llu "
             "loop_ready_wakeups=%llu loop_timeout_wakeups=%llu "
             "loop_eintr_wakeups=%llu loop_tun_readable_wakeups=%llu "
-            "loop_tun_writable_wakeups=%llu\n",
+            "loop_tun_writable_wakeups=%llu "
+            "cc_bindings=%llu cc_bind_failures=%llu cc_ack_events=%llu "
+            "cc_loss_events=%llu cc_timeout_events=%llu "
+            "cc_policy_updates=%llu cc_controller_errors=%llu "
+            "cc_last_cwnd=%u cc_last_ssthresh=%u\n",
             (unsigned long long)l3.rx_packets,
             (unsigned long long)l3.rx_drops,
             (unsigned long long)l3.rx_errors,
@@ -177,7 +184,16 @@ int main(int argc, char **argv)
             (unsigned long long)loop.timeout_wakeups,
             (unsigned long long)loop.eintr_wakeups,
             (unsigned long long)loop.tun_readable_wakeups,
-            (unsigned long long)loop.tun_writable_wakeups);
+            (unsigned long long)loop.tun_writable_wakeups,
+            (unsigned long long)cc_stats->bindings,
+            (unsigned long long)cc_stats->bind_failures,
+            (unsigned long long)cc_stats->ack_events,
+            (unsigned long long)cc_stats->loss_events,
+            (unsigned long long)cc_stats->timeout_events,
+            (unsigned long long)cc_stats->policy_updates,
+            (unsigned long long)cc_stats->controller_errors,
+            cc_stats->last_cwnd_bytes,
+            cc_stats->last_ssthresh_bytes);
 
 out:
     if (bridge_started != 0) {

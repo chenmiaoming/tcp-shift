@@ -3,7 +3,8 @@
 static int tcp_shift_cc_valid_transport(
     const struct tcp_shift_cc_transport *transport)
 {
-    return transport != NULL && transport->mss_bytes != 0U;
+    return transport != NULL && transport->mss_bytes != 0U &&
+           transport->cwnd_limit_bytes >= transport->mss_bytes;
 }
 
 static int tcp_shift_cc_valid(struct tcp_shift_cc *cc,

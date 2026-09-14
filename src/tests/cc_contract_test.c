@@ -23,6 +23,7 @@ static int test_invalid_inputs(void)
         .mss_bytes = 1000U,
         .inflight_bytes = 0U,
         .send_window_bytes = 64000U,
+        .cwnd_limit_bytes = 65535U,
     };
     struct tcp_shift_cc_init init = {
         .initial_cwnd_bytes = 4000U,
@@ -49,6 +50,14 @@ static int test_invalid_inputs(void)
     CHECK(cc.state == NULL);
     transport.mss_bytes = 1000U;
 
+    transport.cwnd_limit_bytes = 999U;
+    CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
+                            sizeof(state), &transport, &init,
+                            &policy) == -1);
+    CHECK(cc.ops == NULL);
+    CHECK(cc.state == NULL);
+    transport.cwnd_limit_bytes = 65535U;
+
     init.min_cwnd_bytes = 999U;
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state), &transport, &init,
@@ -57,6 +66,12 @@ static int test_invalid_inputs(void)
     CHECK(cc.state == NULL);
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == -1);
     init.min_cwnd_bytes = 1000U;
+
+    init.initial_cwnd_bytes = 65536U;
+    CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
+                            sizeof(state), &transport, &init,
+                            &policy) == -1);
+    init.initial_cwnd_bytes = 4000U;
 
     CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
                             sizeof(state), &transport, &init,
@@ -79,6 +94,7 @@ static int test_reno_transitions(void)
         .mss_bytes = 1000U,
         .inflight_bytes = 0U,
         .send_window_bytes = 64000U,
+        .cwnd_limit_bytes = 65535U,
     };
     struct tcp_shift_cc_init init = {
         .initial_cwnd_bytes = 4000U,
@@ -149,6 +165,36 @@ static int test_reno_transitions(void)
     return 0;
 }
 
+static int test_transport_cwnd_limit(void)
+{
+    struct tcp_shift_cc cc;
+    struct tcp_shift_reno_state state;
+    struct tcp_shift_cc_transport transport = {
+        .mss_bytes = 1000U,
+        .inflight_bytes = 0U,
+        .send_window_bytes = 12000U,
+        .cwnd_limit_bytes = 9000U,
+    };
+    struct tcp_shift_cc_init init = {
+        .initial_cwnd_bytes = 8000U,
+        .initial_ssthresh_bytes = 8000U,
+        .min_cwnd_bytes = 1000U,
+    };
+    struct tcp_shift_cc_policy policy;
+    struct tcp_shift_cc_ack ack = {.acked_bytes = 8000U};
+
+    CHECK(tcp_shift_cc_init(&cc, &tcp_shift_reno_ops, &state,
+                            sizeof(state), &transport, &init,
+                            &policy) == 0);
+    CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
+    CHECK(policy.cwnd_bytes == 9000U);
+    CHECK(state.cwnd_bytes == 9000U);
+    CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
+    CHECK(policy.cwnd_bytes == 9000U);
+    CHECK(state.cwnd_bytes == 9000U);
+    return 0;
+}
+
 static int test_saturating_accounting(void)
 {
     struct tcp_shift_cc cc;
@@ -157,6 +203,7 @@ static int test_saturating_accounting(void)
         .mss_bytes = 1000U,
         .inflight_bytes = UINT32_MAX,
         .send_window_bytes = UINT32_MAX,
+        .cwnd_limit_bytes = UINT32_MAX,
     };
     struct tcp_shift_cc_init init = {
         .initial_cwnd_bytes = UINT32_MAX - 1000U,
@@ -183,6 +230,7 @@ int main(void)
 {
     CHECK(test_invalid_inputs() == 0);
     CHECK(test_reno_transitions() == 0);
+    CHECK(test_transport_cwnd_limit() == 0);
     CHECK(test_saturating_accounting() == 0);
 
     printf("cc_contract=ok controller=%s state_bytes=%zu pacing=none\n",

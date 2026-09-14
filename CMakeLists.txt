@@ -63,6 +63,10 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
+# P4 pure-C controller core. Its own CMake file is also the standalone build
+# boundary used by scripts/validate-p4-cc.sh.
+add_subdirectory(src/cc)
+
 add_library(tcp_shift_host STATIC
     src/host/tun.c
     src/host/ifconfig.c
@@ -93,12 +97,29 @@ target_include_directories(tcp_shift_probe PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_probe PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_lwip_cc_adapter STATIC
+    src/lwip/cc_adapter.c
+)
+target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC tcp_shift_cc tcp_shift_lwip)
+
 add_library(tcp_shift_bridge STATIC
     src/bridge/bridge.c
 )
 target_include_directories(tcp_shift_bridge PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(tcp_shift_bridge PUBLIC tcp_shift_runtime tcp_shift_lwip)
+# Only the bridge's raw-API listener is controller-owned in P4. Compile its
+# tcp_accept() call to the adapter wrapper; the adapter target itself sees and
+# calls the real lwIP tcp_accept(), so P0/P1 remain unbound/native.
+target_compile_definitions(tcp_shift_bridge PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept
+)
+target_link_libraries(tcp_shift_bridge PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter
+)
 
 add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})

@@ -19,6 +19,9 @@ struct tcp_shift_cc_transport {
     uint32_t mss_bytes;
     uint32_t inflight_bytes;
     uint32_t send_window_bytes;
+    /* Largest cwnd/ssthresh value the transport can represent. This is a
+     * transport capability, not a congestion-control target. */
+    uint32_t cwnd_limit_bytes;
 };
 
 struct tcp_shift_cc_init {

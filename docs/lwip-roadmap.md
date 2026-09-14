@@ -1,12 +1,10 @@
 # lwIP route: architecture and milestones
 
-This roadmap defines implementation order and exit evidence. `ARCHITECTURE.md` is the current product source of truth; this file explains how the project gets there.
+This roadmap defines implementation order and exit evidence. `ARCHITECTURE.md` is the current product source of truth.
 
 ## Product hypothesis
 
 A constrained VPS can afford a small userspace TCP endpoint when it cannot control the host kernel's congestion-control policy, but it cannot comfortably afford a hosted Linux kernel or a large general-purpose userspace network stack. Fixed memory cost is the first optimization target.
-
-The target shape is:
 
 ```text
 public IPv4/IPv6 packet -> host routing/netfilter -> L3 TUN -> lwIP TCP
@@ -15,164 +13,166 @@ public IPv4/IPv6 packet -> host routing/netfilter -> L3 TUN -> lwIP TCP
                                                         -> 127.0.0.1 backend
 ```
 
-The public and backend TCP legs remain distinct. Congestion control belongs to the lwIP public leg. The public side is dual-stack/IPv6-only capable; the initial backend side remains IPv4 loopback only.
+The public and backend TCP legs are distinct. Congestion control belongs to the lwIP public leg. The public side is dual-stack/IPv6-only capable; the backend remains IPv4 loopback.
 
 ## Hard boundaries
 
-- L3 TUN, not TAP/Ethernet, for the current product path.
-- One mutable owner for lwIP state; no per-flow forwarding threads.
-- `NO_SYS=1`; no lwIP TCP/IP thread, socket API, or netconn API.
-- IPv6-only operation is a product requirement, not an optional compatibility add-on.
-- Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate source modules.
-- The CC core is pure C and independently buildable; library separation does not imply process separation.
-- Do not patch congestion control before packet path, bridge, shutdown behavior, and memory accounting are observable.
-- Do not call an experimental controller "Linux BBR" merely because its state names resemble Linux BBR.
+- L3 TUN, not TAP/Ethernet.
+- One mutable owner for lwIP; no per-flow forwarding threads.
+- `NO_SYS=1`; no lwIP socket/netconn/tcpip-thread path.
+- IPv6-only public operation is required.
+- Linux host integration, lwIP transport integration, bridge logic, and congestion-control policy remain separate modules.
+- `src/cc/` stays pure C and independently buildable.
+- Linux timerfd/epoll pacing stays outside `src/cc/`.
+- Do not call an experimental controller Linux BBR unless transport semantics actually match.
 
 ## P0: reproducible lwIP userspace build — complete
 
-Exit evidence includes exact upstream pinning, clean reproducible fetch, an explicit TCP/dual-stack `NO_SYS=1` source allowlist, configuration/source/binary/RSS gates, and clean-runner artifact smoke.
+Exact upstream pinning, explicit dual-stack TCP `NO_SYS=1` source allowlist, configuration/source/binary/RSS gates, and clean-runner artifact smoke are qualified.
 
-The initial Linux baseline intentionally uses libc allocation (`MEM_LIBC_MALLOC` and `MEMP_MEM_MALLOC`) so host RSS reflects demand.
+## P1: dual-stack L3 TUN and ingress lifecycle — complete
 
-## P1a: IPv4 L3 TUN and ingress lifecycle — complete
+P1 qualifies one nonpersistent `IFF_TUN | IFF_NO_PI` L3 adapter, lwIP timer-driven epoll ownership, bounded whole-packet TX retry, nonfatal RX drops, direct IPv4/IPv6 ICMP/TCP, product-owned exact IPv4/IPv6 DNAT/conntrack lifecycle, forwarding prerequisite checks, collision/rollback/cleanup, extension-header-safe IPv6 TCP matching, and routed ICMPv6 PTB learning.
 
-The IPv4 implementation uses one nonblocking exclusive `IFF_TUN | IFF_NO_PI` fd:
-
-```text
-RX: TUN read -> packet pbuf -> ip4_input -> TCP/ICMP
-TX: lwIP ip4 output -> netif output -> whole-packet TUN write
-```
-
-The event loop integrates `sys_timeouts_sleeptime()` / `sys_check_timeouts()` rather than polling on a fixed timer. Writable interest is armed only after backpressure and the whole-packet retry queue is bounded to 64 packets / 96 KiB.
-
-The host lifecycle owns TUN configuration and one exact-match IPv4 nftables DNAT table. The nft batch is checked read-only before mutation, installed atomically with exclusive table creation, and removed before TUN teardown. Existing resources are rejected rather than adopted. Global IPv4 forwarding and broad host forwarding policy remain operator-managed prerequisites.
-
-Run `34744304038` qualified ICMP/TCP, DNAT/conntrack, idle wakeups, backpressure, MTU, oversize RX, and checksum behavior. Run `34763055040` qualified product-owned IPv4 ingress lifecycle.
-
-## P1b: IPv6 L3 TUN and ingress lifecycle — complete
-
-P1b extends the same adapter/event loop/lifecycle rather than creating a second runtime. The constrained lwIP profile enables the IPv6/IP6/ICMP6/ND6 core while keeping DHCPv6, SLAAC, Router Solicitation, MLD, ND6 packet queueing, RA MTU updates, IPv6 endpoint fragmentation, and IPv6 reassembly disabled.
-
-The L3 adapter dispatches RX by IP version and sends IPv6 through the same bounded whole-packet writer. Static host/lwIP IPv6 addresses qualify direct ICMPv6 and raw-TCP ownership. Product ingress uses an exclusive `ip6` nftables table with exact public IPv6 + TCP-port DNAT into an internal static IPv6 TUN address. IPv6 forwarding is operator-managed and only diagnosed by tcp-shift.
-
-Extension-header safety is a behavior gate: CI sends a TCP SYN carrying a Hop-by-Hop extension header and requires it to traverse the exact ingress rule to the TUN. It does not infer safety from nft's canonical printed form.
-
-Pure L3 output bypasses the Ethernet ND next-hop path that normally creates lwIP destination-cache entries. The adapter therefore seeds/refreshes lwIP's existing fixed ND6 destination cache for unicast IPv6 output, with no separate PMTU allocation or neighbor-discovery traffic. This allows native ICMPv6 PTB handling to update PMTU and native TCP MSS calculation to consume it.
-
-Behavior head `6a9d82feb1f3faead580f560ae1d076999a64b0f` passed P0 and the full P1 workflow. Run `34767386662` retained:
+Representative retained PMTU evidence:
 
 ```text
-ipv6_forwarding_disabled_preflight=ok
-ipv6_exclusive_collision_rejection=ok
-ipv6_extension_header_dnat=ok
-product IPv6 DNAT connected [2001:db8:101::1]:18083
-ipv6_signal_cleanup=ok unrelated_ruleset_unchanged=ok
 ipv6_ptb_mtu=1280 baseline_mss=1440 learned_mss=1220 pmtu_adaptation=ok
-P1b routed IPv6 Packet Too Big/PMTU qualification passed
 ```
 
-P1 as a whole is therefore runner-qualified for both address families without regressing the IPv4 gates. Provider/OpenVZ capability qualification remains a separate deployment task.
+Provider/OpenVZ capability qualification remains separate.
 
 ## P2: dual-stack TCP listener and backend bridge — complete
 
-P2 replaces the P1 probe listener with the real bridge. Public IPv4 and IPv6 both use lwIP raw TCP callbacks and the same address-family-independent flow state machine. Every accepted public flow connects through an ordinary nonblocking `AF_INET` host socket to `127.0.0.1:<backend-port>`.
+P2 replaces the probe listener with a real bridge. Public IPv4/IPv6 use the same flow state machine and connect to an ordinary nonblocking `127.0.0.1:<backend-port>` socket.
 
-The bridge adds no fixed application-data direction buffer. Public-to-backend data remains in lwIP pbufs until `writev()` commits it, and `tcp_recved()` advances only for committed bytes. Backend-to-public uses bounded stack scratch plus `MSG_PEEK`, consuming host-socket bytes only after `tcp_write(..., TCP_WRITE_FLAG_COPY)` accepts them. Backend readable interest is suppressed while lwIP send memory is blocked.
+Public->backend data remains in lwIP pbufs until backend `writev()` commits it. Backend->public removes host bytes only after `tcp_write(..., COPY)` accepts them. The bridge therefore adds no fixed bidirectional application buffer and preserves bounded transport backpressure.
 
-P2 also qualifies EOF/half-close ordering, backend refusal, public/backend reset recovery, explicit shutdown with active flows, and simultaneous-flow teardown. A discovered level-triggered `EPOLLRDHUP` spin hazard was fixed by removing backend watchers when no useful read/write interest remains and re-arming them only when progress requires it.
-
-Behavior head `601a49648610513d98173e3e3add722326591ffc` passed P0 run `34769960299`, full P1 run `34769960302`, and P2 run `34769960275`. Retained P2 evidence includes:
-
-```text
-# blocked-peer 1 MiB gate
-bridge_peak_pending_public_bytes=32768
-bridge_backend_write_blocked_events=172
-bridge_backend_read_blocked_events=357
-bridge_backend_socket_sndbuf_bytes=32768
-bridge_backend_socket_rcvbuf_bytes=32768
-
-# eight simultaneous flows
-bridge_accepts=8
-bridge_backend_connects=8
-bridge_peak_active_flows=8
-bridge_active_flows=0
-
-# active-flow process shutdown
-pre_stop_active_flows=1
-shutdown_bridge_active_flows=0
-shutdown_bridge_pending_public_bytes=0
-
-# 64 sequential reuse flows
-rss_warmup_kb=1800
-rss_mid_kb=1800
-rss_final_kb=1800
-bridge_reuse_no_ratcheting=ok
-```
-
-The reuse RSS result is a lifecycle/no-ratcheting gate, not a connection-capacity claim. Exact established-flow memory cost is intentionally measured in P3.
+P2 qualifies IPv4/IPv6 stream integrity, real bidirectional blocking, half-close, backend refusal recovery, public/backend reset recovery, concurrent flows, active-flow shutdown, and long-lived reuse without RSS ratcheting.
 
 ## P3: memory/capacity baseline — complete
 
-P3 runner-qualifies a measurement-first userspace memory/CPU baseline before congestion-control modifications. Run `34805306193` on behavior head `775ea5832f7e308e2c908c2f5abedfa4175c69be` retains process PSS, private dirty, fd/socket state, directional window-pressure residency, repeated drain floors, CPU, and a constrained-host sensitivity model.
+P3 separates tcp-shift process residency from backend Linux TCP/kernel state and measures idle flows, both active-window directions, repeated load/drain floors, and representative CPU.
 
-Key retained observations are:
-
-```text
-ready PSS=262 KiB
-128 idle flows PSS=307 KiB
-max idle PSS slope=0.3515625 KiB/flow
-
-public->backend active delta=36.5 KiB/flow
-backend->public active delta=37.125 KiB/flow
-qualified active window residency=32768 bytes/flow
-
-3 x 128-flow first-to-last drain growth=5 KiB
-maximum drain floor above ready=57 KiB
-ratchet gate=32 KiB
-warm-floor gate=128 KiB
-
-1-second idle CPU=0 ms
-2048 x 64-byte request/echo CPU=34.18 us/op
-```
-
-The capacity model takes the conservative repeated-idle and active directional maxima, yielding a warm fixed process PSS of 315 KiB and a fully-window-resident process slope of about 37.52 KiB/flow. In the P4 admission scenario, only 25% of a 32-MiB host (8 MiB) is assigned to tcp-shift process PSS. 128 fully-window-resident flows project to about 5118 KiB, leaving about 3074 KiB, or 24.0 KiB/flow, for later CC/sampler/pacer process structures.
-
-This is deliberately not a full-host capacity guarantee. Backend Linux TCP kernel memory, backend application memory, public-client kernel memory, and provider-specific host overhead are excluded from process PSS and remain in the reserved host budget.
-
-P3 therefore provides adequate userspace headroom to enter P4 while preserving the stop criterion: every later CC/sampler/pacer increment must be measured against this baseline.
-
-## P4: generic congestion-control library boundary — active
-
-The standalone policy-library increment is complete. `src/cc/` is an independently buildable pure-C static library with caller-owned controller state. Its generic boundary consumes transport observations and emits `cwnd`, `ssthresh`, and optional pacing policy; it does not call Linux host APIs and it does not own a pacing scheduler.
-
-The first conventional controller is a 16-byte byte-counting Reno baseline used to validate the interface, not to claim Linux Reno equivalence. Final behavior head `9e8cb2fa6091418ac4ed3dcb52f963337fdc25d0` passed dedicated run `34810033939`, job `103869414629`, retaining:
+Original admission baseline:
 
 ```text
-cc_contract=ok controller=reno state_bytes=16 pacing=none
-cc_boundary=pure-c
-external_symbols=0
+warm fixed process PSS: 315 KiB
+fully-window-resident slope: 37.523438 KiB/flow
+32-MiB host / 25% tcp-shift process budget: 8192 KiB
+128-active projected PSS: 5118 KiB
+remaining process budget: 3074 KiB ~= 24.0 KiB/flow
 ```
 
-The contract also requires failed controller initialization to leave the generic handle invalid and verifies explicit `ssthresh` publication. The standalone build uses `-ffreestanding -fno-builtin`, an explicit header/include allowlist, and a zero-undefined-symbol archive gate. Artifact `10334775895` retains the build, symbol and size diagnostics. P0 run `34810033921` and full P1 run `34810033970` also stayed green on the same behavior head.
+This is a process-PSS planning model, not a full-host capacity guarantee. Backend kernel/application memory and provider overhead remain outside it.
 
-The next P4 increment is the lwIP adapter. It must identify the smallest explicit hook surface that delegates conventional cwnd/ssthresh policy while lwIP retains retransmission, fast recovery, queueing, sequence-space and output mechanics. The adapter may depend on lwIP; `src/cc/` may not. Integrated memory cost must be measured against the P3 24-KiB/active-flow planning headroom.
+## P4: generic CC boundary + lwIP adapter — complete
 
-P4 is not complete until conventional controller ownership is demonstrated through the integrated public-side TCP path, including ACK/loss/timeout transitions and unchanged P0-P3 transport behavior where affected.
+P4 is fully runner-qualified on behavior head `0a3054159db03b017526b3faabfbe7f6a6c826ac`.
 
-## P5: delivery-rate sampler and pacer
+### Pure-C controller boundary
 
-Add high-resolution monotonic timestamps, delivered-byte accounting, per-segment delivery snapshots/send timestamps, ACK-derived delivery-rate samples, latest RTT samples, app-limited detection, and loss/inflight accounting.
+`src/cc/` is independently buildable with caller-owned state, an allowlisted ISO-C include surface, `-ffreestanding -fno-builtin`, and zero unresolved archive symbols.
 
-The Linux runtime pacer is one process-wide scheduler, preferably min-heap plus timerfd, keyed by each flow's next eligible send time. The generic controller sees pacing rate, not timerfd.
+The generic controller consumes MSS, inflight, peer send window, and a transport cwnd limit. Events are init/ACK/loss/RTO. Policy publishes cwnd, ssthresh, and optional pacing rate. The conventional Reno baseline uses 16 bytes and requests no pacing.
+
+### Narrow lwIP integration
+
+Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. A repository-owned patch modifies exactly three congestion-policy sites:
+
+1. ACK cwnd growth;
+2. fast-loss cwnd/ssthresh policy;
+3. RTO cwnd/ssthresh policy.
+
+Unbound PCBs retain native lwIP policy. Retransmission execution, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output remain native lwIP mechanics.
+
+One PCB ext-arg slot carries the project hook. Passive-open initialization explicitly mirrors pinned lwIP's initial-cwnd formula because upstream assigns that cwnd after invoking the accept callback.
+
+### Integrated ownership evidence
+
+P2 now hard-gates every workload with:
+
+```text
+cc_bindings == bridge_accepts
+cc_bind_failures = 0
+cc_ack_events > 0
+cc_controller_errors = 0
+```
+
+Real external fault injection on the TUN path qualifies fast-loss recovery:
+
+```text
+cc_loss_events=1
+cc_timeout_events=0
+mode=fast-loss payload_bytes=262144 recovery=ok
+```
+
+and RTO recovery:
+
+```text
+cc_loss_events=0
+cc_timeout_events=2
+mode=rto payload_bytes=262144 recovery=ok
+```
+
+Both preserve exact stream integrity and do not call generic loss/RTO handlers directly.
+
+### Provenance and regression evidence
+
+Final behavior-head runs:
+
+```text
+upstream provenance  34815149550  success
+P0                   34815149474  success
+P1                   34815149646  success
+P2                   34815149444  success
+P3                   34815149825  success
+P4                   34815149645  success
+```
+
+The provenance gate proves exact pin, pristine pre-patch hashes, recorded patch SHA, exactly three modified upstream files, no untracked dependency files, reverse-apply correctness, and byte identity against an independently patched worktree.
+
+P3 rerun with the adapter retained:
+
+```text
+warm fixed process PSS: 335 KiB
+fully-window-resident slope: 37.148438 KiB/flow
+128-active projected process PSS: 5090 KiB
+remaining 8-MiB process budget: 3102 KiB = 24.234 KiB/flow
+three-round 128-flow drain growth: 5 KiB
+```
+
+P4 therefore exits with the constrained-host admission headroom intact.
+
+## P5: delivery-rate sampler and pacing prerequisites — active next
+
+P5 must establish the transport observations needed by model-based congestion control before any BBR mode/state machine is added.
+
+Required work:
+
+1. high-resolution monotonic send/ACK timestamps;
+2. cumulative delivered-byte accounting;
+3. per-segment delivery snapshots/send timestamps;
+4. ACK-derived delivery-rate samples;
+5. app-limited detection and marking;
+6. loss/inflight observations suitable for later controllers;
+7. process-wide pacing scheduler, preferably one min-heap plus one timerfd;
+8. fixed/per-flow/per-segment memory and CPU qualification against P3/P4.
+
+The sampler should publish transport-neutral observations into the generic CC boundary. Runtime scheduling stays in `runtime/`, not `cc/`.
+
+P5 is complete only when rate samples and app-limited semantics are behaviorally qualified under real traffic, pacing is externally observable and bounded, P0-P4 regressions remain green, and the added metadata/scheduler residency fits the constrained-host model.
 
 ## P6: experimental BBR
 
+Only after P5 is qualified should an experimental BBR controller be added.
+
 Reference order: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c`/`tcp_rate.c` as TCP behavior cross-checks.
 
-Validation compares cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, loss response, throughput, retransmission behavior, CPU, and memory against native Linux baselines under reproducible RTT/loss/bandwidth scenarios.
+Validation must compare cwnd, pacing rate, bandwidth estimate, min RTT, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, and memory against native Linux baselines under reproducible RTT/loss/bandwidth scenarios.
 
 ## Stop criteria
 
 Stop the lwIP route rather than recreating half of Linux TCP if acceptable behavior requires replacing most lwIP recovery/SACK machinery, metadata/pacing memory approaches the hosted-Linux design, correctness requires a large long-lived lwIP TCP fork, or unavoidable BDP buffering dominates the fixed-memory advantage.
 
-The project is still successful if the result is a very small conventional-CC userspace TCP endpoint and BBR is rejected by evidence.
+The project is still successful if evidence supports only a very small conventional-CC userspace TCP endpoint and rejects BBR.
