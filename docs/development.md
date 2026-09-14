@@ -28,23 +28,15 @@ Historical milestone documents explain how the design evolved; they do not overr
 
 ## Pinned lwIP and controlled patch
 
-The production lwIP pin is defined by `.lwip-baseline` and currently resolves to:
+The production lwIP pin is:
 
 ```text
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-The dependency remains upstream-pinned rather than broadly vendored. The repository-owned integration patch is:
+The repository-owned integration patch is `patches/lwip-p4-cc-hooks.patch`. `scripts/fetch-lwip.sh` records pristine critical-source hashes first, then applies that patch. Provenance CI independently proves modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the patch result for the pin.
 
-```text
-patches/lwip-p4-cc-hooks.patch
-```
-
-`scripts/fetch-lwip.sh` records pristine critical-source hashes first, then applies that patch. Provenance CI requires exact pinning and independently proves that modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the result of applying the repository patch to the pin.
-
-P5a extends the hook semantics inside already-controlled `tcp_in.c` / `tcp_out.c`; it does not add another patched upstream file.
-
-Do not expand the lwIP patch surface casually. Any new upstream file requires an architectural reason, bounded hook surface, provenance coverage, and regression evidence.
+P5a/P5b extend hook semantics only inside already-controlled `tcp_in.c` / `tcp_out.c`; no new upstream file was added. Do not expand the lwIP patch surface casually. Any new upstream file requires an architectural reason, bounded hook surface, provenance coverage, and regression evidence.
 
 ## Current architecture
 
@@ -66,15 +58,18 @@ Constraints:
 
 ## Event-driven runtime contract
 
-The current runtime is already deadline/readiness driven:
+The runtime is deadline/readiness driven:
 
 - epoll handles TUN/backend readiness;
 - epoll timeout is derived from `sys_timeouts_sleeptime()`, not a fixed tick;
 - `sys_check_timeouts()` runs after an actual readiness/timeout wakeup;
 - TUN `EPOLLOUT` is armed only for real queued packets;
-- backend interests are removed/suppressed when no useful progress is possible.
+- backend interests are removed/suppressed when no useful progress is possible;
+- app-limited marking occurs when the real backend read path reaches `EAGAIN`, not from a periodic flow scan.
 
-P5 pacing must preserve or improve this behavior. The default design is:
+P5b qualification observed zero runtime CPU ticks during an application-pause measurement window while still recording app-limited enter/sample/exit.
+
+P5c must preserve or improve this behavior. Default design:
 
 ```text
 paced flows -> process-wide min-heap -> one one-shot CLOCK_MONOTONIC timerfd -> epoll
@@ -83,176 +78,122 @@ paced flows -> process-wide min-heap -> one one-shot CLOCK_MONOTONIC timerfd -> 
 Rules:
 
 - one timerfd for the process, never one per flow;
-- timerfd is armed to the earliest pending pacing deadline only;
-- disarm it when no paced send is pending;
+- arm to the earliest pending pacing deadline only;
+- disarm when no paced send is pending;
 - no periodic pacing tick;
 - no busy spin;
-- record timer arms/expirations, pacing wakeups, lateness, idle wakeups, and CPU in CI.
+- timerfd/epoll mechanics stay outside `src/cc/`;
+- record timer arms/disarms/expirations, pacing wakeups, released bytes, lateness, heap occupancy, idle wakeups, CPU, and memory in CI.
 
-Do not replace deadline-driven waits with a convenience polling loop.
+## P0-P4 status
 
-## P0-P3 status
+P0 through P4 are runner-qualified and mandatory regressions. P4 owns public-side base cwnd/ssthresh policy for ACK, fast loss, and RTO through the generic controller, while lwIP retains retransmission/recovery mechanics.
 
-P0 through P3 are runner-qualified and mandatory regressions.
+`src/cc/` is independently buildable pure C. Conventional Reno uses 16 bytes caller-owned state and publishes zero pacing rate.
 
-P3 measures tcp-shift process PSS only; backend kernel/application memory and provider overhead are excluded. Original P4 admission was about 24 KiB/process-headroom per active flow in the conservative 32-MiB-host/25%-budget model.
+## P5a status — complete
 
-## P4 status — complete
+P5a established high-resolution send/ACK timestamps, unique delivered-byte accounting, and retransmission-safe lazy segment metadata without enlarging upstream `struct tcp_seg`.
 
-P4 behavior head:
-
-```text
-0a3054159db03b017526b3faabfbe7f6a6c826ac
-```
-
-Final P4 behavior-head runs:
-
-```text
-upstream provenance  34815149550  success
-P0                   34815149474  success
-P1                   34815149646  success
-P2                   34815149444  success
-P3                   34815149825  success
-P4                   34815149645  success
-```
-
-`src/cc/` is independently buildable pure C. Controller state is caller-owned. The conventional Reno baseline uses 16 bytes and emits cwnd, ssthresh, and zero pacing rate.
-
-`src/lwip/cc_adapter.c` binds the generic controller to accepted public PCBs through one ext-arg slot. The patch delegates base ACK growth, fast-loss cwnd/ssthresh, and RTO cwnd/ssthresh. lwIP retains retransmission execution, duplicate-ACK handling, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output.
-
-P2 requires:
-
-```text
-cc_bindings == bridge_accepts
-cc_bind_failures = 0
-cc_ack_events > 0
-cc_controller_errors = 0
-```
-
-P4 external fault injection retained:
-
-```text
-fast-loss: cc_loss_events=1, cc_timeout_events=0, 262144-byte recovery=ok
-rto:       cc_loss_events=0, cc_timeout_events=2, 262144-byte recovery=ok
-```
-
-P4 adapter P3 baseline:
-
-```text
-warm fixed process PSS: 335 KiB
-fully-window-resident slope: 37.148438 KiB/flow
-128-active projected PSS: 5090 KiB
-remaining 8-MiB process budget: 3102 KiB = 24.234 KiB/flow
-```
-
-## P5a status — complete and ready to merge
-
-P5a establishes high-resolution send/ACK timestamps, cumulative unique delivered-byte accounting, and retransmission-safe segment metadata.
-
-Design:
-
-- do not enlarge upstream `struct tcp_seg`;
-- sidecar metadata is project-owned in the lwIP adapter;
-- vector allocation is lazy, 8 slots initially, bounded by current `TCP_SND_QUEUELEN=90`;
-- every slot is 32 bytes;
-- key by stable `tcp_seg *`;
-- retransmission reuses the same slot;
-- fully ACKed segments consume metadata before upstream free;
-- teardown must leave zero live slots.
-
-Final qualified P5a behavior head:
+Final qualified behavior head:
 
 ```text
 ce6c89f399bed3535be52138e3c96ea2ea061b38
 ```
 
+P5 run `34821205375`, job `103903019956`, artifact `10338108552` retained exact 262144-byte delivery through normal, fast-loss, and RTO with zero metadata leaks/errors. P5a slots were 32 bytes.
+
+The original false-green harness bug must not be reintroduced: exact `key=value` token parsing and fail-closed checker exit propagation are required; `.build` artifact uploads need `include-hidden-files: true`.
+
+## P5b status — complete, merge-ready after docs-only verification
+
+P5b converts the ledger into transport-neutral ACK delivery-rate observations and event-driven app-limited state.
+
+Generic ACK input now carries:
+
+- selected delivery rate;
+- selected interval plus send and ACK intervals;
+- latest RTT when valid;
+- newly delivered payload bytes;
+- prior inflight;
+- VALID / APP_LIMITED / RETRANSMITTED / RTT_VALID flags.
+
+Reno ignores the new sample and remains keyed to `acked_bytes`.
+
+The lwIP adapter owns all queue/sequence/time mechanics. Sidecar entries are now 56 bytes and include sequence/progress, first-transmit/send-phase snapshots, delivered snapshots, prior inflight, and app-limited/retransmission state. Cumulative ACK progress is accounted before upstream frees sidecars; FIN sequence space is excluded from payload delivery. Retransmission reuses sidecar state and RTO candidates withhold RTT.
+
+App-limited marking is invoked only from the bridge's real backend-read `EAGAIN` path. The adapter verifies no unsent data and available transport capacity before setting a delivered+inflight marker.
+
+Final behavior head:
+
+```text
+327efe7e29adfc230e7d201b466f2bd4980e976c
+```
+
 Runs:
 
 ```text
-upstream provenance  34821205386  success
-P0                   34821205401  success
-P1                   34821205357  success
-P2                   34821205366  success
-P3                   34821205396  success
-P4                   34821205367  success
-P5                   34821205375  success
+upstream provenance  34843587049  success
+P0                   34843587091  success
+P1                   34843587026  success
+P2                   34843587113  success
+P3                   34843587033  success
+P4                   34843587045  success
+P5                   34843586990  success
 ```
 
-P5 run `34821205375`, job `103903019956`, artifact `10338108552` retained:
+P5 run `34843586990`, job `103974027867`, artifact `10347003115`:
 
 ```text
-normal:    first_tx=184 retransmit=0 acked=184 delivered=262144 live_slots=0
-fast-loss: first_tx=180 retransmit=1 acked=180 delivered=262144 live_slots=0
-rto:       first_tx=180 retransmit=4 acked=180 delivered=262144 live_slots=0
-metadata_bytes_per_slot=32
+normal:    138/138 valid samples, invalid=0, delivered=262144
+fast-loss: 121/121 valid samples, loss_events=1
+rto:       135/135 valid samples, retransmitted_samples=3, timeout_events=2
+app-pause: delivered=135168, app_limited_samples=7,
+           enters=2 exits=2 pause_cpu_ticks=0 event_driven=ok
 ```
 
-All paths require zero metadata allocation failures, misses, abandoned slots, clock errors, and timestamp regressions.
-
-### P5 harness bug that must not be reintroduced
-
-The first P5 workflow was falsely green even though its log printed a qualification failure:
-
-- `sed` searching for `live_slots=` also matched `peak_live_slots=`;
-- `check_delivery | tee` returned `tee`'s success rather than the checker's failure under POSIX `sh`.
-
-The final checker parses exact `key=value` tokens, writes its summary directly, then `cat`s it. Do not reintroduce a pipeline that masks the checker's status.
-
-`actions/upload-artifact` also needs `include-hidden-files: true` because diagnostics live under `.build`.
-
-### P5a memory cost
+P3 run `34843587033`, job `103974029078`, artifact `10346739278`:
 
 ```text
-                         P4             P5a
-warm fixed PSS          335 KiB         343 KiB
-fully-window slope      37.148438       37.679688 KiB/flow
-128-active projection   5090 KiB        5166 KiB
-8-MiB budget remaining  3102 KiB        3026 KiB
-headroom / active flow  24.234 KiB      23.641 KiB
+warm fixed PSS: 347 KiB
+conservative active slope: 37.710938 KiB/flow
+128-active projection: 5174 KiB
+8-MiB budget remaining: 3018 KiB = 23.578 KiB/flow
+3x128 drain growth: 5 KiB
+idle CPU: 0 ticks/s
 ```
 
-The delivery ledger consumes only a small fraction of retained process headroom.
+This remains tcp-shift process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: P5b rate sampler + app-limited
+## Active next milestone: P5c event-driven pacer
 
-P5b converts P5a snapshots into transport-neutral ACK delivery-rate observations.
+Do not combine P5b sampler changes with BBR state logic. P5c must first qualify scheduler mechanics independently.
 
-Required semantics:
+Initial implementation direction:
 
-1. newly delivered bytes per ACK;
-2. delivery interval and send interval;
-3. valid/invalid rate sample rules;
-4. delayed ACK and ACK aggregation;
-5. ACKs covering multiple segments;
-6. retransmissions without duplicate delivery;
-7. partial ACKs;
-8. sequence-number wrap safety;
-9. latest valid RTT observation;
-10. prior inflight/loss fields;
-11. app-limited enter/exit semantics.
+1. add a runtime-owned pacer module, not controller-owned Linux code;
+2. maintain one process-wide min-heap of pending flow/send deadlines;
+3. create one nonblocking/cloexec `timerfd` using `CLOCK_MONOTONIC`;
+4. register it with the existing epoll owner;
+5. arm one-shot to the current earliest deadline and disarm when heap empty;
+6. make cancellation/stale flow entries generation-safe so teardown cannot dereference freed state;
+7. leave Reno's zero pacing rate on the existing unpaced path;
+8. use a deterministic test controller/policy with a fixed nonzero pacing rate to qualify the scheduler before BBR exists;
+9. integrate pacing at the narrowest lwIP send-decision boundary without replacing `tcp_output()`/recovery mechanics;
+10. preserve P0-P5 regressions and rerun P3 memory/CPU/wakeup measurements.
 
-Extend the generic controller input only with transport-neutral observations. Keep lwIP queue objects and Linux scheduling out of `src/cc/`.
-
-CI should use real traffic and retain structured sample traces rather than only checking that a rate is nonzero.
-
-## P5c after P5b: event-driven pacer
-
-After rate/app-limited semantics are qualified, add the process-wide one-shot timerfd scheduler. Do not combine rate-sampler correctness and pacing timing bugs into one first increment.
-
-Pacer qualification must include idle behavior, small packet workloads, high-BDP pacing, deadline lateness, timer wakeups, and CPU. Busy spinning or fixed periodic polling is a failure of the design, not an optimization to accept temporarily.
+P5c CI must include idle behavior, small packets, sustained/high-BDP pacing, requested-vs-actual deadline lateness, timer arm/disarm/expiration counts, heap peak, stale/cancel cleanup, and CPU. Busy spinning or fixed periodic polling is a design failure, not a temporary shortcut.
 
 ## Distance to tcp-shift BBR
 
-Remaining work before the BBR controller becomes active:
-
 ```text
 P5a delivery ledger        complete
-P5b rate/app-limited       next
-P5c event-driven pacing    then
+P5b rate/app-limited       complete
+P5c event-driven pacing    next
 P6 tcp-shift BBR           then active
 ```
 
-The hard TCP ownership/recovery boundary is already solved. Main remaining risk is rate/pacing correctness under delayed ACK, aggregation, high BDP, and loss.
+Only the pacing substrate remains before BBR becomes the active controller milestone. The difficult TCP ownership/recovery and delivery-rate sampling boundaries are already qualified.
 
 ## Merge discipline
 
@@ -269,12 +210,4 @@ Once mergeable, merge it rather than accumulating unrelated later-phase work in 
 
 ## Stop criteria
 
-Stop and reassess before BBR if:
-
-- model-based control requires rebuilding lwIP recovery/SACK machinery;
-- the project accumulates a large hard-to-rebase lwIP fork;
-- sampler/pacer metadata approaches hosted-Linux memory cost;
-- unavoidable BDP/window buffering dominates small-host RAM;
-- pacing accuracy requires per-flow timers, periodic polling, or busy spinning.
-
-A small conventional-CC endpoint remains a valid outcome if BBR is rejected by evidence.
+Stop and reassess before BBR if model-based control requires rebuilding lwIP recovery/SACK machinery, the project accumulates a large hard-to-rebase lwIP fork, sampler/pacer metadata approaches hosted-Linux memory cost, unavoidable BDP/window buffering dominates small-host RAM, or pacing accuracy requires per-flow timers, periodic polling, or busy spinning.

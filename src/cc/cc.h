@@ -12,8 +12,6 @@ extern "C" {
  *
  * This boundary deliberately contains transport semantics only. It must not
  * expose lwIP objects, Linux descriptors, timers, or scheduler primitives.
- * P5 may extend ACK observations with delivery-rate sampling, but controller
- * code must remain independent from the runtime that supplies those samples.
  */
 struct tcp_shift_cc_transport {
     uint32_t mss_bytes;
@@ -30,8 +28,30 @@ struct tcp_shift_cc_init {
     uint32_t min_cwnd_bytes;
 };
 
+#define TCP_SHIFT_CC_RATE_SAMPLE_VALID UINT32_C(0x01)
+#define TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED UINT32_C(0x02)
+#define TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED UINT32_C(0x04)
+#define TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID UINT32_C(0x08)
+
+/* Transport-neutral delivery-rate observation. The transport adapter owns the
+ * timestamp/sequence mechanics; controllers consume only the resulting sample.
+ * A sample without VALID set must be ignored for bandwidth estimation. */
+struct tcp_shift_cc_rate_sample {
+    uint64_t delivery_rate_bytes_per_sec;
+    uint64_t interval_ns;
+    uint64_t send_interval_ns;
+    uint64_t ack_interval_ns;
+    uint64_t rtt_ns;
+    uint32_t delivered_bytes;
+    uint32_t prior_inflight_bytes;
+    uint32_t flags;
+};
+
 struct tcp_shift_cc_ack {
+    /* Sequence-space bytes newly acknowledged. Conventional Reno keeps using
+     * this field exactly as before P5. */
     uint32_t acked_bytes;
+    struct tcp_shift_cc_rate_sample rate;
 };
 
 struct tcp_shift_cc_loss {

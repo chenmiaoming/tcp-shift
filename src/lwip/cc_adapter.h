@@ -27,6 +27,24 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_timestamp_regressions;
     uint64_t delivery_last_tx_ns;
     uint64_t delivery_last_ack_ns;
+    uint64_t rate_samples;
+    uint64_t rate_valid_samples;
+    uint64_t rate_invalid_samples;
+    uint64_t rate_app_limited_samples;
+    uint64_t rate_retransmitted_samples;
+    uint64_t rate_partial_ack_events;
+    uint64_t rate_multi_segment_ack_events;
+    uint64_t app_limited_enters;
+    uint64_t app_limited_exits;
+    uint64_t rate_last_bytes_per_sec;
+    uint64_t rate_max_bytes_per_sec;
+    uint64_t rate_last_interval_ns;
+    uint64_t rate_last_send_interval_ns;
+    uint64_t rate_last_ack_interval_ns;
+    uint64_t rate_last_rtt_ns;
+    uint32_t rate_last_delivered_bytes;
+    uint32_t rate_last_prior_inflight_bytes;
+    uint32_t rate_last_flags;
     uint32_t delivery_metadata_bytes_per_slot;
     uint32_t delivery_live_slots;
     uint32_t delivery_peak_live_slots;
@@ -46,6 +64,8 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t delivered_bytes;
     uint64_t delivered_mstamp_ns;
     uint64_t delivery_last_event_ns;
+    uint64_t rate_first_tx_mstamp_ns;
+    uint64_t app_limited_until_bytes;
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned bound;
@@ -61,6 +81,11 @@ void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter)
  * tcp_accept() call to this wrapper. The wrapper keeps the original accept
  * callback but binds a controller to the established child PCB first. */
 void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
+
+/* Called by the bridge only when the backend application has no bytes ready
+ * while the public TCP has transport capacity. The adapter applies the final
+ * transport checks before setting a Linux-style delivered+inflight marker. */
+void tcp_shift_lwip_cc_mark_app_limited(struct tcp_pcb *pcb);
 
 const struct tcp_shift_lwip_cc_stats *tcp_shift_lwip_cc_get_stats(void);
 

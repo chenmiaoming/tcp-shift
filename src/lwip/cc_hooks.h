@@ -22,7 +22,9 @@
  * Segment identity is opaque here so this public hook header does not expose
  * lwIP's private struct tcp_seg layout. The adapter may use the pointer as a
  * stable key while that segment moves between unsent/unacked queues during
- * retransmission.
+ * retransmission. seq_start is the data sequence number in host byte order;
+ * carrying it explicitly lets the adapter account partial ACKs without
+ * dereferencing the private segment object.
  */
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
@@ -31,6 +33,7 @@ struct tcp_shift_lwip_cc_hook_ops {
     void (*on_segment_tx)(void *arg,
                           struct tcp_pcb *pcb,
                           const void *segment,
+                          u32_t seq_start,
                           u16_t payload_bytes);
     void (*on_segment_acked)(void *arg,
                              struct tcp_pcb *pcb,
@@ -86,6 +89,7 @@ tcp_shift_lwip_cc_hook_timeout(struct tcp_pcb *pcb)
 static inline void
 tcp_shift_lwip_cc_hook_segment_tx(struct tcp_pcb *pcb,
                                    const void *segment,
+                                   u32_t seq_start,
                                    u16_t payload_bytes)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
@@ -94,7 +98,8 @@ tcp_shift_lwip_cc_hook_segment_tx(struct tcp_pcb *pcb,
         hook->ops->on_segment_tx == NULL) {
         return;
     }
-    hook->ops->on_segment_tx(hook->arg, pcb, segment, payload_bytes);
+    hook->ops->on_segment_tx(hook->arg, pcb, segment, seq_start,
+                             payload_bytes);
 }
 
 static inline void

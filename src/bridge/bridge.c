@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include "lwip/cc_adapter.h"
 #include "lwip/err.h"
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
@@ -336,6 +337,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
 
         if (available < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                tcp_shift_lwip_cc_mark_app_limited(flow->pcb);
                 return 0;
             }
             return -1;
