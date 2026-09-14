@@ -1,0 +1,46 @@
+name: P5c pacer scheduler
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p5c-pacer.yml'
+      - 'src/runtime/pacer.c'
+      - 'src/runtime/pacer.h'
+      - 'src/tests/pacer_scheduler_test.c'
+      - 'scripts/p5-pacer-contract.sh'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scheduler-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Validate pacer harness
+        run: sh -n scripts/p5-pacer-contract.sh
+
+      - name: Qualify bounded one-shot scheduler
+        run: sh scripts/p5-pacer-contract.sh
+
+      - name: Upload pacer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p5c-pacer-contract
+          path: .build/p5-pacer-contract
+          if-no-files-found: warn
+          include-hidden-files: true
