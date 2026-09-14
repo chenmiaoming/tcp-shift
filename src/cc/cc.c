@@ -41,6 +41,7 @@ int tcp_shift_cc_init(struct tcp_shift_cc *cc,
     }
 
     policy->cwnd_bytes = 0U;
+    policy->ssthresh_bytes = 0U;
     policy->pacing_rate_bytes_per_sec = 0U;
     result = ops->init(state, transport, init, policy);
     if (result != 0) {
