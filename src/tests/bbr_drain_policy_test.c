@@ -28,8 +28,10 @@ static int check_drain_arithmetic(void)
     CHECK(tcp_shift_bbr_drain_pacing_rate_bytes_per_sec(
               UINT64_C(100000000)) == UINT64_C(34031250));
     CHECK(tcp_shift_bbr_drain_pacing_rate_bytes_per_sec(0U) == 0U);
+    /* Drain gain is below one, so even UINT64_MAX scales down rather than
+     * saturating. Keep the exact floor result as an overflow regression. */
     CHECK(tcp_shift_bbr_drain_pacing_rate_bytes_per_sec(UINT64_MAX) ==
-          UINT64_MAX);
+          UINT64_C(6277657592584281783));
     return 0;
 }
 
