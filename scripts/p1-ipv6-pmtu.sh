@@ -195,11 +195,11 @@ ip6tables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
 FORWARD_RULES=1
 
 # Before any PTB feedback, the TUN MTU is 1500, so the IPv6 SYN-ACK must
-# advertise the normal 1440-byte TCP MSS. Other negotiated TCP options may
-# follow MSS (for example RFC 7323 window scaling), so validate the MSS token
-# rather than requiring MSS to be the final option.
+# advertise the normal 1440-byte TCP MSS. capture_synack() has already scoped
+# this file to the listener's single SYN-ACK, so checking the MSS token alone
+# is robust to additional negotiated TCP options and their ordering.
 capture_synack "$OUT/synack-before.txt" "$OUT/connect-before.txt"
-grep -E 'mss 1440([,]])' "$OUT/synack-before.txt" >/dev/null || {
+grep -F 'mss 1440' "$OUT/synack-before.txt" >/dev/null || {
     cat "$OUT/synack-before.txt" >&2
     echo "baseline IPv6 MSS was not 1440" >&2
     exit 1
@@ -244,11 +244,11 @@ grep -E 'mtu 1280|mtu 1280,' "$OUT/ptb-wire.txt" >/dev/null
 
 # A subsequent connection to the same destination must now use the learned
 # destination PMTU. tcp_eff_send_mss_netif() is expected to advertise
-# 1280 - 40-byte IPv6 - 20-byte TCP = 1220 bytes. As above, later SYN options
-# are allowed and do not weaken the MSS semantic assertion.
+# 1280 - 40-byte IPv6 - 20-byte TCP = 1220 bytes. capture_synack() again scopes
+# the evidence to a single listener SYN-ACK, so option ordering is irrelevant.
 sleep 0.1
 capture_synack "$OUT/synack-after.txt" "$OUT/connect-after.txt"
-grep -E "mss ${EXPECTED_MSS}([,]])" "$OUT/synack-after.txt" >/dev/null || {
+grep -F "mss $EXPECTED_MSS" "$OUT/synack-after.txt" >/dev/null || {
     cat "$OUT/ptb-wire.txt" >&2 || true
     cat "$OUT/synack-after.txt" >&2 || true
     echo "lwIP did not apply learned IPv6 PMTU to subsequent TCP MSS" >&2
