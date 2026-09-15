@@ -1,5 +1,6 @@
 #include <stdio.h>
 
+#include "cc/cubic.h"
 #include "cc/registry.h"
 #include "cc/reno.h"
 
@@ -16,8 +17,8 @@ int main(void)
 {
     CHECK(tcp_shift_cc_default_ops() == &tcp_shift_reno_ops);
     CHECK(tcp_shift_cc_find_ops("reno") == &tcp_shift_reno_ops);
+    CHECK(tcp_shift_cc_find_ops("cubic") == &tcp_shift_cubic_ops);
     CHECK(tcp_shift_cc_find_ops("") == NULL);
-    CHECK(tcp_shift_cc_find_ops("cubic") == NULL);
     CHECK(tcp_shift_cc_find_ops("bbr") == NULL);
     CHECK(tcp_shift_cc_find_ops("bbrv3") == NULL);
     CHECK(tcp_shift_cc_find_ops(NULL) == NULL);
@@ -26,11 +27,17 @@ int main(void)
           TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY);
     CHECK(tcp_shift_reno_ops.state_size <=
           TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY);
+    CHECK(tcp_shift_cubic_ops.state_size <=
+          TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY);
+    CHECK(tcp_shift_cubic_ops.state_size ==
+          sizeof(struct tcp_shift_cubic_model));
     CHECK(_Alignof(union tcp_shift_cc_builtin_state) >=
           _Alignof(struct tcp_shift_reno_state));
+    CHECK(_Alignof(union tcp_shift_cc_builtin_state) >=
+          _Alignof(struct tcp_shift_cubic_model));
 
-    printf("cc_registry=ok default=reno available=reno "
-           "unavailable=cubic,bbr,bbrv3 state_capacity=%zu\n",
+    printf("cc_registry=ok default=reno available=reno,cubic "
+           "unavailable=bbr,bbrv3 state_capacity=%zu\n",
            sizeof(union tcp_shift_cc_builtin_state));
     return 0;
 }
