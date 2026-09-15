@@ -20,6 +20,9 @@ extern "C" {
  * an unquantized decimal approximation. */
 #define TCP_SHIFT_BBR_GAIN_DEN 256U
 #define TCP_SHIFT_BBR_STARTUP_GAIN_NUM 739U
+/* Linux BBRv1 computes its reciprocal Startup gain for DRAIN with integer
+ * truncation: BBR_UNIT * 1000 / 2885 = 88. */
+#define TCP_SHIFT_BBR_DRAIN_GAIN_NUM 88U
 #define TCP_SHIFT_BBR_PACING_MARGIN_NUM 99U
 #define TCP_SHIFT_BBR_PACING_MARGIN_DEN 100U
 #define TCP_SHIFT_BBR_MIN_CWND_PACKETS 4U
@@ -107,6 +110,31 @@ int tcp_shift_bbr_startup_policy(
     uint32_t initial_cwnd_bytes,
     uint32_t current_cwnd_bytes,
     uint64_t current_pacing_rate_bytes_per_sec,
+    struct tcp_shift_cc_policy *policy);
+
+/* DRAIN uses Linux BBRv1's fixed-point reciprocal Startup gain (88/256) and
+ * the same 1% pacing margin. Unlike STARTUP, a lower pacing target is
+ * intentional once full pipe is reached. */
+uint64_t tcp_shift_bbr_drain_pacing_rate_bytes_per_sec(
+    uint64_t bandwidth_bytes_per_sec);
+
+/* Advance the compact mode machine across STARTUP -> DRAIN -> PROBE_BW.
+ * `prior_inflight_bytes` is the transport-neutral approximation used by
+ * tcp-shift in place of Linux's pacing-aware packets-in-network-at-EDT value.
+ * The transition to PROBE_BW is deferred until max_bw/min_rtt and a valid rate
+ * sample exist. The helper intentionally does not implement ProbeBW cycling. */
+int tcp_shift_bbr_model_check_drain(
+    struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_rate_sample *sample);
+
+/* Publish DRAIN policy. cwnd keeps the Startup/high-gain BDP target while
+ * pacing is reduced to the drain gain. ssthresh publishes the compact 1*BDP
+ * drain target for transport telemetry; BBR does not use it as a growth gate. */
+int tcp_shift_bbr_drain_policy(
+    const struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_cc_ack *ack,
+    uint32_t current_cwnd_bytes,
     struct tcp_shift_cc_policy *policy);
 
 #ifdef __cplusplus
