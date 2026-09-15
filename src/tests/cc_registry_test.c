@@ -22,6 +22,15 @@ int main(void)
     CHECK(tcp_shift_cc_find_ops("bbrv3") == NULL);
     CHECK(tcp_shift_cc_find_ops(NULL) == NULL);
 
-    printf("cc_registry=ok default=reno available=reno unavailable=cubic,bbr,bbrv3\n");
+    CHECK(sizeof(union tcp_shift_cc_builtin_state) ==
+          TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY);
+    CHECK(tcp_shift_reno_ops.state_size <=
+          TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY);
+    CHECK(_Alignof(union tcp_shift_cc_builtin_state) >=
+          _Alignof(struct tcp_shift_reno_state));
+
+    printf("cc_registry=ok default=reno available=reno "
+           "unavailable=cubic,bbr,bbrv3 state_capacity=%zu\n",
+           sizeof(union tcp_shift_cc_builtin_state));
     return 0;
 }

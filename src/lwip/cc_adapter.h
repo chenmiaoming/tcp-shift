@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "cc/cc.h"
+#include "cc/registry.h"
 #include "cc/reno.h"
 #include "lwip/cc_hooks.h"
 #include "lwip/tcp.h"
@@ -83,7 +84,15 @@ struct tcp_shift_lwip_cc_stats {
 struct tcp_shift_lwip_cc_adapter {
     struct tcp_shift_lwip_cc_hook hook;
     struct tcp_shift_cc controller;
-    struct tcp_shift_reno_state reno;
+    /* The adapter owns opaque, registry-sized controller storage rather than
+     * an algorithm-specific state object. `reno` is a temporary source-level
+     * compatibility alias for the existing bind path; both names address the
+     * same generic bytes and the alias can disappear when live selection is
+     * wired through the listener in the next selector increment. */
+    union {
+        union tcp_shift_cc_builtin_state controller_state;
+        union tcp_shift_cc_builtin_state reno;
+    };
     struct tcp_shift_lwip_cc_stats *stats;
     struct tcp_pcb *pcb;
     void *delivery_slots;
