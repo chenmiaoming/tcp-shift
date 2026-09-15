@@ -53,15 +53,21 @@ _Static_assert(sizeof(tcpwnd_size_t) == sizeof(uint32_t),
 _Static_assert(TCP_MSS > 0, "TCP_MSS must be positive");
 _Static_assert(TCP_WND >= (2 * TCP_MSS), "TCP_WND is too small for the TCP profile");
 _Static_assert(TCP_SND_BUF >= (2 * TCP_MSS), "TCP_SND_BUF is too small for the TCP profile");
+_Static_assert(TCP_SND_BUF == TCP_SHIFT_TCP_SND_BUF_BYTES,
+               "sender-buffer build profile must match lwIP TCP_SND_BUF");
+_Static_assert(TCP_SND_QUEUELEN <= UINT16_MAX,
+               "TCP_SND_QUEUELEN must fit lwIP's queue-length accounting");
 
 int main(void)
 {
     printf("config_contract=ok window_scaling=%u tcp_rcv_scale=%u "
-           "tcpwnd_size_bytes=%zu tcp_wnd=%u tcp_snd_buf=%u\n",
+           "tcpwnd_size_bytes=%zu tcp_wnd=%u tcp_snd_buf=%u "
+           "tcp_snd_queuelen=%u\n",
            (unsigned)LWIP_WND_SCALE,
            (unsigned)TCP_RCV_SCALE,
            sizeof(tcpwnd_size_t),
            (unsigned)TCP_WND,
-           (unsigned)TCP_SND_BUF);
+           (unsigned)TCP_SND_BUF,
+           (unsigned)TCP_SND_QUEUELEN);
     return 0;
 }
