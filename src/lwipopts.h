@@ -102,6 +102,14 @@
     ((TCP_SHIFT_TCP_SNDLOWAT_BASE < TCP_SHIFT_TCP_SNDLOWAT_U16_MAX) ? \
      TCP_SHIFT_TCP_SNDLOWAT_BASE : TCP_SHIFT_TCP_SNDLOWAT_U16_MAX)
 
+/* Keep upstream max(TCP_SND_QUEUELEN/2, 5) semantics as a constant expression.
+ * This lets the standalone config contract validate large queue profiles without
+ * depending on LWIP_MAX being visible in that translation unit. */
+#define TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF (TCP_SND_QUEUELEN / 2U)
+#define TCP_SNDQUEUELOWAT \
+    ((TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF > 5U) ? \
+     TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF : 5U)
+
 #define TCP_QUEUE_OOSEQ 1
 
 #define LWIP_STATS 1
