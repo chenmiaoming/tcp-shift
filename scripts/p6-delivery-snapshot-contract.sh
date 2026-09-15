@@ -31,5 +31,7 @@ CC=${CC:-cc}
     -o "$OUT"
 
 "$OUT" | tee "$BUILD/p6-delivery-snapshot-summary.txt"
-grep -F 'bbr_delivery_snapshot=ok samples=2 errors=0 ' \
+grep -F 'bbr_delivery_snapshot=ok samples=3 errors=0 ack_observations=3 srtt_updates=2 ' \
+    "$BUILD/p6-delivery-snapshot-summary.txt" >/dev/null
+grep -F 'retransmitted_samples=1 ' \
     "$BUILD/p6-delivery-snapshot-summary.txt" >/dev/null
