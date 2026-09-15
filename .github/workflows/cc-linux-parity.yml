@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - '.github/workflows/cc-linux-parity.yml'
+      - 'scripts/cc-linux-parity-evaluate.py'
       - 'scripts/cubic-linux-benchmark.sh'
       - 'scripts/cubic-reno-benchmark.sh'
       - 'src/lwipopts.h'
@@ -78,6 +79,7 @@ jobs:
         run: |
           sh -n scripts/cubic-linux-benchmark.sh
           sh -n scripts/cubic-reno-benchmark.sh
+          python3 -m py_compile scripts/cc-linux-parity-evaluate.py
 
       - name: Build 1 MiB sender profile
         run: |
@@ -149,6 +151,12 @@ jobs:
             TCP_SHIFT_CC_BENCH_OUT="$out" \
             sh scripts/cubic-reno-benchmark.sh
 
+      - name: Evaluate parity readiness
+        if: always()
+        run: |
+          root="$PWD/.build/cc-linux-parity/${{ matrix.case }}"
+          python3 scripts/cc-linux-parity-evaluate.py "$root" | tee "$root/evaluation.txt"
+
       - name: Publish parity evidence
         if: always()
         run: |
@@ -165,6 +173,14 @@ jobs:
                 echo '```'
               fi
             done
+            if [ -f "$root/evaluation.txt" ]; then
+              echo
+              echo '### Qualification readiness'
+              echo
+              echo '```text'
+              cat "$root/evaluation.txt"
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload parity diagnostics
