@@ -1,0 +1,144 @@
+name: CC Linux parity
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cc-linux-parity.yml'
+      - 'scripts/cubic-linux-benchmark.sh'
+      - 'scripts/cubic-reno-benchmark.sh'
+      - 'src/lwipopts.h'
+      - 'src/config_contract.c'
+      - 'src/cc/**'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_selector.c'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  one-mib-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+            queue_pkts: 35
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+            queue_pkts: 69
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+            queue_pkts: 857
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install parity dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate benchmark harnesses
+        run: |
+          sh -n scripts/cubic-linux-benchmark.sh
+          sh -n scripts/cubic-reno-benchmark.sh
+
+      - name: Build 1 MiB sender profile
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-cc-parity \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
+          cmake --build .build-cc-parity --target tcp-shift-config-contract tcp-shift-p2 --parallel
+          .build-cc-parity/tcp-shift-config-contract | tee .build-cc-parity/config-contract.txt
+          grep -F 'tcp_snd_buf=1048576' .build-cc-parity/config-contract.txt
+
+      - name: Compare 1 MiB tcp-shift CUBIC with Linux tcp_cubic
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic"
+          sudo env \
+            TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}" \
+            TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CUBIC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CUBIC_BENCH_OUT="$out" \
+            sh scripts/cubic-linux-benchmark.sh
+
+      - name: Compare 1 MiB tcp-shift CUBIC with tcp-shift Reno control
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno"
+          sudo env \
+            TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
+            TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}" \
+            TCP_SHIFT_CC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CC_BENCH_OUT="$out" \
+            sh scripts/cubic-reno-benchmark.sh
+
+      - name: Publish parity evidence
+        if: always()
+        run: |
+          root=".build/cc-linux-parity/${{ matrix.case }}"
+          {
+            echo "## 1 MiB CC parity: ${{ matrix.case }}"
+            echo
+            echo "RTT=${{ matrix.rtt_ms }}ms rate=${{ matrix.rate_mbit }}Mbit payload=${{ matrix.payload_bytes }} bytes queue=${{ matrix.queue_pkts }} packets"
+            for summary in "$root"/*/summary.txt; do
+              if [ -f "$summary" ]; then
+                echo
+                echo '```text'
+                cat "$summary"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload parity diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-linux-parity-${{ matrix.case }}
+          path: |
+            .build-cc-parity/config-contract.txt
+            .build/cc-linux-parity/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true
