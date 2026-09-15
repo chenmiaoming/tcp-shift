@@ -21,6 +21,7 @@ if awk '
     $0 == "#include <stddef.h>" { next }
     $0 == "#include <stdint.h>" { next }
     $0 == "#include \"cc/cc.h\"" { next }
+    $0 == "#include \"cc/registry.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
     $0 == "#include \"cc/bbr.h\"" { next }
     { print; bad = 1 }
@@ -41,6 +42,10 @@ cmake --build "$BUILD/standalone" --parallel
 grep -F 'cc_contract=ok controller=reno state_bytes=16 pacing=none' \
     "$OUT/contract.txt" >/dev/null
 
+"$BUILD/standalone/tcp-shift-cc-registry-contract" | tee "$OUT/registry-contract.txt"
+grep -F 'cc_registry=ok default=reno available=reno unavailable=cubic,bbr,bbrv3' \
+    "$OUT/registry-contract.txt" >/dev/null
+
 LIB="$BUILD/standalone/libtcp_shift_cc.a"
 test -f "$LIB"
 ar t "$LIB" | tee "$OUT/archive-members.txt"
@@ -59,6 +64,6 @@ rm -f "$OUT/unexpected-undefined.txt"
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller=reno\nstate_bytes=16\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller=reno\nregistry=ok\nstate_bytes=16\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"

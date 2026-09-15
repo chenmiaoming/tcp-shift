@@ -23,4 +23,12 @@ if(TCP_SHIFT_CC_STANDALONE)
     )
     target_compile_options(tcp-shift-cc-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(tcp-shift-cc-contract PRIVATE tcp_shift_cc)
+
+    add_executable(tcp-shift-cc-registry-contract
+        ../tests/cc_registry_test.c
+    )
+    target_compile_options(tcp-shift-cc-registry-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-cc-registry-contract PRIVATE tcp_shift_cc)
 endif()
