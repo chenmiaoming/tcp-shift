@@ -1,4 +1,5 @@
 #include "cc/reno.h"
+#include "cc/registry.h"
 
 #include <limits.h>
 
@@ -235,3 +236,31 @@ const struct tcp_shift_cc_ops tcp_shift_fixed_pacing_reno_ops = {
     .on_loss = tcp_shift_fixed_pacing_reno_on_loss,
     .on_timeout = tcp_shift_fixed_pacing_reno_on_timeout,
 };
+
+static int tcp_shift_cc_name_equal(const char *left, const char *right)
+{
+    if (left == NULL || right == NULL) {
+        return 0;
+    }
+    while (*left != '\0' && *right != '\0') {
+        if (*left != *right) {
+            return 0;
+        }
+        left++;
+        right++;
+    }
+    return *left == *right;
+}
+
+const struct tcp_shift_cc_ops *tcp_shift_cc_find_ops(const char *name)
+{
+    if (tcp_shift_cc_name_equal(name, tcp_shift_reno_ops.name)) {
+        return &tcp_shift_reno_ops;
+    }
+    return NULL;
+}
+
+const struct tcp_shift_cc_ops *tcp_shift_cc_default_ops(void)
+{
+    return &tcp_shift_reno_ops;
+}
