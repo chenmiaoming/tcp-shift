@@ -34,7 +34,49 @@ static int tcp_shift_pacing_qualification_linux_mode(void)
 {
     const char *mode = getenv("TCP_SHIFT_PACING_QUALIFICATION");
 
-    return mode != NULL && strcmp(mode, "linux") == 0;
+    return mode != NULL &&
+           (strcmp(mode, "linux") == 0 || strcmp(mode, "linux-cap") == 0);
+}
+
+static int tcp_shift_pacing_qualification_linux_rate_cap(uint64_t *rate_cap)
+{
+    const char *mode = getenv("TCP_SHIFT_PACING_QUALIFICATION");
+    const char *value;
+    const char *cursor;
+    uint64_t parsed = 0U;
+
+    if (rate_cap == NULL) {
+        return -1;
+    }
+    *rate_cap = 0U;
+
+    if (mode == NULL || strcmp(mode, "linux-cap") != 0) {
+        return 0;
+    }
+
+    value = getenv("TCP_SHIFT_PACING_QUALIFICATION_MAX_BYTES_PER_SEC");
+    if (value == NULL || value[0] == '\0') {
+        return -1;
+    }
+
+    for (cursor = value; *cursor != '\0'; cursor++) {
+        uint64_t digit;
+
+        if (*cursor < '0' || *cursor > '9') {
+            return -1;
+        }
+        digit = (uint64_t)(*cursor - '0');
+        if (parsed > (UINT64_MAX - digit) / 10U) {
+            return -1;
+        }
+        parsed = parsed * 10U + digit;
+    }
+
+    if (parsed == 0U) {
+        return -1;
+    }
+    *rate_cap = parsed;
+    return 0;
 }
 
 static uint64_t tcp_shift_pacing_qualification_scale_percent(uint64_t value,
@@ -102,16 +144,26 @@ static int tcp_shift_pacing_qualification_publish_linux_rate(
     const struct tcp_shift_cc_transport *transport,
     struct tcp_shift_cc_policy *policy)
 {
-    if (adapter == NULL || transport == NULL || policy == NULL) {
+    uint64_t rate_cap;
+
+    if (adapter == NULL || transport == NULL || policy == NULL ||
+        tcp_shift_pacing_qualification_linux_rate_cap(&rate_cap) < 0) {
         return -1;
     }
 
     /* A controller-owned pacing rate always wins. This fallback exists only
-     * for Reno/CUBIC controllers that deliberately publish rate=0 today. */
+     * for Reno/CUBIC controllers that deliberately publish rate=0 today.
+     * linux-cap is a benchmark-only diagnostic: it preserves the dynamic
+     * Linux-like calculation while clipping that fallback to a known path
+     * ceiling so scheduler/hook behavior can be separated from rate choice. */
     if (policy->pacing_rate_bytes_per_sec == 0U) {
-        policy->pacing_rate_bytes_per_sec =
-            tcp_shift_pacing_qualification_linux_rate(adapter, transport,
-                                                       policy);
+        uint64_t rate = tcp_shift_pacing_qualification_linux_rate(
+            adapter, transport, policy);
+
+        if (rate_cap != 0U && rate > rate_cap) {
+            rate = rate_cap;
+        }
+        policy->pacing_rate_bytes_per_sec = rate;
     }
     return 0;
 }
