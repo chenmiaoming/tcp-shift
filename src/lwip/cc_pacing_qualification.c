@@ -1,13 +1,11 @@
 #include "lwip/cc_adapter.h"
+#include "cc/transport_pacing.h"
 
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define TCP_SHIFT_PACING_QUALIFICATION_MAX_LISTENERS 2U
-#define TCP_SHIFT_PACING_QUALIFICATION_NSEC_PER_SEC UINT64_C(1000000000)
-#define TCP_SHIFT_PACING_QUALIFICATION_SS_PERCENT 200U
-#define TCP_SHIFT_PACING_QUALIFICATION_CA_PERCENT 120U
 
 struct tcp_shift_pacing_qualification_binding {
     struct tcp_pcb *listener;
@@ -79,66 +77,6 @@ static int tcp_shift_pacing_qualification_linux_rate_cap(uint64_t *rate_cap)
     return 0;
 }
 
-static uint64_t tcp_shift_pacing_qualification_scale_percent(uint64_t value,
-                                                              uint32_t percent)
-{
-    uint64_t quotient;
-    uint64_t remainder;
-    uint64_t scaled;
-
-    if (value == 0U || percent == 0U) {
-        return 0U;
-    }
-
-    /* The only qualification gains are 200% and 120%. Divide first so the
-     * multiplication stays bounded even for an extreme 1 ns RTT input. */
-    quotient = value / 100U;
-    remainder = value % 100U;
-    scaled = quotient * percent + (remainder * percent) / 100U;
-    return scaled == 0U ? 1U : scaled;
-}
-
-static uint64_t tcp_shift_pacing_qualification_linux_rate(
-    const struct tcp_shift_lwip_cc_adapter *adapter,
-    const struct tcp_shift_cc_transport *transport,
-    const struct tcp_shift_cc_policy *policy)
-{
-    uint64_t base_rate;
-    uint32_t window_bytes;
-    uint32_t percent;
-
-    if (adapter == NULL || transport == NULL || policy == NULL ||
-        adapter->srtt.smoothed_rtt_ns == 0U) {
-        return 0U;
-    }
-
-    /* Linux's ordinary TCP pacing rate is based on roughly
-     * max(cwnd, packets_out) * MSS / SRTT. tcp-shift already expresses cwnd
-     * and in-flight in bytes, so no packet-to-byte conversion is required. */
-    window_bytes = policy->cwnd_bytes;
-    if (transport->inflight_bytes > window_bytes) {
-        window_bytes = transport->inflight_bytes;
-    }
-    if (window_bytes == 0U) {
-        return 0U;
-    }
-
-    base_rate = ((uint64_t)window_bytes *
-                 TCP_SHIFT_PACING_QUALIFICATION_NSEC_PER_SEC) /
-                adapter->srtt.smoothed_rtt_ns;
-    if (base_rate == 0U) {
-        base_rate = 1U;
-    }
-
-    /* Match the default Linux transport-level policy shape: pace faster in
-     * early slow start, then reduce the gain as ssthresh approaches/after CA.
-     * This is qualification infrastructure, not CUBIC or Reno algorithm state. */
-    percent = policy->cwnd_bytes < policy->ssthresh_bytes / 2U
-                  ? TCP_SHIFT_PACING_QUALIFICATION_SS_PERCENT
-                  : TCP_SHIFT_PACING_QUALIFICATION_CA_PERCENT;
-    return tcp_shift_pacing_qualification_scale_percent(base_rate, percent);
-}
-
 static int tcp_shift_pacing_qualification_publish_linux_rate(
     struct tcp_shift_lwip_cc_adapter *adapter,
     const struct tcp_shift_cc_transport *transport,
@@ -151,21 +89,13 @@ static int tcp_shift_pacing_qualification_publish_linux_rate(
         return -1;
     }
 
-    /* A controller-owned pacing rate always wins. This fallback exists only
-     * for Reno/CUBIC controllers that deliberately publish rate=0 today.
-     * linux-cap is a benchmark-only diagnostic: it preserves the dynamic
-     * Linux-like calculation while clipping that fallback to a known path
-     * ceiling so scheduler/hook behavior can be separated from rate choice. */
-    if (policy->pacing_rate_bytes_per_sec == 0U) {
-        uint64_t rate = tcp_shift_pacing_qualification_linux_rate(
-            adapter, transport, policy);
-
-        if (rate_cap != 0U && rate > rate_cap) {
-            rate = rate_cap;
-        }
-        policy->pacing_rate_bytes_per_sec = rate;
-    }
-    return 0;
+    /* Keep benchmark qualification on the same transport policy primitive
+     * that production Reno/CUBIC will eventually use. A controller-owned
+     * nonzero rate (BBR) has strict precedence. linux-cap remains a benchmark-
+     * only ceiling on the fallback so known path knowledge never leaks into a
+     * controller-owned rate or ordinary transport operation. */
+    return tcp_shift_transport_pacing_apply_window_fallback(
+        transport, adapter->srtt.smoothed_rtt_ns, rate_cap, policy);
 }
 
 static int tcp_shift_pacing_qualification_inner_init(
