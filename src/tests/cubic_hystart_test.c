@@ -132,14 +132,15 @@ static int run_delay_detector(void)
 
     /* Crossing delivered+inflight starts a fresh round. Its RTT minimum is
      * 30 ms. Linux's threshold is minRTT + clamp(minRTT/8, 4 ms, 16 ms) =
-     * 24 ms here, so the ninth sample in the new round exits slow start. */
-    for (i = 0U; i < 10U; i++) {
+     * 24 ms here. HyStart collects eight samples, then the ninth ACK evaluates
+     * the round minimum and exits slow start. */
+    for (i = 0U; i < 9U; i++) {
         delivered += 1000U;
         set_ack(&ack,
                 UINT64_C(200000000) + (uint64_t)i * UINT64_C(5000000),
                 UINT64_C(30000000), UINT64_C(1000), delivered);
         CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
-        if (i < 9U) {
+        if (i < 8U) {
             CHECK(state.cubic.hystart_found == 0U);
         }
     }
