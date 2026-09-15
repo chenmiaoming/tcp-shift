@@ -16,6 +16,12 @@ static uint64_t tcp_shift_cubic_hystart_delay_threshold(uint64_t delay_min_ns)
     return threshold;
 }
 
+static uint64_t tcp_shift_cubic_hystart_add_sat_u64(uint64_t left,
+                                                     uint64_t right)
+{
+    return right > UINT64_MAX - left ? UINT64_MAX : left + right;
+}
+
 void tcp_shift_cubic_hystart_reset(struct tcp_shift_cubic_model *model)
 {
     if (model == NULL) {
@@ -36,6 +42,7 @@ void tcp_shift_cubic_hystart_reset(struct tcp_shift_cubic_model *model)
 
 static void tcp_shift_cubic_hystart_start_round(
     struct tcp_shift_cubic_model *model,
+    const struct tcp_shift_cc_transport *transport,
     const struct tcp_shift_cc_ack *ack,
     uint64_t now_ns)
 {
@@ -43,9 +50,18 @@ static void tcp_shift_cubic_hystart_start_round(
     model->hystart_last_ack_ns = now_ns;
     model->hystart_curr_rtt_ns = UINT64_MAX;
     model->hystart_sample_count = 0U;
+
+    /* Linux records end_seq=snd_nxt when a HyStart round starts. In the
+     * transport-neutral delivery domain, cumulative delivered bytes plus the
+     * bytes still in flight is the matching end-of-flight boundary. Reset the
+     * round only after cumulative delivery crosses that boundary; using the
+     * current delivered total alone makes delayed/multi-segment ACK streams
+     * start a new round too early and starves both HyStart detectors. */
     if (ack->rate.delivered_total_bytes != 0U) {
         model->hystart_next_round_delivered =
-            ack->rate.delivered_total_bytes;
+            tcp_shift_cubic_hystart_add_sat_u64(
+                ack->rate.delivered_total_bytes,
+                transport->inflight_bytes);
     }
 }
 
@@ -115,14 +131,13 @@ int tcp_shift_cubic_hystart_on_ack(
     }
 
     new_round = model->hystart_round_start_ns == 0U;
-    if (ack->rate.delivered_total_bytes != 0U &&
-        ack->rate.delivered_total_bytes >= ack->rate.prior_delivered_bytes &&
-        ack->rate.prior_delivered_bytes >=
+    if (new_round == 0 && model->hystart_next_round_delivered != 0U &&
+        ack->rate.delivered_total_bytes >
             model->hystart_next_round_delivered) {
         new_round = 1;
     }
     if (new_round != 0) {
-        tcp_shift_cubic_hystart_start_round(model, ack, now_ns);
+        tcp_shift_cubic_hystart_start_round(model, transport, ack, now_ns);
     }
 
     if (tcp_shift_cubic_hystart_low_window_reached(model) == 0) {
