@@ -1,4 +1,5 @@
 #include "lwip/cc_adapter.h"
+#include "runtime/pacer.h"
 
 #include <limits.h>
 #include <stddef.h>
@@ -257,41 +258,36 @@ int tcp_shift_lwip_cc_clear_pacer(void)
     return 0;
 }
 
-static uint64_t tcp_shift_pacing_spacing_ns(uint16_t payload_bytes,
-                                             uint64_t rate_bytes_per_sec)
-{
-    uint64_t numerator;
-    uint64_t spacing;
-
-    if (payload_bytes == 0U || rate_bytes_per_sec == 0U) {
-        return 0U;
-    }
-    numerator = (uint64_t)payload_bytes * TCP_SHIFT_NSEC_PER_SEC;
-    spacing = numerator / rate_bytes_per_sec;
-    if ((numerator % rate_bytes_per_sec) != 0U) {
-        spacing++;
-    }
-    return spacing == 0U ? 1U : spacing;
-}
-
 static void tcp_shift_pacing_note_tx(struct tcp_shift_lwip_cc_adapter *adapter,
                                      uint16_t payload_bytes,
                                      uint64_t now_ns)
 {
-    uint64_t spacing;
+    struct tcp_shift_flow_pacer flow;
 
     if (adapter == NULL || payload_bytes == 0U ||
         adapter->pacing_rate_bytes_per_sec == 0U || now_ns == 0U) {
         return;
     }
 
-    spacing = tcp_shift_pacing_spacing_ns(payload_bytes,
-                                           adapter->pacing_rate_bytes_per_sec);
-    if (UINT64_MAX - now_ns < spacing) {
-        adapter->pacing_next_send_ns = UINT64_MAX;
-    } else {
-        adapter->pacing_next_send_ns = now_ns + spacing;
+    /* The runtime flow clock is the source of truth for byte/rate -> deadline
+     * conversion. Keep zero catch-up credit for lwIP v1: if the event loop is
+     * late, release the due segment and schedule the next one in the future
+     * rather than trying to repay elapsed pacing credit as a burst. The scalar
+     * fields remain in the adapter ABI for now; they mirror the reusable flow
+     * clock until the next state-layout cleanup. */
+    tcp_shift_flow_pacer_init(&flow, 0U);
+    tcp_shift_flow_pacer_set_rate(&flow, adapter->pacing_rate_bytes_per_sec);
+    flow.next_send_ns = adapter->pacing_next_send_ns;
+    if (tcp_shift_flow_pacer_note_tx(&flow, now_ns, payload_bytes) < 0) {
+        if (adapter->stats != NULL) {
+            adapter->stats->pacing_scheduler_errors++;
+        }
+        adapter->pacing_rate_bytes_per_sec = 0U;
+        adapter->pacing_next_send_ns = 0U;
+        return;
     }
+    adapter->pacing_next_send_ns = flow.next_send_ns;
+
     if (adapter->stats != NULL) {
         adapter->stats->pacing_tx_events++;
         adapter->stats->pacing_tx_bytes += payload_bytes;
@@ -307,6 +303,8 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
                                                        u16_t payload_bytes)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_flow_pacer flow;
+    uint64_t deadline_ns;
     uint64_t now_ns;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
@@ -315,8 +313,15 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     }
 
     now_ns = tcp_shift_delivery_now_ns(adapter);
-    if (now_ns == 0U || adapter->pacing_next_send_ns == 0U ||
-        now_ns >= adapter->pacing_next_send_ns) {
+    if (now_ns == 0U) {
+        return 1;
+    }
+
+    tcp_shift_flow_pacer_init(&flow, 0U);
+    tcp_shift_flow_pacer_set_rate(&flow, adapter->pacing_rate_bytes_per_sec);
+    flow.next_send_ns = adapter->pacing_next_send_ns;
+    deadline_ns = tcp_shift_flow_pacer_deadline(&flow, now_ns);
+    if (deadline_ns == 0U) {
         return 1;
     }
 
@@ -336,7 +341,7 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
                 tcp_shift_pacing_service.arg,
                 adapter->pacing_flow_id,
                 adapter->pacing_generation,
-                adapter->pacing_next_send_ns,
+                deadline_ns,
                 payload_bytes) < 0) {
             if (adapter->stats != NULL) {
                 adapter->stats->pacing_scheduler_errors++;
@@ -349,8 +354,7 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     }
     if (adapter->stats != NULL) {
         adapter->stats->pacing_deferrals++;
-        adapter->stats->pacing_last_deadline_ns =
-            adapter->pacing_next_send_ns;
+        adapter->stats->pacing_last_deadline_ns = deadline_ns;
     }
     return 0;
 }
