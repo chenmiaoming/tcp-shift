@@ -13,6 +13,7 @@ add_library(tcp_shift_cc STATIC
     cc.c
     reno.c
     bbr.c
+    cubic.c
 )
 target_include_directories(tcp_shift_cc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_options(tcp_shift_cc PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -31,4 +32,12 @@ if(TCP_SHIFT_CC_STANDALONE)
         -Wall -Wextra -Wpedantic -Werror
     )
     target_link_libraries(tcp-shift-cc-registry-contract PRIVATE tcp_shift_cc)
+
+    add_executable(tcp-shift-cubic-model-contract
+        ../tests/cubic_model_test.c
+    )
+    target_compile_options(tcp-shift-cubic-model-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-cubic-model-contract PRIVATE tcp_shift_cc)
 endif()
