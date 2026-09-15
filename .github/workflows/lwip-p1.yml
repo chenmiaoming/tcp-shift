@@ -15,6 +15,7 @@ on:
       - 'scripts/p1-ipv6-smoke.sh'
       - 'scripts/p1-ipv6-nft-lifecycle.sh'
       - 'scripts/p1-ipv6-pmtu.sh'
+      - 'scripts/window-scaling-contract.sh'
       - '.lwip-baseline'
   push:
     branches:
@@ -60,6 +61,7 @@ jobs:
           sh -n scripts/p1-ipv6-smoke.sh
           sh -n scripts/p1-ipv6-nft-lifecycle.sh
           sh -n scripts/p1-ipv6-pmtu.sh
+          sh -n scripts/window-scaling-contract.sh
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
@@ -79,6 +81,11 @@ jobs:
             tcp-shift-p1-backpressure-contract \
             tcp-shift-p1-rx-contract \
             --parallel
+
+      - name: Qualify upstream lwIP window-scaling negotiation
+        run: |
+          sudo env TCP_SHIFT_WINDOW_SCALE_BINARY="$PWD/.build/tcp-shift-p1" \
+            sh scripts/window-scaling-contract.sh
 
       - name: Enforce bounded TX backpressure contract
         run: |
@@ -133,6 +140,7 @@ jobs:
             .build/p1-capability.txt
             .build/p1-backpressure.txt
             .build/p1-rx-contract.txt
+            .build/window-scaling-contract
             .build/p1-ci
             .build/p1-nft-ci
             .build/p1-ipv6-ci
