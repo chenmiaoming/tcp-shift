@@ -90,12 +90,14 @@ wait "$TCPDUMP_PID"
 TCPDUMP_PID=
 cat "$OUT/handshake.txt"
 
-grep -E "IP .* > ${LWIP_IP}\\.${TCP_PORT}: Flags \\[S\\].*wscale [0-9]+" \
+# tcpdump -vvv may wrap the packet summary so the address/Flags/options line is
+# not the line beginning with "IP". Match the stable address/flag text instead.
+grep -E "${HOST_IP}\\.[0-9]+ > ${LWIP_IP}\\.${TCP_PORT}: Flags \\[S\\].*wscale [0-9]+" \
     "$OUT/handshake.txt" >/dev/null || {
     echo "client SYN did not advertise window scaling" >&2
     exit 1
 }
-grep -E "IP ${LWIP_IP}\\.${TCP_PORT} > .* Flags \\[S\\.\\].*wscale 0" \
+grep -E "${LWIP_IP}\\.${TCP_PORT} > .* Flags \\[S\\.\\].*wscale 0" \
     "$OUT/handshake.txt" >/dev/null || {
     echo "lwIP SYN-ACK did not advertise the qualified wscale 0 profile" >&2
     exit 1
