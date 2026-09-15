@@ -257,6 +257,9 @@ const struct tcp_shift_cc_ops *tcp_shift_cc_find_ops(const char *name)
     if (tcp_shift_cc_name_equal(name, tcp_shift_reno_ops.name)) {
         return &tcp_shift_reno_ops;
     }
+    if (tcp_shift_cc_name_equal(name, tcp_shift_cubic_ops.name)) {
+        return &tcp_shift_cubic_ops;
+    }
     return NULL;
 }
 
