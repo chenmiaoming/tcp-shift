@@ -1,0 +1,113 @@
+name: CUBIC Linux benchmark
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cubic-linux-benchmark.yml'
+      - 'scripts/cubic-linux-benchmark.sh'
+      - 'src/cc/cubic.c'
+      - 'src/cc/cubic.h'
+      - 'src/cc/cubic_controller.c'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_selector.c'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare-linux-cubic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            rtt_ms: 10
+            rate_mbit: 20
+            loss_pct: '0'
+            payload_bytes: 4194304
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            loss_pct: '0'
+            payload_bytes: 4194304
+          - case: lossy-wan
+            rtt_ms: 40
+            rate_mbit: 10
+            loss_pct: '0.1'
+            payload_bytes: 4194304
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            loss_pct: '0'
+            payload_bytes: 8388608
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate benchmark harness
+        run: sh -n scripts/cubic-linux-benchmark.sh
+
+      - name: Build pinned tcp-shift runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p2 --parallel
+
+      - name: Compare tcp-shift CUBIC with Linux tcp_cubic
+        run: |
+          sudo env \
+            TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="${{ matrix.case }}" \
+            TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CUBIC_BENCH_LOSS_PCT="${{ matrix.loss_pct }}" \
+            TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_SEED=424242 \
+            sh scripts/cubic-linux-benchmark.sh
+
+      - name: Publish benchmark summary
+        if: always()
+        run: |
+          summary=".build/cubic-linux-benchmark/${{ matrix.case }}/summary.txt"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload benchmark diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubic-linux-${{ matrix.case }}
+          path: .build/cubic-linux-benchmark/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true
