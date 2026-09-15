@@ -85,6 +85,23 @@
 #endif
 #define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_BYTES
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + (TCP_MSS - 1)) / TCP_MSS)
+
+/*
+ * Upstream's default TCP_SNDLOWAT follows max(TCP_SND_BUF/2, 2*MSS+1), but
+ * the field and writable-space arithmetic are still u16_t constrained. Preserve
+ * the upstream default exactly for the 32-KiB production profile and cap larger
+ * qualification profiles one byte below upstream's 0xffff - 4*MSS sanity bound.
+ */
+#define TCP_SHIFT_TCP_SNDLOWAT_HALF      (TCP_SND_BUF / 2U)
+#define TCP_SHIFT_TCP_SNDLOWAT_MIN       ((2U * TCP_MSS) + 1U)
+#define TCP_SHIFT_TCP_SNDLOWAT_U16_MAX   (0xFFFFU - (4U * TCP_MSS) - 1U)
+#define TCP_SHIFT_TCP_SNDLOWAT_BASE \
+    ((TCP_SHIFT_TCP_SNDLOWAT_HALF > TCP_SHIFT_TCP_SNDLOWAT_MIN) ? \
+     TCP_SHIFT_TCP_SNDLOWAT_HALF : TCP_SHIFT_TCP_SNDLOWAT_MIN)
+#define TCP_SNDLOWAT \
+    ((TCP_SHIFT_TCP_SNDLOWAT_BASE < TCP_SHIFT_TCP_SNDLOWAT_U16_MAX) ? \
+     TCP_SHIFT_TCP_SNDLOWAT_BASE : TCP_SHIFT_TCP_SNDLOWAT_U16_MAX)
+
 #define TCP_QUEUE_OOSEQ 1
 
 #define LWIP_STATS 1
