@@ -19,7 +19,11 @@ extern "C" {
  * value explicit so compact-bbr arithmetic matches the reference rather than
  * an unquantized decimal approximation. */
 #define TCP_SHIFT_BBR_GAIN_DEN 256U
+#define TCP_SHIFT_BBR_UNIT_GAIN_NUM 256U
 #define TCP_SHIFT_BBR_STARTUP_GAIN_NUM 739U
+#define TCP_SHIFT_BBR_DRAIN_GAIN_NUM 88U
+#define TCP_SHIFT_BBR_PROBE_BW_CWND_GAIN_NUM 512U
+#define TCP_SHIFT_BBR_PROBE_BW_CYCLE_LEN 8U
 #define TCP_SHIFT_BBR_PACING_MARGIN_NUM 99U
 #define TCP_SHIFT_BBR_PACING_MARGIN_DEN 100U
 #define TCP_SHIFT_BBR_MIN_CWND_PACKETS 4U
@@ -29,6 +33,11 @@ enum tcp_shift_bbr_mode {
     TCP_SHIFT_BBR_MODE_DRAIN = 1,
     TCP_SHIFT_BBR_MODE_PROBE_BW = 2,
     TCP_SHIFT_BBR_MODE_PROBE_RTT = 3,
+};
+
+struct tcp_shift_bbr_gains {
+    uint32_t pacing_gain_num;
+    uint32_t cwnd_gain_num;
 };
 
 /* Pure transport-independent state for tcp-shift's compact BBR controller.
@@ -71,6 +80,7 @@ struct tcp_shift_bbr_model {
     uint8_t round_start;
     uint8_t full_bw_now;
     uint8_t full_bw_reached;
+    uint8_t probe_bw_cycle_index;
 };
 
 void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
@@ -108,6 +118,20 @@ int tcp_shift_bbr_startup_policy(
     uint32_t current_cwnd_bytes,
     uint64_t current_pacing_rate_bytes_per_sec,
     struct tcp_shift_cc_policy *policy);
+
+/* P6f mode plumbing. A full-pipe STARTUP enters DRAIN. DRAIN exits to
+ * PROBE_BW once transport-visible inflight is at/below the compact 1*BDP
+ * drain target (with the four-MSS floor). The same call may traverse both
+ * transitions when the queue is already drained, mirroring Linux BBR's
+ * STARTUP->DRAIN fall-through check. ProbeBW initially starts at gain phase 0;
+ * phase timing/advancement is a separate increment. */
+int tcp_shift_bbr_model_update_mode(
+    struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_transport *transport);
+
+/* Return the current fixed-point pacing/cwnd gains for the model mode. */
+int tcp_shift_bbr_model_gains(const struct tcp_shift_bbr_model *model,
+                              struct tcp_shift_bbr_gains *gains);
 
 #ifdef __cplusplus
 }
