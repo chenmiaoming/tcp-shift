@@ -27,9 +27,12 @@ LINUX_CLIENT_IP=10.253.0.1
 LINUX_SERVER_IP=10.253.0.2
 LINUX_PORT=18741
 
+TS_LOSS_CHAIN="TCBTS$$"
+LINUX_LOSS_CHAIN="TCBLX$$"
 RUNTIME_PID=
 BACKEND_PID=
 LINUX_SERVER_PID=
+TS_LOSS_INSTALLED=0
 
 mkdir -p "$OUT/tcp-shift" "$OUT/linux"
 
@@ -43,6 +46,7 @@ mkdir -p "$OUT/tcp-shift" "$OUT/linux"
 }
 command -v tc >/dev/null 2>&1 || { echo "tc is required for CUBIC benchmark" >&2; exit 1; }
 command -v ip >/dev/null 2>&1 || { echo "ip is required for CUBIC benchmark" >&2; exit 1; }
+command -v iptables >/dev/null 2>&1 || { echo "iptables is required for CUBIC benchmark" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required for CUBIC benchmark" >&2; exit 1; }
 
 case "$RTT_MS" in ''|*[!0-9]*) echo "RTT_MS must be an integer" >&2; exit 1;; esac
@@ -58,13 +62,28 @@ case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative dec
 
 HALF_RTT_MS=$((RTT_MS / 2))
 BDP_BYTES=$((RATE_MBIT * RTT_MS * 125))
-# Bound the bottleneck queue to roughly two path BDPs. The first benchmark
-# iteration used netem's 10000-packet default-style deep queue; CUBIC filled it
-# and converted a nominal 10-40 ms base RTT into 100-260 ms SRTT. Two BDPs is
-# large enough to absorb normal bursts but small enough to make the configured
-# RTT/bandwidth meaningful. Keep a 64-packet floor for very small-BDP cases.
-QUEUE_PKTS=${TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS:-$(((BDP_BYTES * 2 + 1459) / 1460))}
-[ "$QUEUE_PKTS" -ge 64 ] || QUEUE_PKTS=64
+# Use about one path BDP of drop-tail buffering. This keeps the configured
+# propagation RTT relevant while still absorbing normal sender bursts. A small
+# 16-packet floor avoids turning low-BDP cases into a tiny-queue artifact.
+QUEUE_PKTS=${TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS:-$(((BDP_BYTES + 1459) / 1460))}
+[ "$QUEUE_PKTS" -ge 16 ] || QUEUE_PKTS=16
+
+if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
+    LOSS_EVERY=0
+    LOSS_PACKET=0
+    LOSS_MODE=none
+else
+    LOSS_EVERY=$(python3 - "$LOSS_PCT" <<'PY'
+import sys
+pct = float(sys.argv[1])
+if not (0.0 < pct < 100.0):
+    raise SystemExit("LOSS_PCT must be in (0,100) for a loss case")
+print(max(2, int(round(100.0 / pct))))
+PY
+)
+    LOSS_PACKET=$((LOSS_EVERY - 1))
+    LOSS_MODE=periodic_nth
+fi
 
 stop_pid()
 {
@@ -75,9 +94,22 @@ stop_pid()
     fi
 }
 
+remove_tcp_shift_loss()
+{
+    set +e
+    if [ "$TS_LOSS_INSTALLED" -eq 1 ]; then
+        iptables -D INPUT -i "$TUN_NAME" -j "$TS_LOSS_CHAIN" >/dev/null 2>&1 || true
+        iptables -F "$TS_LOSS_CHAIN" >/dev/null 2>&1 || true
+        iptables -X "$TS_LOSS_CHAIN" >/dev/null 2>&1 || true
+        TS_LOSS_INSTALLED=0
+    fi
+    set -e
+}
+
 cleanup()
 {
     set +e
+    remove_tcp_shift_loss
     stop_pid "${RUNTIME_PID:-}"
     stop_pid "${BACKEND_PID:-}"
     stop_pid "${LINUX_SERVER_PID:-}"
@@ -96,17 +128,8 @@ trap cleanup EXIT HUP INT TERM
 add_data_netem()
 {
     dev=$1
-    if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
-        tc qdisc replace dev "$dev" root netem \
-            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
-    else
-        # Ubuntu 24.04's iproute2 6.1 netem does not support the newer `seed`
-        # option. Keep this loss case stochastic and retain qdisc counters in
-        # the artifact instead of pretending it is bit-for-bit reproducible.
-        tc qdisc replace dev "$dev" root netem \
-            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
-            loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
-    fi
+    tc qdisc replace dev "$dev" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 }
 
 run_receiver()
@@ -217,14 +240,32 @@ tc qdisc add dev "$TUN_NAME" handle ffff: ingress
 tc filter add dev "$TUN_NAME" parent ffff: protocol ip prio 1 u32 match u32 0 0 action mirred egress redirect dev "$IFB_NAME"
 add_data_netem "$IFB_NAME"
 tc qdisc replace dev "$TUN_NAME" root netem delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
+
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    iptables -N "$TS_LOSS_CHAIN"
+    iptables -I INPUT 1 -i "$TUN_NAME" -j "$TS_LOSS_CHAIN"
+    iptables -A "$TS_LOSS_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+        -m statistic --mode nth --every "$LOSS_EVERY" --packet "$LOSS_PACKET" \
+        -j DROP
+    iptables -A "$TS_LOSS_CHAIN" -j RETURN
+    TS_LOSS_INSTALLED=1
+fi
+
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tcp-shift/tun-qdisc-before.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/tcp-shift/ifb-qdisc-before.txt"
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    iptables -nvxL "$TS_LOSS_CHAIN" > "$OUT/tcp-shift/loss-rule-before.txt"
+fi
 
 run_receiver "$LWIP_IP" "$PUBLIC_PORT" "$OUT/tcp-shift/client.txt"
 wait "$BACKEND_PID" || { BACKEND_PID=; cat "$OUT/tcp-shift/backend.stderr" >&2 || true; exit 1; }
 BACKEND_PID=
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tcp-shift/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/tcp-shift/ifb-qdisc-after.txt"
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    iptables -nvxL "$TS_LOSS_CHAIN" > "$OUT/tcp-shift/loss-rule-after.txt"
+fi
 sleep 0.2
 kill -TERM "$RUNTIME_PID"
 wait "$RUNTIME_PID" || { RUNTIME_PID=; cat "$OUT/tcp-shift/runtime.stderr" >&2 || true; exit 1; }
@@ -235,6 +276,17 @@ TS_CWND=$(sed -n 's/.* cc_last_cwnd=\([0-9][0-9]*\).*/\1/p' "$OUT/tcp-shift/runt
 TS_LOSS=$(sed -n 's/.* cc_loss_events=\([0-9][0-9]*\).*/\1/p' "$OUT/tcp-shift/runtime.stderr" | tail -n 1)
 TS_TIMEOUT=$(sed -n 's/.* cc_timeout_events=\([0-9][0-9]*\).*/\1/p' "$OUT/tcp-shift/runtime.stderr" | tail -n 1)
 [ -n "$TS_CWND" ] && [ -n "$TS_LOSS" ] && [ -n "$TS_TIMEOUT" ] || { echo "missing tcp-shift metrics" >&2; exit 1; }
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    TS_FORCED_DROPS=$(awk '$3 == "DROP" {print $1; exit}' "$OUT/tcp-shift/loss-rule-after.txt")
+    [ -n "$TS_FORCED_DROPS" ] && [ "$TS_FORCED_DROPS" -gt 0 ] || {
+        cat "$OUT/tcp-shift/loss-rule-after.txt" >&2
+        echo "tcp-shift deterministic loss rule dropped no data packet" >&2
+        exit 1
+    }
+else
+    TS_FORCED_DROPS=0
+fi
+remove_tcp_shift_loss
 
 tc qdisc del dev "$TUN_NAME" root >/dev/null 2>&1 || true
 tc qdisc del dev "$TUN_NAME" ingress >/dev/null 2>&1 || true
@@ -257,14 +309,27 @@ if command -v ethtool >/dev/null 2>&1; then
     ip netns exec "$NS_CLIENT" ethtool -K "$VETH_CLIENT" tso off gso off gro off >/dev/null 2>&1 || true
     ip netns exec "$NS_SERVER" ethtool -K "$VETH_SERVER" tso off gso off gro off >/dev/null 2>&1 || true
 fi
-if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
-    ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
-else
-    ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
+ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem \
+    delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+ip netns exec "$NS_CLIENT" tc qdisc replace dev "$VETH_CLIENT" root netem \
+    delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
+
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    ip netns exec "$NS_CLIENT" iptables -N "$LINUX_LOSS_CHAIN"
+    ip netns exec "$NS_CLIENT" iptables -I INPUT 1 -i "$VETH_CLIENT" -j "$LINUX_LOSS_CHAIN"
+    ip netns exec "$NS_CLIENT" iptables -A "$LINUX_LOSS_CHAIN" \
+        -s "$LINUX_SERVER_IP" -d "$LINUX_CLIENT_IP" \
+        -p tcp --sport "$LINUX_PORT" -m length --length 100:65535 \
+        -m statistic --mode nth --every "$LOSS_EVERY" --packet "$LOSS_PACKET" \
+        -j DROP
+    ip netns exec "$NS_CLIENT" iptables -A "$LINUX_LOSS_CHAIN" -j RETURN
 fi
-ip netns exec "$NS_CLIENT" tc qdisc replace dev "$VETH_CLIENT" root netem delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
+
 ip netns exec "$NS_SERVER" tc -s qdisc show dev "$VETH_SERVER" > "$OUT/linux/server-qdisc-before.txt"
 ip netns exec "$NS_CLIENT" tc -s qdisc show dev "$VETH_CLIENT" > "$OUT/linux/client-qdisc-before.txt"
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    ip netns exec "$NS_CLIENT" iptables -nvxL "$LINUX_LOSS_CHAIN" > "$OUT/linux/loss-rule-before.txt"
+fi
 
 ip netns exec "$NS_SERVER" python3 - "$LINUX_SERVER_IP" "$LINUX_PORT" "$PAYLOAD_BYTES" \
     > "$OUT/linux/server.txt" 2> "$OUT/linux/server.stderr" <<'PY' &
@@ -313,6 +378,17 @@ wait "$LINUX_SERVER_PID" || { LINUX_SERVER_PID=; cat "$OUT/linux/server.stderr" 
 LINUX_SERVER_PID=
 ip netns exec "$NS_SERVER" tc -s qdisc show dev "$VETH_SERVER" > "$OUT/linux/server-qdisc-after.txt"
 ip netns exec "$NS_CLIENT" tc -s qdisc show dev "$VETH_CLIENT" > "$OUT/linux/client-qdisc-after.txt"
+if [ "$LOSS_EVERY" -gt 0 ]; then
+    ip netns exec "$NS_CLIENT" iptables -nvxL "$LINUX_LOSS_CHAIN" > "$OUT/linux/loss-rule-after.txt"
+    LINUX_FORCED_DROPS=$(awk '$3 == "DROP" {print $1; exit}' "$OUT/linux/loss-rule-after.txt")
+    [ -n "$LINUX_FORCED_DROPS" ] && [ "$LINUX_FORCED_DROPS" -gt 0 ] || {
+        cat "$OUT/linux/loss-rule-after.txt" >&2
+        echo "Linux deterministic loss rule dropped no data packet" >&2
+        exit 1
+    }
+else
+    LINUX_FORCED_DROPS=0
+fi
 
 TS_GOODPUT=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/tcp-shift/client.txt")
 LINUX_GOODPUT=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/linux/client.txt")
@@ -321,18 +397,26 @@ LINUX_RTT_US=$(sed -n 's/.* rtt_us=\([0-9][0-9]*\).*/\1/p' "$OUT/linux/server.tx
 LINUX_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/linux/server.txt" | tail -n 1)
 [ -n "$TS_GOODPUT" ] && [ -n "$LINUX_GOODPUT" ] && [ -n "$LINUX_CWND" ] || { echo "missing benchmark metrics" >&2; exit 1; }
 
-python3 - "$CASE" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" \
-    "$TS_GOODPUT" "$LINUX_GOODPUT" "$TS_CWND" "$TS_LOSS" "$TS_TIMEOUT" "$LINUX_CWND" "$LINUX_RTT_US" "$LINUX_RETRANS" <<'PY' | tee "$OUT/summary.txt"
+python3 - "$CASE" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$LOSS_EVERY" \
+    "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" "$TS_GOODPUT" "$LINUX_GOODPUT" \
+    "$TS_CWND" "$TS_LOSS" "$TS_TIMEOUT" "$TS_FORCED_DROPS" "$LINUX_CWND" \
+    "$LINUX_RTT_US" "$LINUX_RETRANS" "$LINUX_FORCED_DROPS" <<'PY' | tee "$OUT/summary.txt"
 import sys
-(case, rtt_ms, rate_mbit, loss_pct, payload, bdp, queue_pkts, ts_g, linux_g,
- ts_cwnd, ts_loss, ts_timeout, linux_cwnd, linux_rtt_us, linux_retrans) = sys.argv[1:]
-ts = float(ts_g); linux = float(linux_g); ratio = ts / linux if linux else 0.0
+(case, rtt_ms, rate_mbit, loss_pct, loss_mode, loss_every, payload, bdp,
+ queue_pkts, ts_g, linux_g, ts_cwnd, ts_loss, ts_timeout, ts_forced,
+ linux_cwnd, linux_rtt_us, linux_retrans, linux_forced) = sys.argv[1:]
+ts = float(ts_g)
+linux = float(linux_g)
+ratio = ts / linux if linux else 0.0
 print(
     f"cubic_linux_benchmark=ok case={case} base_rtt_ms={rtt_ms} rate_mbit={rate_mbit} "
-    f"loss_pct={loss_pct} payload_bytes={payload} bdp_bytes={bdp} queue_pkts={queue_pkts} "
+    f"loss_pct={loss_pct} loss_mode={loss_mode} loss_every={loss_every} "
+    f"payload_bytes={payload} bdp_bytes={bdp} queue_pkts={queue_pkts} "
     f"tcp_shift_goodput_mbps={ts:.6f} linux_goodput_mbps={linux:.6f} ratio={ratio:.6f} "
-    f"tcp_shift_cwnd_bytes={ts_cwnd} tcp_shift_loss_events={ts_loss} tcp_shift_timeout_events={ts_timeout} "
-    f"linux_cwnd_packets={linux_cwnd} linux_rtt_us={linux_rtt_us} linux_total_retrans={linux_retrans}"
+    f"tcp_shift_cwnd_bytes={ts_cwnd} tcp_shift_loss_events={ts_loss} "
+    f"tcp_shift_timeout_events={ts_timeout} tcp_shift_forced_drops={ts_forced} "
+    f"linux_cwnd_packets={linux_cwnd} linux_rtt_us={linux_rtt_us} "
+    f"linux_total_retrans={linux_retrans} linux_forced_drops={linux_forced}"
 )
 PY
 
@@ -344,6 +428,7 @@ if [ -d /sys/module/tcp_cubic/parameters ]; then
         printf '%s=' "$(basename "$file")"; cat "$file"
     done > "$OUT/linux-cubic-parameters.txt"
 fi
-printf 'base_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
-    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$BDP_BYTES" "$QUEUE_PKTS" > "$OUT/path.env"
+printf 'base_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nloss_every=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
+    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$LOSS_EVERY" "$BDP_BYTES" "$QUEUE_PKTS" \
+    > "$OUT/path.env"
 echo "CUBIC tcp-shift/Linux benchmark case $CASE completed"
