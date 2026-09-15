@@ -755,6 +755,12 @@ static void tcp_shift_rate_record_stats(
     if ((rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U) {
         stats->rate_retransmitted_samples++;
     }
+    if (rate->delivered_total_bytes != 0U) {
+        stats->rate_snapshot_samples++;
+        if (rate->delivered_total_bytes <= rate->prior_delivered_bytes) {
+            stats->rate_snapshot_errors++;
+        }
+    }
     stats->rate_last_bytes_per_sec = rate->delivery_rate_bytes_per_sec;
     if (rate->delivery_rate_bytes_per_sec > stats->rate_max_bytes_per_sec) {
         stats->rate_max_bytes_per_sec = rate->delivery_rate_bytes_per_sec;
@@ -763,6 +769,8 @@ static void tcp_shift_rate_record_stats(
     stats->rate_last_send_interval_ns = rate->send_interval_ns;
     stats->rate_last_ack_interval_ns = rate->ack_interval_ns;
     stats->rate_last_rtt_ns = rate->rtt_ns;
+    stats->rate_last_prior_delivered_bytes = rate->prior_delivered_bytes;
+    stats->rate_last_delivered_total_bytes = rate->delivered_total_bytes;
     stats->rate_last_delivered_bytes = rate->delivered_bytes;
     stats->rate_last_prior_inflight_bytes = rate->prior_inflight_bytes;
     stats->rate_last_flags = rate->flags;
@@ -851,6 +859,8 @@ static void tcp_shift_delivery_build_rate_sample(
     }
 
     delivered_delta64 = adapter->delivered_bytes - candidate->delivered_at_send;
+    rate->prior_delivered_bytes = candidate->delivered_at_send;
+    rate->delivered_total_bytes = adapter->delivered_bytes;
     rate->delivered_bytes = delivered_delta64 > UINT32_MAX
                                 ? UINT32_MAX
                                 : (uint32_t)delivered_delta64;

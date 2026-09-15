@@ -47,6 +47,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t rate_retransmitted_samples;
     uint64_t rate_partial_ack_events;
     uint64_t rate_multi_segment_ack_events;
+    uint64_t rate_snapshot_samples;
+    uint64_t rate_snapshot_errors;
     uint64_t app_limited_enters;
     uint64_t app_limited_exits;
     uint64_t rate_last_bytes_per_sec;
@@ -55,6 +57,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t rate_last_send_interval_ns;
     uint64_t rate_last_ack_interval_ns;
     uint64_t rate_last_rtt_ns;
+    uint64_t rate_last_prior_delivered_bytes;
+    uint64_t rate_last_delivered_total_bytes;
     uint64_t pacing_deferrals;
     uint64_t pacing_resume_events;
     uint64_t pacing_stale_releases;

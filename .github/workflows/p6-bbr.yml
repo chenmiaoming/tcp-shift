@@ -6,10 +6,18 @@ on:
       - main
     paths:
       - '.github/workflows/p6-bbr.yml'
+      - 'CMakeLists.txt'
       - 'src/cc/**'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_adapter.h'
       - 'src/tests/bbr_model_test.c'
+      - 'src/tests/bbr_delivery_snapshot_test.c'
       - 'scripts/p6-bbr-model-contract.sh'
+      - 'scripts/p6-delivery-snapshot-contract.sh'
       - 'scripts/validate-p4-cc.sh'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
   push:
     branches:
       - main
@@ -57,3 +65,40 @@ jobs:
             .build/p4-cc/evidence
           if-no-files-found: warn
           include-hidden-files: true
+
+  delivery-snapshot-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install adapter build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git
+
+      - name: Validate P6c harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p6-delivery-snapshot-contract.sh
+
+      - name: Build pinned lwIP delivery adapter
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp_shift_lwip_cc_adapter --parallel
+
+      - name: Qualify cumulative delivered snapshots
+        run: sh scripts/p6-delivery-snapshot-contract.sh
+
+      - name: Upload P6c snapshot diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p6-delivery-snapshot
+          path: .build/p6-delivery-snapshot-summary.txt
+          if-no-files-found: warn
