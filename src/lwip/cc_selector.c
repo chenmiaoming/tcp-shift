@@ -147,6 +147,16 @@ static int tcp_shift_cc_selector_reinit(struct tcp_shift_lwip_cc_adapter *adapte
     return 0;
 }
 
+int tcp_shift_lwip_cc_apply_configured_controller(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    if (adapter == NULL || adapter->pcb == NULL) {
+        return -1;
+    }
+    return tcp_shift_cc_selector_reinit(adapter, adapter->pcb,
+                                        tcp_shift_cc_selector_current());
+}
+
 static err_t tcp_shift_cc_selector_accept(void *arg,
                                           struct tcp_pcb *newpcb,
                                           err_t err)
