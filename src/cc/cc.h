@@ -59,6 +59,18 @@ struct tcp_shift_cc_ack {
     /* Sequence-space bytes newly acknowledged. Conventional Reno keeps using
      * this field exactly as before P5. */
     uint32_t acked_bytes;
+
+    /* Monotonic userspace timestamp for this ACK observation. Zero means the
+     * adapter could not obtain a valid clock reading and time-driven
+     * controllers must not advance their epoch from this event. */
+    uint64_t ack_time_ns;
+
+    /* RFC 6298-style smoothed RTT derived from valid, non-retransmitted RTT
+     * observations. This is transport-neutral estimation state, not lwIP's
+     * coarse retransmission-timer state. Zero means no valid RTT sample has
+     * been observed yet. */
+    uint64_t smoothed_rtt_ns;
+
     struct tcp_shift_cc_rate_sample rate;
 };
 
