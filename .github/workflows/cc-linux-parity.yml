@@ -151,6 +151,40 @@ jobs:
             TCP_SHIFT_CC_BENCH_OUT="$out" \
             sh scripts/cubic-reno-benchmark.sh
 
+      - name: Diagnose paced CUBIC with 90% path-rate cap against Linux
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-paced-cap"
+          cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
+          sudo env \
+            TCP_SHIFT_PACING_QUALIFICATION=linux-cap \
+            TCP_SHIFT_PACING_QUALIFICATION_MAX_BYTES_PER_SEC="$cap_bytes_per_sec" \
+            TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}-paced-cap" \
+            TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CUBIC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CUBIC_BENCH_OUT="$out" \
+            sh scripts/cubic-linux-benchmark.sh
+
+      - name: Diagnose paced CUBIC with 90% path-rate cap against Reno
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-paced-cap"
+          cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
+          sudo env \
+            TCP_SHIFT_PACING_QUALIFICATION=linux-cap \
+            TCP_SHIFT_PACING_QUALIFICATION_MAX_BYTES_PER_SEC="$cap_bytes_per_sec" \
+            TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
+            TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}-paced-cap" \
+            TCP_SHIFT_CC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CC_BENCH_OUT="$out" \
+            sh scripts/cubic-reno-benchmark.sh
+
       - name: Evaluate parity readiness
         if: always()
         run: |
@@ -165,6 +199,7 @@ jobs:
             echo "## 1 MiB CC parity: ${{ matrix.case }}"
             echo
             echo "RTT=${{ matrix.rtt_ms }}ms rate=${{ matrix.rate_mbit }}Mbit payload=${{ matrix.payload_bytes }} bytes queue=${{ matrix.queue_pkts }} packets"
+            echo "Rate-cap diagnostic: 90% of configured bottleneck rate; qualification-only, not a production/path-discovery mechanism."
             for summary in "$root"/*/summary.txt; do
               if [ -f "$summary" ]; then
                 echo
