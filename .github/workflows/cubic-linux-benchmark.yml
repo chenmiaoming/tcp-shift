@@ -9,6 +9,7 @@ on:
       - 'scripts/cubic-linux-benchmark.sh'
       - 'scripts/cubic-reno-benchmark.sh'
       - 'scripts/p3-backend-to-public-residency.sh'
+      - 'scripts/p3-backend-to-public-stability.sh'
       - 'src/lwipopts.h'
       - 'src/config_contract.c'
       - 'src/cc/cubic.c'
@@ -350,6 +351,11 @@ jobs:
           test -c /dev/net/tun
           test -r /proc/self/smaps_rollup
 
+      - name: Validate residency harnesses
+        run: |
+          sh -n scripts/p3-backend-to-public-residency.sh
+          sh -n scripts/p3-backend-to-public-stability.sh
+
       - name: Build 1 MiB sender profile
         run: |
           sh scripts/fetch-lwip.sh
@@ -368,15 +374,34 @@ jobs:
             TCP_SHIFT_P3_B2P_PAYLOAD_BYTES=2097152 \
             sh scripts/p3-backend-to-public-residency.sh
 
+      - name: Qualify repeated 1 MiB allocation stability
+        run: |
+          sudo env \
+            TCP_SHIFT_P3_BINARY="$PWD/.build-sndbuf-1024-memory/tcp-shift-p2" \
+            TCP_SHIFT_P3_STABILITY_FLOWS=8 \
+            TCP_SHIFT_P3_STABILITY_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P3_STABILITY_CYCLES=4 \
+            TCP_SHIFT_P3_STABILITY_MAX_POST_WARM_GROWTH_KB=1024 \
+            sh scripts/p3-backend-to-public-stability.sh
+
       - name: Publish 1 MiB residency evidence
         if: always()
         run: |
-          summary=.build/p3-backend-to-public-residency/summary.json
-          if [ -f "$summary" ]; then
+          residency=.build/p3-backend-to-public-residency/summary.json
+          stability=.build/p3-backend-to-public-stability/summary.json
+          if [ -f "$residency" ]; then
             {
               echo '## 1 MiB sender-buffer residency'
               echo '```json'
-              cat "$summary"
+              cat "$residency"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "$stability" ]; then
+            {
+              echo '## 1 MiB sender-buffer repeated-allocation stability'
+              echo '```json'
+              cat "$stability"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -389,5 +414,6 @@ jobs:
           path: |
             .build-sndbuf-1024-memory/config-contract.txt
             .build/p3-backend-to-public-residency
+            .build/p3-backend-to-public-stability
           if-no-files-found: warn
           include-hidden-files: true
