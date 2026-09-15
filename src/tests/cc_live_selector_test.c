@@ -25,6 +25,7 @@ int main(void)
     struct tcp_pcb *pcb;
     struct timespec delay;
     uint32_t seq = UINT32_C(200000);
+    uint32_t large_segments;
     uint32_t large_cwnd;
     uint32_t large_ssthresh;
     uint32_t large_snd_wnd;
@@ -46,10 +47,13 @@ int main(void)
     CHECK(sizeof(tcpwnd_size_t) == sizeof(uint32_t));
 
     payload = pcb->mss;
-    large_cwnd = (uint32_t)pcb->mss * 100U;
-    large_ssthresh = (uint32_t)pcb->mss * 200U;
-    large_snd_wnd = (uint32_t)pcb->mss * 400U;
+    large_segments = UINT16_MAX / (uint32_t)pcb->mss + 64U;
+    large_cwnd = (uint32_t)pcb->mss * large_segments;
+    large_ssthresh = large_cwnd * 2U;
+    large_snd_wnd = large_cwnd * 4U;
     CHECK(large_cwnd > UINT16_MAX);
+    CHECK(large_ssthresh > large_cwnd);
+    CHECK(large_snd_wnd > large_ssthresh);
     pcb->cwnd = (tcpwnd_size_t)large_cwnd;
     pcb->ssthresh = (tcpwnd_size_t)large_ssthresh;
     pcb->snd_wnd = (tcpwnd_size_t)large_snd_wnd;
@@ -57,9 +61,10 @@ int main(void)
     pcb->snd_nxt = seq;
 
     /* The base adapter deliberately remains Reno-owned. Selection is a thin
-     * listener/runtime layer applied after ordinary lifecycle binding. Use
-     * exact MSS multiples so CUBIC's conservative Q16 segment representation
-     * does not turn this transport-width contract into a rounding test. */
+     * listener/runtime layer applied after ordinary lifecycle binding. Build
+     * the test window from the fixture's actual MSS so it is both >64 KiB and
+     * an exact segment multiple; this keeps CUBIC Q16 rounding out of a
+     * transport-width contract. */
     CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
     CHECK(adapter.controller.ops == &tcp_shift_reno_ops);
     CHECK((uint32_t)pcb->cwnd == large_cwnd);
