@@ -17,8 +17,6 @@ set(LWIP_INCLUDE_DIRS
     "${CMAKE_SOURCE_DIR}/src"
 )
 
-# Filelists generates lwip/init.h. Its broad library targets remain
-# EXCLUDE_FROM_ALL; tcp-shift links only the explicit source allowlist below.
 include("${LWIP_DIR}/src/Filelists.cmake")
 
 set(TCP_SHIFT_LWIP_SRCS
@@ -46,10 +44,6 @@ set(TCP_SHIFT_LWIP_SRCS
     "${LWIP_DIR}/src/core/ipv6/nd6.c"
 )
 
-# The pinned lwIP ND6 unit leaves two otherwise useful diagnostics unused when
-# tcp-shift deliberately disables RS/SLAAC. Keep the warnings visible, but do
-# not let only those two upstream diagnostics become build errors. Project code
-# and every other warning in the lwIP allowlist remain under -Werror.
 set_source_files_properties(
     "${LWIP_DIR}/src/core/ipv6/nd6.c"
     PROPERTIES COMPILE_OPTIONS
@@ -63,8 +57,6 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
-# P4 pure-C controller core. Its own CMake file is also the standalone build
-# boundary used by scripts/validate-p4-cc.sh.
 add_subdirectory(src/cc)
 
 add_library(tcp_shift_host STATIC
@@ -105,15 +97,12 @@ target_link_libraries(tcp_shift_probe PUBLIC tcp_shift_lwip)
 
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
+    src/lwip/cc_selector.c
 )
 target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC tcp_shift_cc tcp_shift_lwip)
 
-# CI-only wrapper that swaps an already-initialized child from ordinary Reno to
-# the deterministic fixed-pacing Reno ops table. Controller allocation/lifetime
-# still belongs to the normal adapter, and the pacing rate still enters through
-# struct tcp_shift_cc_policy.
 add_library(tcp_shift_lwip_cc_pacing_qualification STATIC
     src/lwip/cc_pacing_qualification.c
 )
@@ -132,11 +121,8 @@ add_library(tcp_shift_bridge STATIC
 )
 target_include_directories(tcp_shift_bridge PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
-# Only the bridge's raw-API listener is controller-owned in P4. Compile its
-# tcp_accept() call to the adapter wrapper; the adapter target itself sees and
-# calls the real lwIP tcp_accept(), so P0/P1 remain unbound/native.
 target_compile_definitions(tcp_shift_bridge PRIVATE
-    tcp_accept=tcp_shift_lwip_cc_accept
+    tcp_accept=tcp_shift_lwip_cc_accept_selected
 )
 target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_runtime
@@ -144,9 +130,6 @@ target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_lwip_cc_adapter
 )
 
-# Same bridge state machine, but its listener registration goes through the
-# deterministic fixed-pacing Reno qualification wrapper. This target is used
-# only by the P5c integration gate; production P2 remains ordinary Reno.
 add_library(tcp_shift_bridge_paced STATIC
     src/bridge/bridge.c
 )
@@ -188,8 +171,6 @@ target_link_libraries(tcp-shift-p1 PRIVATE
 )
 target_link_options(tcp-shift-p1 PRIVATE -Wl,--gc-sections)
 
-# P1b IPv6-only bring-up reuses the same host/L3/runtime/probe libraries. It is
-# intentionally a temporary qualification entrypoint, not a second datapath.
 add_executable(tcp-shift-p1-ipv6 src/p1_ipv6_main.c src/platform.c)
 target_include_directories(tcp-shift-p1-ipv6 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p1-ipv6 PRIVATE
@@ -203,8 +184,6 @@ target_link_libraries(tcp-shift-p1-ipv6 PRIVATE
 )
 target_link_options(tcp-shift-p1-ipv6 PRIVATE -Wl,--gc-sections)
 
-# P2 has temporary address-family-specific bring-up entrypoints, but both link
-# the same bridge/runtime implementation and the same IPv4 loopback backend.
 add_executable(tcp-shift-p2 src/p2_main.c src/platform.c)
 target_include_directories(tcp-shift-p2 PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p2 PRIVATE
@@ -217,9 +196,6 @@ target_link_libraries(tcp-shift-p2 PRIVATE
 )
 target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
 
-# P5c deterministic IPv4 integration binary. It uses the production runtime,
-# adapter, lwIP patch and bridge state machine; only listener controller
-# selection differs from production P2.
 add_executable(tcp-shift-p5c-paced src/p2_main.c src/platform.c)
 target_include_directories(tcp-shift-p5c-paced PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p5c-paced PRIVATE
@@ -268,9 +244,6 @@ target_compile_options(tcp-shift-p1-rx-contract PRIVATE
 target_link_libraries(tcp-shift-p1-rx-contract PRIVATE tcp_shift_l3)
 target_link_options(tcp-shift-p1-rx-contract PRIVATE -Wl,--gc-sections)
 
-# CI-only raw packet generator. It proves that the IPv6 nft ingress rule matches
-# TCP after a Hop-by-Hop extension header and that DNAT routes that packet into
-# the same TUN/lwIP datapath. It is not linked into a product runtime.
 add_executable(tcp-shift-p1-ipv6-ext-header-probe
     src/tests/ipv6_extension_header_probe.c
 )
