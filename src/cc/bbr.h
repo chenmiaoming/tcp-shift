@@ -80,7 +80,6 @@ struct tcp_shift_bbr_model {
     uint8_t round_start;
     uint8_t full_bw_now;
     uint8_t full_bw_reached;
-    uint8_t probe_bw_cycle_index;
 };
 
 void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
@@ -123,14 +122,17 @@ int tcp_shift_bbr_startup_policy(
  * PROBE_BW once transport-visible inflight is at/below the compact 1*BDP
  * drain target (with the four-MSS floor). The same call may traverse both
  * transitions when the queue is already drained, mirroring Linux BBR's
- * STARTUP->DRAIN fall-through check. ProbeBW initially starts at gain phase 0;
- * phase timing/advancement is a separate increment. */
+ * STARTUP->DRAIN fall-through check. ProbeBW phase timing/advancement remains
+ * a separate increment. */
 int tcp_shift_bbr_model_update_mode(
     struct tcp_shift_bbr_model *model,
     const struct tcp_shift_cc_transport *transport);
 
-/* Return the current fixed-point pacing/cwnd gains for the model mode. */
+/* Return the fixed-point gains for a mode. probe_bw_cycle_index is consumed
+ * only in PROBE_BW and must be 0..7; P6g will add the time/inflight/loss rules
+ * that own phase advancement. */
 int tcp_shift_bbr_model_gains(const struct tcp_shift_bbr_model *model,
+                              uint32_t probe_bw_cycle_index,
                               struct tcp_shift_bbr_gains *gains);
 
 #ifdef __cplusplus
