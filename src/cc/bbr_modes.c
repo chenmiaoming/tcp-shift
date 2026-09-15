@@ -2,11 +2,6 @@
 
 #include <stddef.h>
 
-static uint32_t tcp_shift_bbr_min_u32(uint32_t a, uint32_t b)
-{
-    return a < b ? a : b;
-}
-
 static uint32_t tcp_shift_bbr_drain_target_bytes(
     const struct tcp_shift_bbr_model *model,
     const struct tcp_shift_cc_transport *transport)
