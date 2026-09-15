@@ -106,7 +106,7 @@ Flow failure is isolated. Backend refusal/reset or public reset tears down only 
 
 The generic controller consumes transport-neutral MSS, bytes in flight, peer send window, and transport-representable cwnd limit. Events are init, ACK, loss, and retransmission timeout. Policy output contains cwnd, ssthresh, and optional pacing rate in bytes/second.
 
-Conventional Reno uses 16 bytes of caller-owned state and publishes zero pacing rate. `cwnd_limit_bytes` is a transport capability, not an lwIP-specific field; it prevents 32-bit controller state from silently diverging from the current unscaled lwIP `tcpwnd_size_t`.
+Conventional Reno uses 16 bytes of caller-owned state and publishes zero pacing rate. `cwnd_limit_bytes` is a transport capability, not an lwIP-specific field. Upstream lwIP window scaling is enabled, so `tcpwnd_size_t` is 32-bit and the adapter exposes the 32-bit representational limit to controllers; this is deliberately separate from how many payload bytes the current memory profile permits to be queued.
 
 P5 extends the ACK observation with a transport-neutral delivery-rate sample: selected bytes/second, sampling interval, send interval, ACK interval, RTT when valid, newly delivered payload bytes, prior inflight, and VALID / APP_LIMITED / RETRANSMITTED / RTT_VALID flags. Reno deliberately ignores this sample and continues to use `acked_bytes` only.
 
@@ -129,6 +129,8 @@ The permitted upstream modification surface remains exactly:
 - `src/core/tcp_out.c`.
 
 P4 delegates ACK/loss/RTO base congestion policy. P5 adds send/ACK observations and the narrow data-send eligibility hook in the already-controlled surface. P5b exposes host-order segment sequence information to project sidecar accounting without exposing private `tcp_seg` layout to the generic controller. P5c gates eligible data sends but resumes through native `tcp_output()`.
+
+Window scaling uses upstream lwIP configuration rather than any additional source patch. The qualified low-memory profile sets `LWIP_WND_SCALE=1` and `TCP_RCV_SCALE=0`: sender-side window/cwnd accounting is 32-bit, while the local receive window and send-buffer profile remain 32 KiB at this checkpoint. Real SYN/SYN-ACK qualification observes a peer scale offer and an lwIP `wscale 0` response. Increasing sender buffering and local receive-window residency are separate memory-qualified milestones.
 
 Unbound PCBs execute native upstream behavior. Project hooks do not move retransmission execution, duplicate-ACK processing, fast recovery, SACK/recovery, RTT/RTO calculation, segment queues, sequence-space management, packet construction, or `tcp_output()` out of lwIP.
 
@@ -209,7 +211,7 @@ P6 must continue reporting incremental fixed, per-flow, per-segment, and model-s
 
 Runner-qualified:
 
-- P0: constrained lwIP build/config/source surface;
+- P0: constrained lwIP build/config/source surface, including upstream window scaling with 32-bit `tcpwnd_size_t` and a low-memory `TCP_RCV_SCALE=0` profile;
 - P1: IPv4/IPv6 L3 TUN, ingress lifecycle, PMTU;
 - P2: dual-stack public stream bridge to `127.0.0.1`, backpressure/lifecycle;
 - P3: process memory/CPU/capacity baseline;
