@@ -1,38 +1,38 @@
 # P6: tcp-shift BBR
 
-Status: **active; P6a and P6b merged, P6c delivery snapshots in progress**.
+Status: **active; P6a/P6b/P6c and the shared controller prerequisites are merged; P6d 10-round bandwidth-filter realignment is active**.
 
 ## Congestion-control architecture
 
-tcp-shift is not a single-algorithm stack. Congestion control remains selectable behind the existing transport-neutral `struct tcp_shift_cc_ops` boundary. The intended built-in controller names are:
+tcp-shift is not a single-algorithm stack. Congestion control remains selectable behind the transport-neutral `struct tcp_shift_cc_ops` boundary. The built-in controller names are intentionally distinct:
 
-- `reno`: standard Reno; current production/default controller while compatibility is retained;
-- `cubic`: standard CUBIC implementation, to be added as an independently qualified controller;
-- `bbr`: tcp-shift's small BBRv1-style core with selected BBRv3 fixes;
-- `bbrv3`: a future independent controller intended to track the then-current IETF BBRv3 draft semantics more closely.
+- `reno`: standard Reno; production default and live-selectable;
+- `cubic`: RFC 9438 CUBIC; live-selectable after independent model/controller/adapter qualification;
+- `bbr`: tcp-shift's compact BBRv1-style core with selected BBRv3-informed fixes; not registered yet;
+- `bbrv3`: reserved for a future independent controller intended to track the then-current IETF BBRv3 semantics more closely; unavailable today.
 
 `bbr` and `bbrv3` must remain separate implementations and names. A future `bbrv3` must not silently change the semantics of the compact `bbr` controller.
 
-The adapter/runtime must not contain algorithm-specific state-machine logic. Selection resolves an ops table plus controller-owned state; all controllers consume the same transport-neutral ACK/loss/timeout observations and emit the same cwnd/pacing policy. lwIP continues to own sequence space, segment queues, retransmission, SACK/recovery, RTT/RTO calculation, and packet construction.
+The adapter/runtime contains no algorithm-specific state-machine policy. Selection resolves an ops table plus bounded controller-owned state; all controllers consume the same transport-neutral ACK/loss/timeout observations and emit the same cwnd/pacing policy. lwIP continues to own sequence space, segment queues, retransmission, SACK/recovery, RTT/RTO machinery, and packet construction.
 
-The current adapter still binds Reno directly and embeds Reno state. A follow-up architecture increment will replace that hard-coded binding with a controller registry/selector and bounded per-flow algorithm state. Until CUBIC and selection are independently qualified, the runtime default remains `reno`; changing the default is a separate policy decision rather than a side effect of P6.
+Production `tcp-shift-p2` accepts an optional controller name. Omission retains `reno`; `cubic` is explicitly selectable; unknown or unbuilt names fail before TUN setup. The production listener snapshots the chosen ops table and applies it to each newly accepted child before bridge code sees the flow. P5c's deterministic fixed-pacing qualification wrapper remains separate.
 
 ## Algorithm target for `bbr`
 
-P6 no longer targets a full BBRv3 reimplementation. The `bbr` controller target is a **small BBRv1-style core with selected BBRv3 fixes**, chosen only when they improve correctness or robustness without materially increasing state/runtime complexity.
+P6 does not target a full BBRv3 reimplementation. The `bbr` controller target is a **small BBRv1-style core with selected BBRv3-informed mechanisms**, adopted only when they improve correctness or robustness without materially increasing state/runtime complexity.
 
-The core behavior baseline is Linux mainline `net/ipv4/tcp_bbr.c`, pinned for P6 design comparison at Linux commit `587858367581b9c55c3690f4e63382ad622719d4` (2026-09-14). That implementation keeps the compact four-mode model:
+The core behavior baseline is Linux mainline `net/ipv4/tcp_bbr.c`, pinned for the P6 design comparison at Linux commit `587858367581b9c55c3690f4e63382ad622719d4` (2026-09-14). That implementation keeps the compact four-mode model:
 
 - `STARTUP`;
 - `DRAIN`;
 - `PROBE_BW` with the classic 8-phase gain cycle;
 - `PROBE_RTT`.
 
-The current IETF `draft-ietf-ccwg-bbr-06` remains a secondary semantic reference for `bbr`, not its implementation target. It is also the current reference point for the future, separate `bbrv3` controller. Existing P6 work may retain a v3 rule when independently useful, such as conservative app-limited handling.
+The current IETF `draft-ietf-ccwg-bbr-06` remains a secondary semantic reference for compact `bbr`, not its implementation-equivalence target. It is also the current reference point for a future, separate `bbrv3` controller. Existing P6 work may retain a newer rule when independently useful, such as conservative app-limited bandwidth-sample admission.
 
 ## Complexity policy
 
-The default is to reject algorithm machinery that does not buy measurable value on the constrained-host target. The compact `bbr` controller does not automatically inherit BBRv3 `PROBE_BW_DOWN/CRUISE/REFILL/UP`, `inflight_hi/inflight_lo`, short-term bandwidth bounds, ACK aggregation, or spurious-loss machinery.
+The default is to reject algorithm machinery that does not buy measurable value on the constrained-host target. Compact `bbr` does not automatically inherit BBRv3 `PROBE_BW_DOWN/CRUISE/REFILL/UP`, `inflight_hi/inflight_lo`, short-term bandwidth bounds, ACK aggregation, or spurious-loss machinery.
 
 A v3-derived mechanism may be added to `bbr` only if a reproducible RTT/bandwidth/loss test demonstrates a concrete failure and the fix stays within retained memory/CPU/event-driven boundaries. Otherwise such machinery belongs, if needed, in the independent future `bbrv3` controller.
 
@@ -40,9 +40,9 @@ A v3-derived mechanism may be added to `bbr` only if a reproducible RTT/bandwidt
 
 PR #14 was squash-merged into `main` as `58a9138786f2859efd9b0d61870ef60667bad9b6`.
 
-It established a freestanding pure-C model with bandwidth/min-RTT estimation, app-limited sample admission, explicit monotonic time input, and bounded qualification counters. The retained behavior head `83640cf86687af1ec9b2fccceb13c470a360daf2` passed P0, P1, P2, P4, P5 rate sampler, P5c pacer, and the P6 model workflow. The model contract reported 112 bytes of state and the CC archive retained zero undefined external symbols.
+It established a freestanding pure-C model with bandwidth/min-RTT estimation, app-limited sample admission, explicit monotonic time input, and bounded qualification counters. The retained behavior head `83640cf86687af1ec9b2fccceb13c470a360daf2` passed P0, P1, P2, P4, P5 rate sampler, P5c pacer, and the P6 model workflow. The initial model contract reported 112 bytes of state and the CC archive retained zero undefined external symbols.
 
-P6a initially used the BBRv3 two-ProbeBW-cycle `max_bw` window. Under the revised compact-BBR target this is transitional: before live `bbr` policy is enabled, the bandwidth filter will be realigned to the Linux BBRv1-style 10 packet-timed-round window.
+P6a initially used the BBRv3 two-ProbeBW-cycle `max_bw` window. That filter was explicitly transitional after the compact-BBR target was chosen and is replaced by P6d before any live `bbr` policy is enabled.
 
 ## Increment P6b: packet-timed rounds and Startup full-bandwidth detection — merged
 
@@ -52,30 +52,59 @@ P6b added transport-neutral cumulative delivery snapshots to `struct tcp_shift_c
 
 Those Startup constants are also present in the Linux BBRv1 reference: bandwidth growth of at least 1.25x resets the detector, while three rounds without that growth mark the pipe full. P6b therefore remains directly useful under the compact-BBR strategy.
 
-## Increment P6c: live cumulative delivery snapshots
+## Increment P6c: live cumulative delivery snapshots — merged
 
-P6c does not select BBR and does not publish BBR pacing/cwnd policy. It only closes the observation gap between the already-qualified P5 delivery sidecar and packet-timed controllers.
+PR #16 published the existing P5 delivery-sidecar snapshots into the generic CC rate observation without selecting BBR or changing live congestion policy.
 
 The adapter publishes:
 
 - `prior_delivered_bytes = candidate->delivered_at_send`;
 - `delivered_total_bytes = adapter->delivered_bytes` after charging the current ACK.
 
-Qualification telemetry counts published snapshots and rejects a non-increasing `(prior,total)` pair. A deterministic adapter contract uses a real lwIP PCB plus existing segment-TX and ACK hooks to verify two successive payloads export `(0, MSS)` and `(MSS, 2*MSS)`. Existing P5/P5c real-TUN workflows remain mandatory regression gates.
+The deterministic adapter contract uses a real lwIP PCB plus the existing segment-TX and ACK hooks to verify successive payloads export cumulative snapshots correctly. Later ACK-observation work extended the same live path with `CLOCK_MONOTONIC` ACK time and RFC 6298-style SRTT, while retaining Karn filtering for retransmitted RTT candidates.
 
-## Planned order
+## Shared controller prerequisites — merged
 
-1. finish P6c delivered-snapshot qualification with current Reno behavior unchanged;
-2. add a bounded controller registry/selector so `reno`, future `cubic`, `bbr`, and future `bbrv3` share one adapter boundary without runtime-specific branches;
-3. implement and independently qualify `cubic` while retaining Reno as the compatibility default during rollout;
-4. realign compact `bbr` bandwidth filtering to a 10 packet-timed-round BBRv1-style max filter;
-5. implement overflow-safe BDP/gain arithmetic and compact BBR Startup pacing/cwnd policy in pure C;
-6. implement deterministic `STARTUP -> DRAIN -> PROBE_BW`, the classic 8-phase ProbeBW gain cycle, and ProbeRTT;
-7. bind compact `bbr` only through the selector/qualification path, never by replacing Reno internals;
-8. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases;
-9. add selected v3 fixes to compact `bbr` only for demonstrated failures;
-10. design `bbrv3` as a separate future ops/state implementation if full draft semantics are still desired;
-11. rerun P3 memory/CPU plus all P0-P6 gates before changing any production default.
+The controller work needed before `bbr` can become a peer is now qualified rather than merely planned:
+
+- PR #17 introduced the freestanding name-to-ops registry;
+- PR #18 replaced adapter-specific Reno storage with bounded built-in controller storage;
+- PR #19 added the RFC 9438 CUBIC model;
+- PR #20 added transport-neutral ACK time/SRTT observations;
+- PR #21 registered CUBIC as a peer controller;
+- PR #22 wired live `CLOCK_MONOTONIC` ACK/SRTT observations into the lwIP adapter;
+- PR #23 enabled production `reno|cubic` runtime selection and qualified full TUN/bridge CUBIC fast-loss recovery.
+
+PR #23 was squash-merged as `b0f44fbb7317cef93e90b1912896194f8c174947`. Its integrated CUBIC recovery gate transferred and echoed 262144 bytes, injected a data loss, required at least one controller loss event, required zero timeout fall-through, and retained zero controller errors. Reno remains the production default.
+
+## Increment P6d: BBRv1-style max-bandwidth horizon — active
+
+The transitional two-ProbeBW-cycle max-bandwidth window is being replaced with an exact ten packet-timed-round ring, matching the compact core's Linux BBRv1-style horizon (`CYCLE_LEN + 2`).
+
+The filter is intentionally aged only when a bandwidth sample is admissible. Lower app-limited samples are rejected before window aging so a long application-limited period cannot erase the last trustworthy network-rate estimate. When the next trustworthy sample arrives, the filter fast-forwards to the current packet round; a gap of ten or more rounds expires all prior slots before admitting the new sample.
+
+The deterministic contract covers:
+
+- a peak observed in round 1 remains visible through round 10;
+- round 11 expires that round-1 peak;
+- more than ten lower app-limited rounds retain the last trustworthy max bandwidth;
+- the next non-app-limited sample after that long gap expires stale slots;
+- an app-limited sample at or above the current model remains admissible.
+
+This straightforward exact ring increases pure-model state relative to the transitional two-slot filter. `bbr` is still not live per-flow state, so P6d prioritizes auditable semantics; when the controller is eventually registered, P3 memory qualification will decide whether a more compact equivalent representation is worthwhile.
+
+## Planned order from P6d
+
+1. finish and merge the 10-round bandwidth-filter qualification with `bbr` still unavailable in the registry;
+2. add overflow-safe BDP/gain arithmetic and compact Startup pacing/cwnd policy in pure C;
+3. implement deterministic `STARTUP -> DRAIN` and Drain exit at approximately one BDP;
+4. implement classic 8-phase BBRv1-style `PROBE_BW` and ProbeRTT;
+5. wrap the completed compact state machine as its own `tcp_shift_cc_ops` controller and add `bbr` to the registry only through qualification paths;
+6. run live BBR through the existing event-driven process-wide pacer; do not add per-flow timers, polling, or recovery ownership;
+7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases;
+8. add selected v3-informed fixes to compact `bbr` only for demonstrated failures;
+9. design `bbrv3` as a separate future ops/state implementation if full draft semantics are still desired;
+10. rerun P3 memory/CPU plus all P0-P6 gates before changing any production default.
 
 ## Stop criteria
 
