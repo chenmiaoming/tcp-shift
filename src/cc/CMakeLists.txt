@@ -11,6 +11,7 @@ endif()
 
 add_library(tcp_shift_cc STATIC
     cc.c
+    observation.c
     reno.c
     bbr.c
     cubic.c
@@ -32,6 +33,14 @@ if(TCP_SHIFT_CC_STANDALONE)
         -Wall -Wextra -Wpedantic -Werror
     )
     target_link_libraries(tcp-shift-cc-registry-contract PRIVATE tcp_shift_cc)
+
+    add_executable(tcp-shift-cc-observation-contract
+        ../tests/cc_observation_test.c
+    )
+    target_compile_options(tcp-shift-cc-observation-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-cc-observation-contract PRIVATE tcp_shift_cc)
 
     add_executable(tcp-shift-cubic-model-contract
         ../tests/cubic_model_test.c

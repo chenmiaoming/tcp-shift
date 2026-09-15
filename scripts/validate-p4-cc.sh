@@ -22,6 +22,7 @@ if awk '
     $0 == "#include <stdint.h>" { next }
     $0 == "#include \"cc/cc.h\"" { next }
     $0 == "#include \"cc/registry.h\"" { next }
+    $0 == "#include \"cc/observation.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
     $0 == "#include \"cc/bbr.h\"" { next }
     $0 == "#include \"cc/cubic.h\"" { next }
@@ -47,6 +48,11 @@ grep -F 'cc_contract=ok controller=reno state_bytes=16 pacing=none' \
 grep -F 'cc_registry=ok default=reno available=reno unavailable=cubic,bbr,bbrv3' \
     "$OUT/registry-contract.txt" >/dev/null
 
+"$BUILD/standalone/tcp-shift-cc-observation-contract" \
+    | tee "$OUT/observation-contract.txt"
+grep -F 'cc_observation=ok srtt_alpha=1/8 time_unit=ns zero_rejected=1' \
+    "$OUT/observation-contract.txt" >/dev/null
+
 "$BUILD/standalone/tcp-shift-cubic-model-contract" | tee "$OUT/cubic-contract.txt"
 grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
     "$OUT/cubic-contract.txt" >/dev/null
@@ -69,6 +75,6 @@ rm -f "$OUT/unexpected-undefined.txt"
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller=reno\nregistry=ok\ncubic_model=ok\nstate_bytes=16\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller=reno\nregistry=ok\nack_observation=ok\ncubic_model=ok\nstate_bytes=16\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"
