@@ -56,7 +56,11 @@ do
     fi
 done
 
-"$CONTRACT"
+"$CONTRACT" | tee "$BUILD/p0-config-contract.txt"
+grep -F 'config_contract=ok window_scaling=1 tcp_rcv_scale=0 tcpwnd_size_bytes=4 ' \
+    "$BUILD/p0-config-contract.txt" >/dev/null || \
+    fail "window-scaling config contract did not report the qualified 32-bit profile"
+
 "$BINARY" > "$BUILD/p0-smoke.txt"
 grep -F 'tcp-shift: lwIP ' "$BUILD/p0-smoke.txt" >/dev/null || \
     fail "smoke output does not identify initialized lwIP"
@@ -90,7 +94,9 @@ cat > "$BUILD/p0-report.json" <<EOF
   "max_rss_kib": $RSS_SAMPLE_KIB,
   "max_rss_limit_kib": $RSS_LIMIT_KIB,
   "source_surface": "dualstack-tcp-no-sys-no-ipv6-frag",
-  "window_scaling": false
+  "window_scaling": true,
+  "tcp_rcv_scale": 0,
+  "tcpwnd_size_bytes": 4
 }
 EOF
 
