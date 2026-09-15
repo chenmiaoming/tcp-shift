@@ -13,6 +13,7 @@ on:
       - 'src/cc/**'
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_selector.c'
+      - 'src/lwip/cc_pacing_qualification.c'
       - 'src/p2_main.c'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
@@ -29,7 +30,7 @@ concurrency:
 jobs:
   one-mib-parity:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +71,8 @@ jobs:
           sudo modprobe ifb || true
           test -c /dev/net/tun
           sysctl net.ipv4.tcp_available_congestion_control
+          sysctl net.ipv4.tcp_pacing_ss_ratio || true
+          sysctl net.ipv4.tcp_pacing_ca_ratio || true
 
       - name: Validate benchmark harnesses
         run: |
@@ -82,16 +85,18 @@ jobs:
           cmake -S . -B .build-cc-parity \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
-          cmake --build .build-cc-parity --target tcp-shift-config-contract tcp-shift-p2 --parallel
+          cmake --build .build-cc-parity \
+            --target tcp-shift-config-contract tcp-shift-p2 tcp-shift-p5c-paced \
+            --parallel
           .build-cc-parity/tcp-shift-config-contract | tee .build-cc-parity/config-contract.txt
           grep -F 'tcp_snd_buf=1048576' .build-cc-parity/config-contract.txt
 
-      - name: Compare 1 MiB tcp-shift CUBIC with Linux tcp_cubic
+      - name: Compare unpaced 1 MiB CUBIC with Linux tcp_cubic
         run: |
-          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic"
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-unpaced"
           sudo env \
             TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
-            TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}-unpaced" \
             TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
             TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
             TCP_SHIFT_CUBIC_BENCH_LOSS_PCT=0 \
@@ -100,12 +105,42 @@ jobs:
             TCP_SHIFT_CUBIC_BENCH_OUT="$out" \
             sh scripts/cubic-linux-benchmark.sh
 
-      - name: Compare 1 MiB tcp-shift CUBIC with tcp-shift Reno control
+      - name: Compare unpaced 1 MiB CUBIC with Reno control
         run: |
-          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno"
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-unpaced"
           sudo env \
             TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
-            TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}" \
+            TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}-unpaced" \
+            TCP_SHIFT_CC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CC_BENCH_OUT="$out" \
+            sh scripts/cubic-reno-benchmark.sh
+
+      - name: Compare Linux-like paced CUBIC with Linux tcp_cubic
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-paced"
+          sudo env \
+            TCP_SHIFT_PACING_QUALIFICATION=linux \
+            TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}-paced" \
+            TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CUBIC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CUBIC_BENCH_OUT="$out" \
+            sh scripts/cubic-linux-benchmark.sh
+
+      - name: Compare Linux-like paced CUBIC with paced Reno control
+        run: |
+          out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-paced"
+          sudo env \
+            TCP_SHIFT_PACING_QUALIFICATION=linux \
+            TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
+            TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}-paced" \
             TCP_SHIFT_CC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
             TCP_SHIFT_CC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
             TCP_SHIFT_CC_BENCH_LOSS_PCT=0 \
