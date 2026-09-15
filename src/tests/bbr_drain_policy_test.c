@@ -22,6 +22,25 @@ static void seed_full_pipe(struct tcp_shift_bbr_model *model)
     model->full_bw_reached = 1U;
 }
 
+static struct tcp_shift_cc_rate_sample observed_round(
+    uint64_t rate,
+    uint64_t prior_delivered,
+    uint64_t delivered_total,
+    uint32_t prior_inflight)
+{
+    struct tcp_shift_cc_rate_sample sample;
+
+    memset(&sample, 0, sizeof(sample));
+    sample.delivery_rate_bytes_per_sec = rate;
+    sample.rtt_ns = UINT64_C(20000000);
+    sample.prior_delivered_bytes = prior_delivered;
+    sample.delivered_total_bytes = delivered_total;
+    sample.prior_inflight_bytes = prior_inflight;
+    sample.flags = TCP_SHIFT_CC_RATE_SAMPLE_VALID |
+                   TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID;
+    return sample;
+}
+
 static int check_drain_arithmetic(void)
 {
     CHECK(TCP_SHIFT_BBR_DRAIN_GAIN_NUM == 88U);
@@ -81,6 +100,54 @@ static int check_mode_transition(void)
 
     CHECK(tcp_shift_bbr_model_check_drain(NULL, &rate) < 0);
     CHECK(tcp_shift_bbr_model_check_drain(&model, NULL) < 0);
+    return 0;
+}
+
+static int check_full_pipe_to_drain_integration(void)
+{
+    struct tcp_shift_bbr_model model;
+    struct tcp_shift_cc_rate_sample rate;
+
+    tcp_shift_bbr_model_init(&model);
+
+    rate = observed_round(UINT64_C(100000000), 0U, 1000U, 4000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 1U) == 0);
+    CHECK(model.full_bw_bytes_per_sec == UINT64_C(100000000));
+    CHECK(model.full_bw_count == 0U);
+
+    rate = observed_round(UINT64_C(125000000), 1000U, 2000U, 4000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 2U) == 0);
+    CHECK(model.full_bw_bytes_per_sec == UINT64_C(125000000));
+    CHECK(model.full_bw_count == 0U);
+
+    rate = observed_round(UINT64_C(150000000), 2000U, 3000U, 4000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 3U) == 0);
+    CHECK(model.full_bw_count == 1U);
+
+    rate = observed_round(UINT64_C(155000000), 3000U, 4000U, 4000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 4U) == 0);
+    CHECK(model.full_bw_count == 2U);
+
+    /* The third below-threshold non-app-limited round latches full pipe. With
+     * 156 MB/s and 20 ms min RTT the compact drain target is 3.12 MB, so the
+     * 4 MB prior inflight observation must enter and remain in DRAIN. */
+    rate = observed_round(UINT64_C(156000000), 4000U, 5000U, 4000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 5U) == 0);
+    CHECK(model.full_bw_count == TCP_SHIFT_BBR_FULL_BW_ROUNDS);
+    CHECK(model.full_bw_reached == 1U);
+    CHECK(model.mode == TCP_SHIFT_BBR_MODE_STARTUP);
+    CHECK(tcp_shift_bbr_model_check_drain(&model, &rate) == 0);
+    CHECK(model.mode == TCP_SHIFT_BBR_MODE_DRAIN);
+    CHECK(tcp_shift_bbr_bdp_bytes(model.max_bw_bytes_per_sec,
+                                  model.min_rtt_ns) == UINT64_C(3120000));
+
+    /* A later valid ACK reports 3 MB prior inflight, below one BDP, so DRAIN
+     * completes and ProbeBW becomes the next mode. ProbeBW cycling itself is
+     * intentionally a later checkpoint. */
+    rate = observed_round(UINT64_C(156000000), 5000U, 6000U, 3000000U);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 6U) == 0);
+    CHECK(tcp_shift_bbr_model_check_drain(&model, &rate) == 0);
+    CHECK(model.mode == TCP_SHIFT_BBR_MODE_PROBE_BW);
     return 0;
 }
 
@@ -153,9 +220,11 @@ int main(void)
 {
     CHECK(check_drain_arithmetic() == 0);
     CHECK(check_mode_transition() == 0);
+    CHECK(check_full_pipe_to_drain_integration() == 0);
     CHECK(check_drain_policy() == 0);
 
     printf("bbr_drain_policy=ok pacing_gain=88/256 pacing_margin=99/100 "
-           "cwnd_gain=739/256 drain_target=1bdp transition=startup-drain-probebw\n");
+           "cwnd_gain=739/256 drain_target=1bdp transition=startup-drain-probebw "
+           "full_pipe_detector=integrated\n");
     return 0;
 }
