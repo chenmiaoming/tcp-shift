@@ -6,8 +6,15 @@ static int tcp_shift_cubic_controller_init(
     const struct tcp_shift_cc_init *init,
     struct tcp_shift_cc_policy *policy)
 {
-    return tcp_shift_cubic_model_init(
-        (struct tcp_shift_cubic_model *)opaque_state, transport, init, policy);
+    struct tcp_shift_cubic_model *model =
+        (struct tcp_shift_cubic_model *)opaque_state;
+    int result;
+
+    result = tcp_shift_cubic_model_init(model, transport, init, policy);
+    if (result == 0) {
+        tcp_shift_cubic_hystart_reset(model);
+    }
+    return result;
 }
 
 static int tcp_shift_cubic_controller_on_ack(
@@ -16,11 +23,22 @@ static int tcp_shift_cubic_controller_on_ack(
     const struct tcp_shift_cc_ack *ack,
     struct tcp_shift_cc_policy *policy)
 {
+    struct tcp_shift_cubic_model *model =
+        (struct tcp_shift_cubic_model *)opaque_state;
+    int result;
+
     if (ack == NULL || ack->ack_time_ns == 0U) {
         return -1;
     }
+
+    result = tcp_shift_cubic_hystart_on_ack(
+        model, transport, ack, ack->ack_time_ns);
+    if (result < 0) {
+        return -1;
+    }
+
     return tcp_shift_cubic_model_on_ack(
-        (struct tcp_shift_cubic_model *)opaque_state,
+        model,
         transport,
         ack,
         ack->ack_time_ns,
@@ -43,8 +61,15 @@ static int tcp_shift_cubic_controller_on_timeout(
     const struct tcp_shift_cc_transport *transport,
     struct tcp_shift_cc_policy *policy)
 {
-    return tcp_shift_cubic_model_on_timeout(
-        (struct tcp_shift_cubic_model *)opaque_state, transport, policy);
+    struct tcp_shift_cubic_model *model =
+        (struct tcp_shift_cubic_model *)opaque_state;
+    int result;
+
+    result = tcp_shift_cubic_model_on_timeout(model, transport, policy);
+    if (result == 0) {
+        tcp_shift_cubic_hystart_reset(model);
+    }
+    return result;
 }
 
 const struct tcp_shift_cc_ops tcp_shift_cubic_ops = {
