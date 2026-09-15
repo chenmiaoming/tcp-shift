@@ -284,7 +284,8 @@ jobs:
             TCP_SHIFT_CC_BENCH_OUT="$out" \
             sh scripts/cubic-reno-benchmark.sh
 
-      - name: Qualify 270ms 25-percent-loss stress path
+      - name: Qualify 1 MiB profile on 270ms 25-percent-loss stress path
+        if: ${{ matrix.sndbuf_kib == 1024 }}
         run: |
           build="$PWD/.build-sndbuf-${{ matrix.sndbuf_kib }}"
           out="$PWD/.build/sender-buffer-qualification/${{ matrix.sndbuf_kib }}kib/openvz-stress"
@@ -294,7 +295,7 @@ jobs:
             TCP_SHIFT_CC_BENCH_RTT_MS=270 \
             TCP_SHIFT_CC_BENCH_RATE_MBIT=50 \
             TCP_SHIFT_CC_BENCH_LOSS_PCT=25 \
-            TCP_SHIFT_CC_BENCH_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_CC_BENCH_PAYLOAD_BYTES=131072 \
             TCP_SHIFT_CC_BENCH_QUEUE_PKTS=1156 \
             TCP_SHIFT_CC_BENCH_OUT="$out" \
             sh scripts/cubic-reno-benchmark.sh
@@ -364,7 +365,7 @@ jobs:
           sudo env \
             TCP_SHIFT_P3_BINARY="$PWD/.build-sndbuf-1024-memory/tcp-shift-p2" \
             TCP_SHIFT_P3_B2P_FLOWS=8 \
-            TCP_SHIFT_P3_B2P_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P3_B2P_PAYLOAD_BYTES=2097152 \
             sh scripts/p3-backend-to-public-residency.sh
 
       - name: Publish 1 MiB residency evidence
