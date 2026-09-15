@@ -59,11 +59,14 @@
 #define LWIP_HOOK_FILENAME "lwip/cc_hooks.h"
 
 /*
- * Keep the current transport within lwIP's native 16-bit window fields.
- * Window scaling is a later transport milestone and must be introduced together
- * with explicit memory and high-BDP tests.
+ * Enable upstream lwIP RFC 7323 window-scaling support so sender-side window,
+ * cwnd and send-buffer accounting use 32-bit tcpwnd_size_t. Keep the local
+ * receive scale at zero for this capability milestone: tcp-shift negotiates
+ * window scaling but continues to advertise the existing small receive window.
+ * Larger receive residency and larger TCP_SND_BUF are qualified separately.
  */
-#define LWIP_WND_SCALE 0
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 0
 #define TCP_MSS 1460
 #define TCP_WND (32 * 1024)
 #define TCP_SND_BUF (32 * 1024)

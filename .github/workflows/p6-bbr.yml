@@ -10,6 +10,7 @@ on:
       - 'src/cc/**'
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_adapter.h'
+      - 'src/lwipopts.h'
       - 'src/tests/bbr_model_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
       - 'src/tests/bbr_delivery_snapshot_test.c'

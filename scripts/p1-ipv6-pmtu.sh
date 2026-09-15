@@ -151,8 +151,8 @@ capture_synack()
 
     # libpcap rejects raw tcp[13] byte offsets for IPv6. The runtime is idle
     # and this controlled connection is the only flow, so capture the first TCP
-    # packet emitted by the listener. The caller validates its SYN-only MSS
-    # option, which identifies the SYN-ACK without another timing-sensitive read.
+    # packet emitted by the listener. The caller validates its SYN MSS option,
+    # which identifies the SYN-ACK without another timing-sensitive read.
     timeout 4 tcpdump -i "$TUN_NAME" -c 1 -nn -vv -l \
         "ip6 and tcp and src host $LWIP_IP and src port $TCP_PORT" \
         > "$output" 2>&1 &
@@ -194,12 +194,12 @@ ip6tables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
     -s "$LWIP_IP" -j ACCEPT
 FORWARD_RULES=1
 
-# Before any PTB feedback, the TUN MTU is 1500, so the IPv6 SYN-ACK should
-# advertise the normal 1440-byte TCP MSS. tcpdump prints SYN MSS options in the
-# stable form "mss N]" when this is the last option, so use a literal match and
-# avoid shell/ERE character-class ambiguity in this qualification gate.
+# Before any PTB feedback, the TUN MTU is 1500, so the IPv6 SYN-ACK must
+# advertise the normal 1440-byte TCP MSS. capture_synack() has already scoped
+# this file to the listener's single SYN-ACK, so checking the MSS token alone
+# is robust to additional negotiated TCP options and their ordering.
 capture_synack "$OUT/synack-before.txt" "$OUT/connect-before.txt"
-grep -F 'mss 1440]' "$OUT/synack-before.txt" >/dev/null || {
+grep -F 'mss 1440' "$OUT/synack-before.txt" >/dev/null || {
     cat "$OUT/synack-before.txt" >&2
     echo "baseline IPv6 MSS was not 1440" >&2
     exit 1
@@ -244,10 +244,11 @@ grep -E 'mtu 1280|mtu 1280,' "$OUT/ptb-wire.txt" >/dev/null
 
 # A subsequent connection to the same destination must now use the learned
 # destination PMTU. tcp_eff_send_mss_netif() is expected to advertise
-# 1280 - 40-byte IPv6 - 20-byte TCP = 1220 bytes.
+# 1280 - 40-byte IPv6 - 20-byte TCP = 1220 bytes. capture_synack() again scopes
+# the evidence to a single listener SYN-ACK, so option ordering is irrelevant.
 sleep 0.1
 capture_synack "$OUT/synack-after.txt" "$OUT/connect-after.txt"
-grep -F "mss $EXPECTED_MSS]" "$OUT/synack-after.txt" >/dev/null || {
+grep -F "mss $EXPECTED_MSS" "$OUT/synack-after.txt" >/dev/null || {
     cat "$OUT/ptb-wire.txt" >&2 || true
     cat "$OUT/synack-after.txt" >&2 || true
     echo "lwIP did not apply learned IPv6 PMTU to subsequent TCP MSS" >&2

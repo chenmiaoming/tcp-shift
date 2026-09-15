@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +25,10 @@ int main(void)
     struct tcp_pcb *pcb;
     struct timespec delay;
     uint32_t seq = UINT32_C(200000);
+    uint32_t large_segments;
+    uint32_t large_cwnd;
+    uint32_t large_ssthresh;
+    uint32_t large_snd_wnd;
     uint16_t payload;
     unsigned char segment;
 
@@ -39,21 +44,38 @@ int main(void)
     pcb = tcp_new();
     CHECK(pcb != NULL);
     CHECK(pcb->mss != 0U);
+    CHECK(sizeof(tcpwnd_size_t) == sizeof(uint32_t));
 
     payload = pcb->mss;
-    pcb->cwnd = (tcpwnd_size_t)(payload * 4U);
-    pcb->ssthresh = (tcpwnd_size_t)(16U * 1024U);
-    pcb->snd_wnd = (tcpwnd_size_t)(16U * 1024U);
+    large_segments = UINT16_MAX / (uint32_t)pcb->mss + 64U;
+    large_cwnd = (uint32_t)pcb->mss * large_segments;
+    large_ssthresh = large_cwnd * 2U;
+    large_snd_wnd = large_cwnd * 4U;
+    CHECK(large_cwnd > UINT16_MAX);
+    CHECK(large_ssthresh > large_cwnd);
+    CHECK(large_snd_wnd > large_ssthresh);
+    pcb->cwnd = (tcpwnd_size_t)large_cwnd;
+    pcb->ssthresh = (tcpwnd_size_t)large_ssthresh;
+    pcb->snd_wnd = (tcpwnd_size_t)large_snd_wnd;
     pcb->lastack = seq;
     pcb->snd_nxt = seq;
 
     /* The base adapter deliberately remains Reno-owned. Selection is a thin
-     * listener/runtime layer applied after ordinary lifecycle binding. */
+     * listener/runtime layer applied after ordinary lifecycle binding. Build
+     * the test window from the fixture's actual MSS so it is both >64 KiB and
+     * an exact segment multiple; this keeps CUBIC Q16 rounding out of a
+     * transport-width contract. */
     CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
     CHECK(adapter.controller.ops == &tcp_shift_reno_ops);
+    CHECK((uint32_t)pcb->cwnd == large_cwnd);
+    CHECK(stats.last_cwnd_bytes == large_cwnd);
+    CHECK(stats.last_cwnd_bytes > UINT16_MAX);
+
     CHECK(tcp_shift_lwip_cc_apply_configured_controller(&adapter) == 0);
     CHECK(adapter.controller.ops == &tcp_shift_cubic_ops);
     CHECK(adapter.controller.state == &adapter.controller_state);
+    CHECK((uint32_t)pcb->cwnd == large_cwnd);
+    CHECK(stats.last_cwnd_bytes == large_cwnd);
 
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment, seq, payload);
     CHECK(stats.delivery_first_tx_events == 1U);
@@ -69,6 +91,8 @@ int main(void)
     CHECK(stats.ack_last_time_ns != 0U);
     CHECK(stats.ack_last_smoothed_rtt_ns != 0U);
     CHECK(stats.controller_errors == 0U);
+    CHECK(stats.last_cwnd_bytes > UINT16_MAX);
+    CHECK((uint32_t)pcb->cwnd == stats.last_cwnd_bytes);
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment, payload);
     CHECK(stats.delivery_live_slots == 0U);
 
@@ -79,7 +103,7 @@ int main(void)
     CHECK(strcmp(tcp_shift_lwip_cc_configured_controller_name(), "reno") == 0);
 
     printf("cc_live_selector=ok selected=cubic ack_observations=%llu "
-           "srtt_updates=%llu srtt_ns=%llu cwnd=%u\n",
+           "srtt_updates=%llu srtt_ns=%llu cwnd=%u cwnd_gt_64k=ok\n",
            (unsigned long long)stats.ack_observation_events,
            (unsigned long long)stats.srtt_updates,
            (unsigned long long)stats.ack_last_smoothed_rtt_ns,

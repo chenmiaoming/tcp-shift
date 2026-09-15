@@ -1,4 +1,8 @@
+#include <stdint.h>
+#include <stdio.h>
+
 #include "lwip/opt.h"
+#include "lwip/tcpbase.h"
 
 #if NO_SYS != 1
 #error "tcp-shift requires NO_SYS=1"
@@ -34,21 +38,30 @@
 #if LWIP_TCP_PCB_NUM_EXT_ARGS != 1
 #error "P4 reserves exactly one TCP PCB ext-arg slot for CC integration"
 #endif
-#if LWIP_WND_SCALE != 0
-#error "window scaling remains disabled until high-BDP memory tests exist"
+#if LWIP_WND_SCALE != 1
+#error "tcp-shift requires upstream lwIP window-scaling capability"
+#endif
+#if TCP_RCV_SCALE != 0
+#error "current low-memory profile keeps the local receive scale at zero"
 #endif
 #if TCP_WND > 65535U
-#error "TCP_WND exceeds the unscaled 16-bit lwIP window field"
-#endif
-#if TCP_SND_BUF > 65535U
-#error "TCP_SND_BUF exceeds the unscaled 16-bit lwIP send-buffer field"
+#error "current low-memory profile keeps the local receive window unscaled"
 #endif
 
+_Static_assert(sizeof(tcpwnd_size_t) == sizeof(uint32_t),
+               "window scaling must select 32-bit tcpwnd_size_t");
 _Static_assert(TCP_MSS > 0, "TCP_MSS must be positive");
 _Static_assert(TCP_WND >= (2 * TCP_MSS), "TCP_WND is too small for the TCP profile");
 _Static_assert(TCP_SND_BUF >= (2 * TCP_MSS), "TCP_SND_BUF is too small for the TCP profile");
 
 int main(void)
 {
+    printf("config_contract=ok window_scaling=%u tcp_rcv_scale=%u "
+           "tcpwnd_size_bytes=%zu tcp_wnd=%u tcp_snd_buf=%u\n",
+           (unsigned)LWIP_WND_SCALE,
+           (unsigned)TCP_RCV_SCALE,
+           sizeof(tcpwnd_size_t),
+           (unsigned)TCP_WND,
+           (unsigned)TCP_SND_BUF);
     return 0;
 }
