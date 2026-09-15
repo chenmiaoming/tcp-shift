@@ -4,6 +4,45 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Per-flow transport pacing clock.
+ *
+ * Congestion control owns the target rate; this state owns only the conversion
+ * from bytes/rate into send eligibility timestamps. max_catch_up_bytes bounds
+ * credit accumulated while the event loop is late so a delayed timer cannot
+ * turn into an unbounded burst. A value of zero disables catch-up entirely.
+ */
+struct tcp_shift_flow_pacer {
+    uint64_t rate_bytes_per_sec;
+    uint64_t next_send_ns;
+    uint32_t max_catch_up_bytes;
+    uint64_t tx_events;
+    uint64_t tx_bytes;
+    uint64_t catch_up_clamps;
+};
+
+void tcp_shift_flow_pacer_init(struct tcp_shift_flow_pacer *flow,
+                               uint32_t max_catch_up_bytes);
+void tcp_shift_flow_pacer_reset(struct tcp_shift_flow_pacer *flow);
+void tcp_shift_flow_pacer_set_rate(struct tcp_shift_flow_pacer *flow,
+                                   uint64_t rate_bytes_per_sec);
+
+/*
+ * Return the absolute CLOCK_MONOTONIC deadline for the next send. Zero means
+ * pacing is disabled or the flow is currently eligible.
+ */
+uint64_t tcp_shift_flow_pacer_deadline(const struct tcp_shift_flow_pacer *flow,
+                                       uint64_t now_ns);
+
+/*
+ * Advance the virtual send clock after bytes were handed to the transport.
+ * Returns 0 on success and -1 for invalid input. The caller must still enforce
+ * cwnd/rwnd; this primitive only enforces the requested pacing rate.
+ */
+int tcp_shift_flow_pacer_note_tx(struct tcp_shift_flow_pacer *flow,
+                                 uint64_t now_ns,
+                                 uint32_t bytes);
+
 struct tcp_shift_pacer_event {
     uint64_t deadline_ns;
     uint64_t flow_id;

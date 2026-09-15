@@ -32,13 +32,71 @@ static void set_ack(struct tcp_shift_cc_ack *ack,
     ack->rate.flags = TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID;
 }
 
+static int run_round_boundary(void)
+{
+    union tcp_shift_cc_builtin_state state;
+    struct tcp_shift_cc cc;
+    struct tcp_shift_cc_transport transport = {
+        .mss_bytes = 1000U,
+        .inflight_bytes = 8000U,
+        .send_window_bytes = 65535U,
+        .cwnd_limit_bytes = 65535U,
+    };
+    struct tcp_shift_cc_init init = {
+        .initial_cwnd_bytes = 16000U,
+        .initial_ssthresh_bytes = 64000U,
+        .min_cwnd_bytes = 2000U,
+    };
+    struct tcp_shift_cc_ack ack;
+    struct tcp_shift_cc_policy policy;
+    uint64_t first_round_start;
+    uint64_t delivered = 0U;
+    uint32_t i;
+
+    memset(&state, 0, sizeof(state));
+    memset(&cc, 0, sizeof(cc));
+    CHECK(tcp_shift_cc_init(&cc, &tcp_shift_cubic_ops,
+                            &state, sizeof(state),
+                            &transport, &init, &policy) == 0);
+
+    delivered += 1000U;
+    set_ack(&ack, UINT64_C(100000000), UINT64_C(20000000),
+            0U, delivered);
+    CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
+    first_round_start = state.cubic.hystart_round_start_ns;
+    CHECK(first_round_start == UINT64_C(100000000));
+    CHECK(state.cubic.hystart_next_round_delivered == UINT64_C(9000));
+
+    /* Linux snapshots snd_nxt as the round end. In delivery-domain terms the
+     * equivalent boundary is delivered + in-flight. Reaching that boundary is
+     * still the same round; only the next cumulative delivery crosses it. */
+    for (i = 1U; i < 9U; i++) {
+        delivered += 1000U;
+        set_ack(&ack,
+                UINT64_C(100000000) + (uint64_t)i * UINT64_C(5000000),
+                UINT64_C(20000000), 0U, delivered);
+        CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
+        CHECK(state.cubic.hystart_round_start_ns == first_round_start);
+    }
+    CHECK(delivered == UINT64_C(9000));
+
+    delivered += 1000U;
+    set_ack(&ack, UINT64_C(150000000), UINT64_C(20000000),
+            0U, delivered);
+    CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
+    CHECK(state.cubic.hystart_round_start_ns == UINT64_C(150000000));
+    CHECK(state.cubic.hystart_next_round_delivered == UINT64_C(18000));
+    CHECK(state.cubic.hystart_sample_count == 1U);
+    return 0;
+}
+
 static int run_delay_detector(void)
 {
     union tcp_shift_cc_builtin_state state;
     struct tcp_shift_cc cc;
     struct tcp_shift_cc_transport transport = {
         .mss_bytes = 1000U,
-        .inflight_bytes = 16000U,
+        .inflight_bytes = 8000U,
         .send_window_bytes = 65535U,
         .cwnd_limit_bytes = 65535U,
     };
@@ -59,9 +117,9 @@ static int run_delay_detector(void)
                             &transport, &init, &policy) == 0);
     CHECK(state.cubic.hystart_enabled == 1U);
 
-    /* Establish a 20 ms minimum RTT without creating an ACK train. All first
-     * flight packets carry prior_delivered=0, so they remain in one round. */
-    for (i = 0U; i < 8U; i++) {
+    /* Establish a 20 ms minimum RTT over one complete packet-timed round.
+     * Five-millisecond ACK spacing keeps the ACK-train detector inactive. */
+    for (i = 0U; i < 9U; i++) {
         delivered += 1000U;
         set_ack(&ack,
                 UINT64_C(100000000) + (uint64_t)i * UINT64_C(5000000),
@@ -70,16 +128,17 @@ static int run_delay_detector(void)
         CHECK(state.cubic.hystart_found == 0U);
     }
     CHECK(state.cubic.hystart_delay_min_ns == UINT64_C(20000000));
+    CHECK(state.cubic.hystart_next_round_delivered == UINT64_C(9000));
 
-    /* Start a new packet-timed round whose RTT minimum is 30 ms. Linux's
-     * threshold is minRTT + clamp(minRTT/8, 4 ms, 16 ms) = 24 ms here. */
+    /* Crossing delivered+inflight starts a fresh round. Its RTT minimum is
+     * 30 ms. Linux's threshold is minRTT + clamp(minRTT/8, 4 ms, 16 ms) =
+     * 24 ms here. HyStart collects eight samples, then the ninth ACK evaluates
+     * the round minimum and exits slow start. */
     for (i = 0U; i < 9U; i++) {
-        uint64_t prior = i == 0U ? UINT64_C(1000) : UINT64_C(1000);
-
         delivered += 1000U;
         set_ack(&ack,
                 UINT64_C(200000000) + (uint64_t)i * UINT64_C(5000000),
-                UINT64_C(30000000), prior, delivered);
+                UINT64_C(30000000), UINT64_C(1000), delivered);
         CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
         if (i < 8U) {
             CHECK(state.cubic.hystart_found == 0U);
@@ -108,7 +167,7 @@ static int run_ack_train_detector(void)
     struct tcp_shift_cc cc;
     struct tcp_shift_cc_transport transport = {
         .mss_bytes = 1000U,
-        .inflight_bytes = 16000U,
+        .inflight_bytes = 64000U,
         .send_window_bytes = 65535U,
         .cwnd_limit_bytes = 65535U,
     };
@@ -130,7 +189,8 @@ static int run_ack_train_detector(void)
 
     /* With minRTT=40 ms and no CUBIC pacing request, the classic Linux
      * ACK-train threshold is 20 ms. Keep ACK gaps at 1 ms and RTT flat so the
-     * train detector, not the delay detector, exits slow start. */
+     * train detector, not the delay detector, exits slow start. A large flight
+     * boundary keeps the samples in one packet-timed round. */
     for (i = 0U; i < 24U && state.cubic.hystart_found == 0U; i++) {
         delivered += 1000U;
         set_ack(&ack,
@@ -149,10 +209,13 @@ static int run_ack_train_detector(void)
 
 int main(void)
 {
+    CHECK(run_round_boundary() == 0);
     CHECK(run_delay_detector() == 0);
     CHECK(run_ack_train_detector() == 0);
 
     printf("cubic_hystart=ok low_window=16 min_samples=8 "
-           "ack_delta_ms=2 delay_thresh_ms=4..16 detectors=ack_train,delay\n");
+           "ack_delta_ms=2 delay_thresh_ms=4..16 "
+           "round_boundary=delivered_plus_inflight "
+           "detectors=ack_train,delay\n");
     return 0;
 }

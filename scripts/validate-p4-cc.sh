@@ -23,6 +23,7 @@ if awk '
     $0 == "#include \"cc/cc.h\"" { next }
     $0 == "#include \"cc/registry.h\"" { next }
     $0 == "#include \"cc/observation.h\"" { next }
+    $0 == "#include \"cc/transport_pacing.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
     $0 == "#include \"cc/bbr.h\"" { next }
     $0 == "#include \"cc/cubic.h\"" { next }
@@ -52,6 +53,13 @@ grep -F 'cc_registry=ok default=reno available=reno,cubic unavailable=bbr,bbrv3'
     | tee "$OUT/observation-contract.txt"
 grep -F 'cc_observation=ok srtt_alpha=1/8 time_unit=ns zero_rejected=1' \
     "$OUT/observation-contract.txt" >/dev/null
+
+"$BUILD/standalone/tcp-shift-transport-pacing-contract" \
+    | tee "$OUT/transport-pacing-contract.txt"
+grep -F 'transport_pacing=ok fallback=window_over_srtt ' \
+    "$OUT/transport-pacing-contract.txt" >/dev/null
+grep -F 'controller_rate_precedence=1 startup_rtt=explicit' \
+    "$OUT/transport-pacing-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-model-contract" | tee "$OUT/cubic-contract.txt"
 grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
@@ -93,6 +101,6 @@ fi
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"

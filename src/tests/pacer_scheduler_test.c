@@ -59,6 +59,76 @@ static struct tcp_shift_pacer_event event_at(uint64_t deadline_ns,
     return event;
 }
 
+static void qualify_flow_clock(void)
+{
+    struct tcp_shift_flow_pacer flow;
+    struct tcp_shift_flow_pacer strict;
+    const uint64_t base = UINT64_C(1000000000);
+    const uint64_t one_ms = UINT64_C(1000000);
+
+    /* 1 MB/s gives a deterministic 1 ms spacing for each 1000-byte segment.
+     * Permit exactly one segment of catch-up credit. */
+    tcp_shift_flow_pacer_init(&flow, 1000U);
+    tcp_shift_flow_pacer_set_rate(&flow, UINT64_C(1000000));
+    require(tcp_shift_flow_pacer_deadline(&flow, base) == 0U,
+            "new flow must be immediately eligible");
+    require(tcp_shift_flow_pacer_note_tx(&flow, base, 1000U) == 0,
+            "first flow-clock transmission");
+    require(flow.next_send_ns == base + one_ms,
+            "first spacing must be one millisecond");
+    require(tcp_shift_flow_pacer_deadline(&flow, base + one_ms / 2U) ==
+                base + one_ms,
+            "flow clock exposed wrong deadline");
+    require(tcp_shift_flow_pacer_deadline(&flow, base + one_ms) == 0U,
+            "flow must become eligible at deadline");
+
+    require(tcp_shift_flow_pacer_note_tx(&flow, base + one_ms, 1000U) == 0,
+            "second on-time transmission");
+    require(flow.next_send_ns == base + 2U * one_ms,
+            "on-time virtual clock did not advance");
+
+    /* Simulate an event loop that wakes 8 ms late. The pacer may reclaim only
+     * one packet of elapsed credit, so two packets can leave at this instant
+     * (the due packet plus one catch-up packet), never the whole backlog. */
+    require(tcp_shift_flow_pacer_note_tx(&flow, base + 10U * one_ms, 1000U) == 0,
+            "late transmission");
+    require(flow.catch_up_clamps == 1U,
+            "late virtual clock was not bounded");
+    require(flow.next_send_ns == base + 10U * one_ms,
+            "one-packet catch-up credit mismatch");
+    require(tcp_shift_flow_pacer_deadline(&flow, base + 10U * one_ms) == 0U,
+            "catch-up packet should be immediately eligible");
+    require(tcp_shift_flow_pacer_note_tx(&flow, base + 10U * one_ms, 1000U) == 0,
+            "bounded catch-up transmission");
+    require(flow.next_send_ns == base + 11U * one_ms,
+            "catch-up must return to a paced future deadline");
+    require(tcp_shift_flow_pacer_deadline(&flow, base + 10U * one_ms) ==
+                base + 11U * one_ms,
+            "catch-up leaked an unbounded burst");
+    require(flow.tx_events == 4U && flow.tx_bytes == 4000U,
+            "flow pacing telemetry mismatch");
+
+    tcp_shift_flow_pacer_set_rate(&flow, 0U);
+    require(flow.next_send_ns == 0U,
+            "disabling pacing must clear stale deadline debt");
+    require(tcp_shift_flow_pacer_deadline(&flow, base) == 0U,
+            "disabled pacing exposed a deadline");
+    tcp_shift_flow_pacer_reset(&flow);
+    require(flow.max_catch_up_bytes == 1000U && flow.tx_events == 0U,
+            "flow reset must preserve catch-up policy only");
+
+    /* With zero catch-up allowance a late wake gets exactly one transmission
+     * before the next future deadline. */
+    tcp_shift_flow_pacer_init(&strict, 0U);
+    tcp_shift_flow_pacer_set_rate(&strict, UINT64_C(1000000));
+    require(tcp_shift_flow_pacer_note_tx(&strict, base, 1000U) == 0,
+            "strict first transmission");
+    require(tcp_shift_flow_pacer_note_tx(&strict, base + 10U * one_ms, 1000U) == 0,
+            "strict late transmission");
+    require(strict.next_send_ns == base + 11U * one_ms,
+            "zero-credit pacer must not catch up in a burst");
+}
+
 int main(void)
 {
     struct tcp_shift_pacer pacer;
@@ -72,6 +142,8 @@ int main(void)
     size_t cancelled;
     int fd;
     int rc;
+
+    qualify_flow_clock();
 
     if (tcp_shift_pacer_init(&pacer, 8U) < 0) {
         fail("init");
@@ -190,7 +262,8 @@ int main(void)
     require(stats->last_actual_release_ns >= stats->last_requested_deadline_ns,
             "last release precedes requested deadline");
 
-    printf("pacer_contract=ok timerfd_creates=%llu timer_arms=%llu "
+    printf("pacer_contract=ok flow_clock=bounded_credit "
+           "timerfd_creates=%llu timer_arms=%llu "
            "timer_rearms=%llu timer_disarms=%llu timer_expirations=%llu "
            "scheduled_events=%llu released_events=%llu cancelled_events=%llu "
            "released_bytes=%llu last_lateness_ns=%llu max_lateness_ns=%llu "

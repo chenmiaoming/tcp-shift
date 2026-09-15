@@ -101,7 +101,11 @@ add_library(tcp_shift_lwip_cc_adapter STATIC
 )
 target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)
-target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC tcp_shift_cc tcp_shift_lwip)
+target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC
+    tcp_shift_cc
+    tcp_shift_lwip
+    tcp_shift_pacer
+)
 
 add_library(tcp_shift_lwip_cc_pacing_qualification STATIC
     src/lwip/cc_pacing_qualification.c
