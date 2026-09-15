@@ -6,6 +6,7 @@
 
 #include "cc/cc.h"
 #include "cc/registry.h"
+#include "cc/reno.h"
 #include "lwip/cc_hooks.h"
 #include "lwip/tcp.h"
 
