@@ -10,6 +10,7 @@ on:
       - 'src/bridge/**'
       - 'src/runtime/**'
       - 'src/lwip/**'
+      - 'src/cc/**'
       - 'src/host/**'
       - 'src/p2_main.c'
       - 'scripts/fetch-lwip.sh'

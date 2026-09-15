@@ -84,6 +84,11 @@ void tcp_shift_cubic_model_set_fast_convergence(
     struct tcp_shift_cubic_model *model,
     unsigned enabled);
 
+/* Generic controller wrapper. It consumes only the transport-neutral ACK
+ * observations from cc.h; clock acquisition and RTT sampling remain adapter
+ * responsibilities. */
+extern const struct tcp_shift_cc_ops tcp_shift_cubic_ops;
+
 #ifdef __cplusplus
 }
 #endif
