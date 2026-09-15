@@ -1,6 +1,7 @@
 #include "cc/observation.h"
 
 #include <limits.h>
+#include <stddef.h>
 
 void tcp_shift_cc_srtt_init(struct tcp_shift_cc_srtt *srtt)
 {
