@@ -189,6 +189,7 @@ jobs:
         if: always()
         run: |
           root="$PWD/.build/cc-linux-parity/${{ matrix.case }}"
+          sudo chown -R "$USER:$USER" "$root"
           python3 scripts/cc-linux-parity-evaluate.py "$root" | tee "$root/evaluation.txt"
 
       - name: Publish parity evidence
