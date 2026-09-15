@@ -68,13 +68,21 @@ ar t "$LIB" | tee "$OUT/archive-members.txt"
 nm -g --defined-only "$LIB" | tee "$OUT/defined-symbols.txt"
 nm -u "$LIB" | tee "$OUT/undefined-symbols.txt"
 
-if awk '$1 == "U" { print; found = 1 } END { exit found ? 0 : 1 }' \
-    "$OUT/undefined-symbols.txt" > "$OUT/unexpected-undefined.txt"; then
-    echo "P4 CC archive has external symbol dependencies:" >&2
-    cat "$OUT/unexpected-undefined.txt" >&2
+# Static archive members legitimately reference symbols defined by other
+# members in the same archive. Treat only U symbols that have no archive-wide
+# definition as external dependencies; requiring every object to be standalone
+# would incorrectly reject normal freestanding multi-object libraries.
+awk 'NF >= 2 { print $NF }' "$OUT/defined-symbols.txt" | sort -u \
+    > "$OUT/defined-symbol-names.txt"
+awk '$1 == "U" { print $2 }' "$OUT/undefined-symbols.txt" | sort -u \
+    > "$OUT/undefined-symbol-names.txt"
+comm -23 "$OUT/undefined-symbol-names.txt" "$OUT/defined-symbol-names.txt" \
+    > "$OUT/external-symbol-names.txt"
+if [ -s "$OUT/external-symbol-names.txt" ]; then
+    echo "P4 CC archive has unresolved external symbol dependencies:" >&2
+    cat "$OUT/external-symbol-names.txt" >&2
     exit 1
 fi
-rm -f "$OUT/unexpected-undefined.txt"
 
 # Record object/text/data size as the fixed pre-adapter P4 baseline. This is not
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
