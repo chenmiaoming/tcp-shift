@@ -159,11 +159,9 @@ print(
 PY
 }
 
-# ---------------------------------------------------------------------------
 # tcp-shift CUBIC: backend sends; public lwIP TCP is the measured sender.
 # Data path (userspace -> host stack) is TUN ingress redirected through IFB.
 # ACK path (host stack -> userspace) is TUN egress. Each receives RTT/2 delay.
-# ---------------------------------------------------------------------------
 : > "$OUT/tcp-shift/backend.stdout"
 : > "$OUT/tcp-shift/backend.stderr"
 : > "$OUT/tcp-shift/runtime.stdout"
@@ -259,6 +257,10 @@ if ! wait "$BACKEND_PID"; then
 fi
 BACKEND_PID=
 
+# Capture qdisc counters while the runtime still owns the TUN.
+tc -s qdisc show dev "$TUN_NAME" > "$OUT/tcp-shift/tun-qdisc-after.txt"
+tc -s qdisc show dev "$IFB_NAME" > "$OUT/tcp-shift/ifb-qdisc-after.txt"
+
 sleep 0.2
 kill -TERM "$RUNTIME_PID"
 if ! wait "$RUNTIME_PID"; then
@@ -268,9 +270,6 @@ if ! wait "$RUNTIME_PID"; then
     exit 1
 fi
 RUNTIME_PID=
-
-tc -s qdisc show dev "$TUN_NAME" > "$OUT/tcp-shift/tun-qdisc-after.txt" 2>&1 || true
-tc -s qdisc show dev "$IFB_NAME" > "$OUT/tcp-shift/ifb-qdisc-after.txt" 2>&1 || true
 
 grep -F 'cc_controller_errors=0' "$OUT/tcp-shift/runtime.stderr" >/dev/null
 TS_CWND=$(sed -n 's/.* cc_last_cwnd=\([0-9][0-9]*\).*/\1/p' "$OUT/tcp-shift/runtime.stderr" | tail -n 1)
@@ -287,11 +286,9 @@ tc qdisc del dev "$TUN_NAME" ingress >/dev/null 2>&1 || true
 tc qdisc del dev "$IFB_NAME" root >/dev/null 2>&1 || true
 ip link del "$IFB_NAME" >/dev/null 2>&1 || true
 
-# ---------------------------------------------------------------------------
 # Linux tcp_cubic reference in two network namespaces with the same data-path
 # netem and ACK-path delay. TCP_MAXSEG=1460 and veth offloads are disabled when
 # supported so packetization is closer to the lwIP path.
-# ---------------------------------------------------------------------------
 ip netns add "$NS_CLIENT"
 ip netns add "$NS_SERVER"
 ip link add "$VETH_CLIENT" type veth peer name "$VETH_SERVER"
@@ -406,8 +403,8 @@ LINUX_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/linux/s
 
 python3 - "$CASE" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$PAYLOAD_BYTES" \
     "$BDP_BYTES" "$TS_GOODPUT" "$LINUX_GOODPUT" "$TS_CWND" "$TS_LOSS" \
-    "$TS_TIMEOUT" "$LINUX_CWND" "$LINUX_RTT_US" "$LINUX_RETRANS" \
-    | tee "$OUT/summary.txt" <<'PY'
+    "$TS_TIMEOUT" "$LINUX_CWND" "$LINUX_RTT_US" "$LINUX_RETRANS" <<'PY' \
+    | tee "$OUT/summary.txt"
 import sys
 
 (case, rtt_ms, rate_mbit, loss_pct, payload, bdp, ts_g, linux_g,
