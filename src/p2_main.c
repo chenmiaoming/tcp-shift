@@ -51,9 +51,10 @@ static void usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "<public-port> <backend-port>\n"
+            "<public-port> <backend-port> [cc]\n"
+            "  cc: reno (default) | cubic\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18090 19090\n",
+            "18090 19090 cubic\n",
             program, program);
 }
 
@@ -227,6 +228,7 @@ int main(int argc, char **argv)
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_bridge bridge;
     const struct tcp_shift_lwip_cc_stats *cc_stats;
+    const char *cc_name;
     ip4_addr_t address;
     ip4_addr_t netmask;
     ip4_addr_t gateway;
@@ -243,7 +245,7 @@ int main(int argc, char **argv)
     bridge.listener = NULL;
     bridge.flows = NULL;
 
-    if (argc != 7) {
+    if (argc != 7 && argc != 8) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -252,6 +254,17 @@ int main(int argc, char **argv)
         parse_ipv4(argv[4], &gateway) < 0 ||
         parse_port(argv[5], &public_port) < 0 ||
         parse_port(argv[6], &backend_port) < 0) {
+        return EXIT_FAILURE;
+    }
+
+    cc_name = argc == 8 ? argv[7] : "reno";
+    if (tcp_shift_lwip_cc_configure_controller(cc_name) < 0) {
+        fprintf(stderr, "unsupported congestion controller: %s\n", cc_name);
+        return EXIT_FAILURE;
+    }
+    cc_name = tcp_shift_lwip_cc_configured_controller_name();
+    if (cc_name == NULL) {
+        fprintf(stderr, "congestion controller registry unavailable\n");
         return EXIT_FAILURE;
     }
 
@@ -299,9 +312,9 @@ int main(int argc, char **argv)
     bridge_started = 1;
 
     printf("tcp-shift-p2: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u "
-           "public-port=%u backend=127.0.0.1:%u\n",
+           "public-port=%u backend=127.0.0.1:%u cc=%s\n",
            tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
-           (unsigned)public_port, (unsigned)backend_port);
+           (unsigned)public_port, (unsigned)backend_port, cc_name);
     fflush(stdout);
 
     status = EXIT_SUCCESS;
@@ -383,11 +396,6 @@ out:
                 (unsigned long long)bridge.pending_public_bytes);
     }
     if (pacer_configured != 0 && tcp_shift_lwip_cc_clear_pacer() < 0) {
-        /* A bridge flow may already be gone while its lwIP PCB still owns the
-         * ext-arg through LAST_ACK/TIME_WAIT. The service must outlive those
-         * adapters. Since no more event-loop cycles run after this point and
-         * the process exits immediately, retain the static service instead of
-         * treating normal PCB lifetime as a shutdown failure. */
         fprintf(stderr,
                 "tcp-shift-p2: pacer_service_retained_until_process_exit=1\n");
     }
