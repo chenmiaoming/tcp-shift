@@ -7,6 +7,123 @@
 #include <unistd.h>
 
 #define TCP_SHIFT_PACER_INITIAL_CAPACITY 8U
+#define TCP_SHIFT_PACER_NSEC_PER_SEC UINT64_C(1000000000)
+
+static uint64_t tcp_shift_flow_pacer_spacing_ns(uint32_t bytes,
+                                                 uint64_t rate_bytes_per_sec)
+{
+    uint64_t numerator;
+    uint64_t spacing;
+
+    if (bytes == 0U || rate_bytes_per_sec == 0U) {
+        return 0U;
+    }
+
+    /* bytes is u32, so bytes * 1e9 cannot overflow u64. Divide with an
+     * explicit remainder instead of numerator + rate - 1, which could. */
+    numerator = (uint64_t)bytes * TCP_SHIFT_PACER_NSEC_PER_SEC;
+    spacing = numerator / rate_bytes_per_sec;
+    if (numerator % rate_bytes_per_sec != 0U) {
+        spacing++;
+    }
+    return spacing == 0U ? 1U : spacing;
+}
+
+static uint64_t tcp_shift_flow_pacer_add_sat(uint64_t left, uint64_t right)
+{
+    return right > UINT64_MAX - left ? UINT64_MAX : left + right;
+}
+
+void tcp_shift_flow_pacer_init(struct tcp_shift_flow_pacer *flow,
+                               uint32_t max_catch_up_bytes)
+{
+    if (flow == NULL) {
+        return;
+    }
+    memset(flow, 0, sizeof(*flow));
+    flow->max_catch_up_bytes = max_catch_up_bytes;
+}
+
+void tcp_shift_flow_pacer_reset(struct tcp_shift_flow_pacer *flow)
+{
+    uint32_t max_catch_up_bytes;
+
+    if (flow == NULL) {
+        return;
+    }
+    max_catch_up_bytes = flow->max_catch_up_bytes;
+    memset(flow, 0, sizeof(*flow));
+    flow->max_catch_up_bytes = max_catch_up_bytes;
+}
+
+void tcp_shift_flow_pacer_set_rate(struct tcp_shift_flow_pacer *flow,
+                                   uint64_t rate_bytes_per_sec)
+{
+    if (flow == NULL) {
+        return;
+    }
+    flow->rate_bytes_per_sec = rate_bytes_per_sec;
+    if (rate_bytes_per_sec == 0U) {
+        flow->next_send_ns = 0U;
+    }
+}
+
+uint64_t tcp_shift_flow_pacer_deadline(const struct tcp_shift_flow_pacer *flow,
+                                       uint64_t now_ns)
+{
+    if (flow == NULL || flow->rate_bytes_per_sec == 0U ||
+        flow->next_send_ns == 0U || flow->next_send_ns <= now_ns) {
+        return 0U;
+    }
+    return flow->next_send_ns;
+}
+
+int tcp_shift_flow_pacer_note_tx(struct tcp_shift_flow_pacer *flow,
+                                 uint64_t now_ns,
+                                 uint32_t bytes)
+{
+    uint64_t base_ns;
+    uint64_t spacing_ns;
+    uint64_t catch_up_ns;
+    uint64_t floor_ns;
+
+    if (flow == NULL || now_ns == 0U || bytes == 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (flow->rate_bytes_per_sec == 0U) {
+        flow->next_send_ns = 0U;
+        return 0;
+    }
+
+    spacing_ns = tcp_shift_flow_pacer_spacing_ns(
+        bytes, flow->rate_bytes_per_sec);
+    if (spacing_ns == 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    base_ns = flow->next_send_ns;
+    if (base_ns == 0U) {
+        /* A newly paced or long-idle flow gets one immediate transmission,
+         * then enters the virtual timeline. Startup never inherits credit
+         * from time before pacing was enabled. */
+        base_ns = now_ns;
+    } else if (base_ns < now_ns) {
+        catch_up_ns = tcp_shift_flow_pacer_spacing_ns(
+            flow->max_catch_up_bytes, flow->rate_bytes_per_sec);
+        floor_ns = catch_up_ns < now_ns ? now_ns - catch_up_ns : 0U;
+        if (base_ns < floor_ns) {
+            base_ns = floor_ns;
+            flow->catch_up_clamps++;
+        }
+    }
+
+    flow->next_send_ns = tcp_shift_flow_pacer_add_sat(base_ns, spacing_ns);
+    flow->tx_events++;
+    flow->tx_bytes = tcp_shift_flow_pacer_add_sat(flow->tx_bytes, bytes);
+    return 0;
+}
 
 static int tcp_shift_pacer_event_less(const struct tcp_shift_pacer_event *a,
                                       const struct tcp_shift_pacer_event *b)
