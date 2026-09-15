@@ -11,6 +11,11 @@ REQUIRED = {
     "reno-paced": "iwip-cubic-reno-paced/summary.txt",
 }
 
+RATE_CAP_DIAGNOSTIC = {
+    "linux-paced-cap": "linux-cubic-paced-cap/summary.txt",
+    "reno-paced-cap": "iwip-cubic-reno-paced-cap/summary.txt",
+}
+
 
 def parse_summary(path: pathlib.Path):
     text = path.read_text(encoding="utf-8").strip()
@@ -67,6 +72,10 @@ def main():
         rows = {
             name: parse_summary(args.root / relative)
             for name, relative in REQUIRED.items()
+        }
+        capped_rows = {
+            name: parse_summary(args.root / relative)
+            for name, relative in RATE_CAP_DIAGNOSTIC.items()
         }
     except (OSError, ValueError) as exc:
         print(f"cc_linux_parity_evaluate=error reason={exc}")
@@ -135,6 +144,33 @@ def main():
             f"Linux reference has {linux_retrans} retransmissions; "
             "clean-path reference is not clean"
         )
+
+    cap_linux = capped_rows["linux-paced-cap"]
+    cap_reno = capped_rows["reno-paced-cap"]
+    cap_linux_goodput = number(cap_linux, "tcp_shift_goodput_mbps")
+    cap_reno_goodput = number(cap_reno, "cubic_goodput_mbps")
+    cap_drift = relative_drift(cap_linux_goodput, cap_reno_goodput)
+    cap_linux_loss = integer(cap_linux, "tcp_shift_loss_events")
+    cap_reno_loss = integer(cap_reno, "cubic_loss_events")
+    cap_linux_rto = integer(cap_linux, "tcp_shift_timeout_events")
+    cap_reno_rto = integer(cap_reno, "cubic_timeout_events")
+    cap_clean = (
+        cap_drift <= args.cross_harness_drift
+        and cap_linux_loss == 0
+        and cap_reno_loss == 0
+        and cap_linux_rto == 0
+        and cap_reno_rto == 0
+    )
+
+    print(
+        "rate_cap_diagnostic "
+        f"linux_harness_goodput_mbps={cap_linux_goodput:.6f} "
+        f"reno_harness_goodput_mbps={cap_reno_goodput:.6f} "
+        f"relative_drift={cap_drift:.6f} "
+        f"linux_harness_loss={cap_linux_loss} reno_harness_loss={cap_reno_loss} "
+        f"linux_harness_rto={cap_linux_rto} reno_harness_rto={cap_reno_rto} "
+        f"scheduler_path_clean={'yes' if cap_clean else 'no'}"
+    )
 
     ready = not issues
     print(f"qualification_ready={'yes' if ready else 'no'} issue_count={len(issues)}")
