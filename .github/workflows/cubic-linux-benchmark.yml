@@ -38,21 +38,31 @@ jobs:
             rate_mbit: 20
             loss_pct: '0'
             payload_bytes: 4194304
+            queue_pkts: 35
+          - case: low-bdp-small-buffer
+            rtt_ms: 10
+            rate_mbit: 20
+            loss_pct: '0'
+            payload_bytes: 4194304
+            queue_pkts: 18
           - case: edge-bdp
             rtt_ms: 40
             rate_mbit: 10
             loss_pct: '0'
             payload_bytes: 4194304
+            queue_pkts: 69
           - case: lossy-wan
             rtt_ms: 40
             rate_mbit: 10
             loss_pct: '0.1'
             payload_bytes: 4194304
+            queue_pkts: 69
           - case: high-bdp
             rtt_ms: 100
             rate_mbit: 50
             loss_pct: '0'
             payload_bytes: 8388608
+            queue_pkts: 857
 
     steps:
       - name: Checkout tcp-shift
@@ -93,6 +103,7 @@ jobs:
             TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
             TCP_SHIFT_CUBIC_BENCH_LOSS_PCT="${{ matrix.loss_pct }}" \
             TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
             sh scripts/cubic-linux-benchmark.sh
 
       - name: Publish benchmark summary
