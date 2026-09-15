@@ -16,9 +16,13 @@ static int tcp_shift_bbr_elapsed_gt(uint64_t now_ns,
 
 static void tcp_shift_bbr_recompute_max_bw(struct tcp_shift_bbr_model *model)
 {
-    model->max_bw_bytes_per_sec =
-        tcp_shift_bbr_max_u64(model->max_bw_filter[0],
-                              model->max_bw_filter[1]);
+    uint64_t max_bw = 0U;
+    uint32_t i;
+
+    for (i = 0U; i < TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS; i++) {
+        max_bw = tcp_shift_bbr_max_u64(max_bw, model->max_bw_filter[i]);
+    }
+    model->max_bw_bytes_per_sec = max_bw;
 }
 
 static void tcp_shift_bbr_update_round(struct tcp_shift_bbr_model *model,
@@ -26,22 +30,55 @@ static void tcp_shift_bbr_update_round(struct tcp_shift_bbr_model *model,
 {
     model->round_start = 0U;
 
-    /* Zero means this transport observation does not yet publish the cumulative
-     * delivered snapshots needed by packet-timed round tracking. This lets the
-     * generic ABI grow before every adapter is required to consume it. */
     if (sample->delivered_total_bytes == 0U ||
         sample->delivered_total_bytes < sample->prior_delivered_bytes) {
         return;
     }
 
-    /* draft-ietf-ccwg-bbr-06 UpdateRound(): the packet/segment's delivered
-     * snapshot identifies whether this ACK crossed the delivery marker saved at
-     * the start of the current packet-timed round. */
     if (sample->prior_delivered_bytes >= model->next_round_delivered) {
         model->next_round_delivered = sample->delivered_total_bytes;
         model->round_count++;
         model->round_start = 1U;
     }
+}
+
+/* Keep the BBRv1-style recent-bandwidth horizon in packet-timed rounds. The
+ * window advances only when a sample is admissible for the bandwidth model.
+ * This deliberately preserves the last trustworthy path rate across an
+ * arbitrarily long application-limited period, matching BBR's rule that a low
+ * app-limited sample must not make the sender slow itself down. */
+static void tcp_shift_bbr_age_bw_filter(struct tcp_shift_bbr_model *model,
+                                        uint32_t round)
+{
+    uint32_t delta;
+    uint32_t step;
+
+    if (model->has_bw_filter_round == 0U) {
+        model->bw_filter_round = round;
+        model->has_bw_filter_round = 1U;
+        return;
+    }
+
+    delta = round - model->bw_filter_round;
+    if (delta == 0U) {
+        return;
+    }
+
+    if (delta >= TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS) {
+        for (step = 0U; step < TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS; step++) {
+            model->max_bw_filter[step] = 0U;
+        }
+    } else {
+        for (step = 1U; step <= delta; step++) {
+            uint32_t slot =
+                (model->bw_filter_round + step) %
+                TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS;
+            model->max_bw_filter[slot] = 0U;
+        }
+    }
+
+    model->bw_filter_round = round;
+    tcp_shift_bbr_recompute_max_bw(model);
 }
 
 static void tcp_shift_bbr_update_max_bw(
@@ -57,16 +94,14 @@ static void tcp_shift_bbr_update_max_bw(
 
     model->valid_rate_samples++;
 
-    /* draft-ietf-ccwg-bbr-06 UpdateMaxBw(): app-limited samples do not
-     * decrease the model, but a sample at/above the current max remains useful
-     * evidence that max_bw was not too high. */
     if ((sample->flags & TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED) != 0U &&
         sample->delivery_rate_bytes_per_sec < model->max_bw_bytes_per_sec) {
         model->ignored_app_limited_bw_samples++;
         return;
     }
 
-    slot = model->cycle_count % TCP_SHIFT_BBR_MAX_BW_FILTER_CYCLES;
+    tcp_shift_bbr_age_bw_filter(model, model->round_count);
+    slot = model->round_count % TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS;
     if (sample->delivery_rate_bytes_per_sec > model->max_bw_filter[slot]) {
         model->max_bw_filter[slot] = sample->delivery_rate_bytes_per_sec;
     }
@@ -105,9 +140,6 @@ static void tcp_shift_bbr_check_startup_full_bw(
         return;
     }
 
-    /* Startup's full-pipe detector requires 25% bandwidth growth per round.
-     * Use exact integer arithmetic: ceil(5 * full_bw / 4) without overflowing
-     * uint64_t. A zero baseline accepts the first nonzero valid round sample. */
     threshold = tcp_shift_bbr_full_bw_threshold(model->full_bw_bytes_per_sec);
     if (model->full_bw_bytes_per_sec == 0U ||
         sample->delivery_rate_bytes_per_sec >= threshold) {
@@ -177,7 +209,7 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model)
     }
 
     model->max_bw_bytes_per_sec = 0U;
-    for (i = 0U; i < TCP_SHIFT_BBR_MAX_BW_FILTER_CYCLES; i++) {
+    for (i = 0U; i < TCP_SHIFT_BBR_MAX_BW_FILTER_ROUNDS; i++) {
         model->max_bw_filter[i] = 0U;
     }
 
@@ -195,7 +227,7 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model)
     model->next_round_delivered = 0U;
     model->full_bw_bytes_per_sec = 0U;
 
-    model->cycle_count = 0U;
+    model->bw_filter_round = 0U;
     model->round_count = 0U;
     model->full_bw_count = 0U;
     model->mode = TCP_SHIFT_BBR_MODE_STARTUP;
@@ -203,6 +235,7 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model)
     model->has_min_rtt = 0U;
     model->has_probe_rtt_min = 0U;
     model->has_update_time = 0U;
+    model->has_bw_filter_round = 0U;
     model->probe_rtt_expired = 0U;
     model->min_rtt_expired = 0U;
     model->round_start = 0U;
@@ -230,18 +263,4 @@ int tcp_shift_bbr_model_on_ack(struct tcp_shift_bbr_model *model,
     tcp_shift_bbr_check_startup_full_bw(model, sample);
     tcp_shift_bbr_update_min_rtt(model, sample, now_ns);
     return 0;
-}
-
-void tcp_shift_bbr_model_advance_bw_cycle(struct tcp_shift_bbr_model *model)
-{
-    uint32_t slot;
-
-    if (model == NULL) {
-        return;
-    }
-
-    model->cycle_count++;
-    slot = model->cycle_count % TCP_SHIFT_BBR_MAX_BW_FILTER_CYCLES;
-    model->max_bw_filter[slot] = 0U;
-    tcp_shift_bbr_recompute_max_bw(model);
 }
