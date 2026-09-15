@@ -6,16 +6,17 @@ BUILD="$ROOT/.build"
 MODE=${1:-}
 BINARY=${TCP_SHIFT_P4_BINARY:-"$BUILD/tcp-shift-p2"}
 PAYLOAD_BYTES=${TCP_SHIFT_P4_PAYLOAD_BYTES:-262144}
+CC=${TCP_SHIFT_P4_CC:-reno}
 
 case "$MODE" in
     fast-loss)
-        OUT="$BUILD/p4-fast-loss-ci"
+        DEFAULT_OUT="$BUILD/p4-fast-loss-ci"
         TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4loss0}
         PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18140}
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19140}
         ;;
     rto)
-        OUT="$BUILD/p4-rto-ci"
+        DEFAULT_OUT="$BUILD/p4-rto-ci"
         TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4rto0}
         PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18141}
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19141}
@@ -26,6 +27,7 @@ case "$MODE" in
         ;;
 esac
 
+OUT=${TCP_SHIFT_P4_OUT:-$DEFAULT_OUT}
 LWIP_IP=${TCP_SHIFT_P4_LWIP_IP:-10.244.0.2}
 HOST_IP=${TCP_SHIFT_P4_HOST_IP:-10.244.0.1}
 NETMASK=${TCP_SHIFT_P4_NETMASK:-255.255.255.252}
@@ -145,14 +147,15 @@ grep -F 'backend-ready ' "$OUT/backend.stdout" >/dev/null || {
 }
 
 "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
-    "$PUBLIC_PORT" "$BACKEND_PORT" \
+    "$PUBLIC_PORT" "$BACKEND_PORT" "$CC" \
     > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 PID=$!
 
 i=0
 while [ "$i" -lt 100 ]; do
     if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
-       grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1; then
+       grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1 &&
+       grep -F "cc=$CC" "$OUT/runtime.stdout" >/dev/null 2>&1; then
         break
     fi
     kill -0 "$PID" 2>/dev/null || {
@@ -165,7 +168,7 @@ while [ "$i" -lt 100 ]; do
     sleep 0.05
 done
 [ "$i" -lt 100 ] || {
-    echo "timed out waiting for P4 runtime" >&2
+    echo "timed out waiting for P4 runtime controller=$CC" >&2
     exit 1
 }
 
@@ -176,18 +179,11 @@ JUMP_INSTALLED=1
 
 case "$MODE" in
     fast-loss)
-        # Match only full-size/data-like TCP packets. Drop the 11th matching
-        # packet, after slow start has expanded beyond the three-MSS initial
-        # window, while allowing later packets through to generate >=3 dupACKs.
-        # --every is deliberately much larger than the workload so only one
-        # packet can be selected.
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
             -m statistic --mode nth --every 10000 --packet 10 -j DROP
         ;;
     rto)
-        # Keep the handshake/control packets flowing but suppress all response
-        # data long enough for lwIP's retransmission timer to expire.
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 -j DROP
         ;;
@@ -230,9 +226,6 @@ PY
 CLIENT_PID=$!
 
 if [ "$MODE" = rto ]; then
-    # Pinned lwIP starts at a 3-second RTO. Hold the data filter beyond that
-    # boundary, retain its packet counter, then restore delivery so the same
-    # connection must recover and complete.
     sleep 4
     iptables -nvxL "$CHAIN" > "$OUT/iptables-fault.txt"
     remove_filter
@@ -273,7 +266,6 @@ cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
 
-# At least one packet must have been discarded by the external fault rule.
 awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" && $1 > 0 {found=1} END {exit found ? 0 : 1}' \
     "$OUT/iptables-fault.txt" || {
         cat "$OUT/iptables-fault.txt" >&2 || true
@@ -285,6 +277,7 @@ grep -F "backend-bytes=$PAYLOAD_BYTES " "$OUT/backend.stdout" >/dev/null
 grep -F ' echo=ok' "$OUT/backend.stdout" >/dev/null
 grep -F "bytes=$PAYLOAD_BYTES " "$OUT/client.stdout" >/dev/null
 grep -F ' echo=ok' "$OUT/client.stdout" >/dev/null
+grep -F "cc=$CC" "$OUT/runtime.stdout" >/dev/null
 grep -F 'cc_bindings=1' "$OUT/runtime.stderr" >/dev/null
 grep -F 'cc_bind_failures=0' "$OUT/runtime.stderr" >/dev/null
 grep -F 'cc_controller_errors=0' "$OUT/runtime.stderr" >/dev/null
@@ -316,7 +309,7 @@ case "$MODE" in
         ;;
 esac
 
-printf 'mode=%s payload_bytes=%u loss_events=%s timeout_events=%s recovery=ok\n' \
-    "$MODE" "$PAYLOAD_BYTES" "$loss_events" "$timeout_events" \
+printf 'mode=%s cc=%s payload_bytes=%u loss_events=%s timeout_events=%s recovery=ok\n' \
+    "$MODE" "$CC" "$PAYLOAD_BYTES" "$loss_events" "$timeout_events" \
     | tee "$OUT/summary.txt"
-echo "P4 integrated $MODE recovery qualification passed"
+echo "P4 integrated $MODE controller=$CC recovery qualification passed"

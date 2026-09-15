@@ -89,11 +89,6 @@ struct tcp_shift_lwip_cc_stats {
 struct tcp_shift_lwip_cc_adapter {
     struct tcp_shift_lwip_cc_hook hook;
     struct tcp_shift_cc controller;
-    /* The adapter owns opaque, registry-sized controller storage rather than
-     * an algorithm-specific state object. `reno` is a temporary source-level
-     * compatibility alias for the existing bind path; both names address the
-     * same generic bytes and the alias can disappear when live selection is
-     * wired through the listener in the next selector increment. */
     union {
         union tcp_shift_cc_builtin_state controller_state;
         union tcp_shift_cc_builtin_state reno;
@@ -124,33 +119,31 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
                                    struct tcp_shift_lwip_cc_stats *stats);
 void tcp_shift_lwip_cc_adapter_unbind(struct tcp_shift_lwip_cc_adapter *adapter);
 
-/* Bridge/runtime integration. The adapter sees only an opaque pacing service;
- * timerfd/epoll remain runtime-owned. Configuration must happen before paced
- * child PCBs are bound and must be cleared after those PCBs are destroyed. */
 int tcp_shift_lwip_cc_configure_pacer(
     const struct tcp_shift_lwip_cc_pacer_ops *ops,
     void *arg);
 int tcp_shift_lwip_cc_clear_pacer(void);
 
-/* Generation-safe timer release entrypoint. Stale releases are ignored. */
 int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
                                    uint32_t generation,
                                    uint64_t actual_release_ns);
 
-/* Bridge integration point. The tcp_shift_bridge target compiles its raw-API
- * tcp_accept() call to this wrapper. The wrapper keeps the original accept
- * callback but binds a controller to the established child PCB first. */
-void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
+int tcp_shift_lwip_cc_configure_controller(const char *name);
+const char *tcp_shift_lwip_cc_configured_controller_name(void);
 
-/* P5c qualification-only registration wrapper. It lets the normal adapter bind
- * the child first, then swaps the already-initialized Reno controller ops to the
- * deterministic fixed-pacing Reno policy before the bridge sees the child. */
+/* Apply the configured selector to an already-bound ordinary Reno adapter.
+ * Production calls this before the accepted child is handed to bridge code;
+ * the public entrypoint also gives the deterministic integration contract a
+ * way to exercise exactly the same reinitialization path. */
+int tcp_shift_lwip_cc_apply_configured_controller(
+    struct tcp_shift_lwip_cc_adapter *adapter);
+
+void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
+                                       tcp_accept_fn accept);
+void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
 void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
                                            tcp_accept_fn accept);
 
-/* Called by the bridge only when the backend application has no bytes ready
- * while the public TCP has transport capacity. The adapter applies the final
- * transport checks before setting a Linux-style delivered+inflight marker. */
 void tcp_shift_lwip_cc_mark_app_limited(struct tcp_pcb *pcb);
 
 const struct tcp_shift_lwip_cc_stats *tcp_shift_lwip_cc_get_stats(void);

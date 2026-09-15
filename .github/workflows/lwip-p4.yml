@@ -12,9 +12,11 @@ on:
       - 'src/lwipopts.h'
       - 'src/p2_main.c'
       - 'src/tests/cc_contract_test.c'
+      - 'src/tests/cc_live_selector_test.c'
       - 'src/tests/bbr_model_test.c'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/validate-p4-cc.sh'
+      - 'scripts/p4-live-selector-contract.sh'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
@@ -98,6 +100,7 @@ jobs:
       - name: Validate integrated recovery harness
         run: |
           sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p4-live-selector-contract.sh
           sh -n scripts/p4-cc-recovery-smoke.sh
 
       - name: Build pinned bridge runtime with CC adapter
@@ -106,12 +109,34 @@ jobs:
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target tcp-shift-p2 --parallel
 
-      - name: Exercise integrated fast retransmit loss path
+      - name: Qualify live Reno/CUBIC selector
+        run: |
+          sh scripts/p4-live-selector-contract.sh
+          if .build/tcp-shift-p2 tsp4bad0 10.244.0.2 255.255.255.252 10.244.0.1 18149 19149 not-built \
+              >.build/p4-invalid-selector.stdout 2>.build/p4-invalid-selector.stderr; then
+            echo "unknown congestion controller unexpectedly succeeded" >&2
+            exit 1
+          fi
+          grep -F 'unsupported congestion controller: not-built' \
+            .build/p4-invalid-selector.stderr >/dev/null
+
+      - name: Exercise integrated Reno fast retransmit loss path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
-      - name: Exercise integrated RTO path
+      - name: Exercise integrated CUBIC fast retransmit loss path
+        run: |
+          sudo env \
+            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P4_CC=cubic \
+            TCP_SHIFT_P4_OUT="$PWD/.build/p4-fast-loss-cubic-ci" \
+            TCP_SHIFT_P4_TUN_NAME=tsp4cub0 \
+            TCP_SHIFT_P4_PUBLIC_PORT=18142 \
+            TCP_SHIFT_P4_BACKEND_PORT=19142 \
+            sh scripts/p4-cc-recovery-smoke.sh fast-loss
+
+      - name: Exercise integrated Reno RTO path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
             sh scripts/p4-cc-recovery-smoke.sh rto
@@ -123,7 +148,11 @@ jobs:
           name: tcp-shift-p4-integrated-recovery
           path: |
             .build/p4-fast-loss-ci
+            .build/p4-fast-loss-cubic-ci
             .build/p4-rto-ci
+            .build/p4-live-selector-summary.txt
+            .build/p4-invalid-selector.stdout
+            .build/p4-invalid-selector.stderr
             .build/upstream.env
             .build/lwip-critical.sha256
             .build/lwip-patch.env
