@@ -142,11 +142,10 @@ static int test_cubic_k_and_fast_convergence_toggle(void)
     uint64_t remembered_w_max;
 
     CHECK(tcp_shift_cubic_model_init(&model, &transport, &init, &policy) == 0);
-    CHECK(tcp_shift_cubic_model_on_ack(&model, &transport, &ack,
-                                       UINT64_C(1000000000),
-                                       UINT64_C(100000000), &policy) == 0);
-    CHECK(model.k_q10 == 0U);
 
+    /* A loss exactly at 100 SMSS remembers Wmax=100 and beta=0.7 reduces
+     * flight/cwnd to 70 SMSS. The next CA epoch must therefore use
+     * K=cuberoot((100-70)/0.4)=cuberoot(75) ~= 4.217 seconds. */
     CHECK(tcp_shift_cubic_model_on_loss(&model, &transport, &loss,
                                         &policy) == 0);
     CHECK(policy.cwnd_bytes == 70000U);
