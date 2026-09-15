@@ -128,22 +128,19 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
                                    uint32_t generation,
                                    uint64_t actual_release_ns);
 
-/* Process-level live controller selection. Configuration is accepted only
- * before a selected listener is registered. NULL or an empty string selects
- * the registry default (Reno). Unknown/unbuilt names fail without changing the
- * current selection. */
 int tcp_shift_lwip_cc_configure_controller(const char *name);
 const char *tcp_shift_lwip_cc_configured_controller_name(void);
 
-/* Production bridge listener wrapper. The normal adapter continues to own
- * allocation, ext-arg lifetime, delivery sampling and pacing; this layer only
- * selects the registered controller before the accepted child reaches bridge
- * code. */
+/* Apply the configured selector to an already-bound ordinary Reno adapter.
+ * Production calls this before the accepted child is handed to bridge code;
+ * the public entrypoint also gives the deterministic integration contract a
+ * way to exercise exactly the same reinitialization path. */
+int tcp_shift_lwip_cc_apply_configured_controller(
+    struct tcp_shift_lwip_cc_adapter *adapter);
+
 void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
                                        tcp_accept_fn accept);
-
 void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
-
 void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
                                            tcp_accept_fn accept);
 
