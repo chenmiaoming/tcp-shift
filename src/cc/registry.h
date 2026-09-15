@@ -2,6 +2,7 @@
 #define TCP_SHIFT_CC_REGISTRY_H
 
 #include "cc/cc.h"
+#include "cc/reno.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,10 +10,12 @@ extern "C" {
 
 /* Built-in controller state is caller-owned and bounded. Keep this capacity at
  * the maximum state_size of controllers actually registered in this build;
- * increase it only when a newly qualified built-in controller requires it. The
- * uint64_t member gives all current built-in states their required alignment. */
+ * increase it only when a newly qualified built-in controller requires it.
+ * Each registered state type is also a union member so casts from the opaque
+ * state pointer have defined C object/alignment semantics. */
 #define TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY 16U
 union tcp_shift_cc_builtin_state {
+    struct tcp_shift_reno_state reno;
     uint64_t alignment;
     unsigned char bytes[TCP_SHIFT_CC_BUILTIN_STATE_CAPACITY];
 };
