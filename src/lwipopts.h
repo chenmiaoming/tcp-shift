@@ -61,15 +61,29 @@
 /*
  * Enable upstream lwIP RFC 7323 window-scaling support so sender-side window,
  * cwnd and send-buffer accounting use 32-bit tcpwnd_size_t. Keep the local
- * receive scale at zero for this capability milestone: tcp-shift negotiates
- * window scaling but continues to advertise the existing small receive window.
- * Larger receive residency and larger TCP_SND_BUF are qualified separately.
+ * receive scale at zero: tcp-shift negotiates window scaling but continues to
+ * advertise the existing small receive window.
+ *
+ * The production low-memory sender profile remains 32 KiB. Qualification builds
+ * may define TCP_SHIFT_TCP_SND_BUF_BYTES at compile time to measure larger
+ * sender capacities without silently changing the production default. The cap
+ * below prevents accidental multi-megabyte-per-flow profiles from entering CI
+ * without an explicit source review.
  */
 #define LWIP_WND_SCALE 1
 #define TCP_RCV_SCALE 0
 #define TCP_MSS 1460
 #define TCP_WND (32 * 1024)
-#define TCP_SND_BUF (32 * 1024)
+#ifndef TCP_SHIFT_TCP_SND_BUF_BYTES
+#define TCP_SHIFT_TCP_SND_BUF_BYTES (32 * 1024)
+#endif
+#if TCP_SHIFT_TCP_SND_BUF_BYTES < (2 * TCP_MSS)
+#error "TCP_SHIFT_TCP_SND_BUF_BYTES is too small for the TCP profile"
+#endif
+#if TCP_SHIFT_TCP_SND_BUF_BYTES > (4 * 1024 * 1024)
+#error "TCP_SHIFT_TCP_SND_BUF_BYTES exceeds the reviewed qualification ceiling"
+#endif
+#define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_BYTES
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + (TCP_MSS - 1)) / TCP_MSS)
 #define TCP_QUEUE_OOSEQ 1
 
