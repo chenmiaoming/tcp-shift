@@ -372,27 +372,12 @@ jobs:
         run: |
           summary=.build/p3-backend-to-public-residency/summary.json
           if [ -f "$summary" ]; then
-            python3 - "$summary" <<'PY' >> "$GITHUB_STEP_SUMMARY"
-import json
-import sys
-p = sys.argv[1]
-with open(p, encoding='utf-8') as handle:
-    s = json.load(handle)
-print('## 1 MiB sender-buffer residency')
-print('```text')
-for key in (
-    'flows',
-    'idle_pss_kb',
-    'active_pss_kb',
-    'active_pss_delta_kb',
-    'active_pss_delta_kb_per_flow',
-    'drained_pss_kb',
-    'bridge_backend_read_blocked_events',
-):
-    if key in s:
-        print(f'{key}={s[key]}')
-print('```')
-PY
+            {
+              echo '## 1 MiB sender-buffer residency'
+              echo '```json'
+              cat "$summary"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload 1 MiB residency diagnostics
