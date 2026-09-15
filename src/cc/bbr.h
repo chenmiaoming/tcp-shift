@@ -14,6 +14,16 @@ extern "C" {
 #define TCP_SHIFT_BBR_MIN_RTT_FILTER_NS UINT64_C(10000000000)
 #define TCP_SHIFT_BBR_FULL_BW_ROUNDS 3U
 
+/* Linux BBRv1 represents gains in BBR_SCALE=8 fixed point. Its Startup
+ * high_gain is BBR_UNIT * 2885 / 1000 + 1 = 739/256. Keep the quantized
+ * value explicit so compact-bbr arithmetic matches the reference rather than
+ * an unquantized decimal approximation. */
+#define TCP_SHIFT_BBR_GAIN_DEN 256U
+#define TCP_SHIFT_BBR_STARTUP_GAIN_NUM 739U
+#define TCP_SHIFT_BBR_PACING_MARGIN_NUM 99U
+#define TCP_SHIFT_BBR_PACING_MARGIN_DEN 100U
+#define TCP_SHIFT_BBR_MIN_CWND_PACKETS 4U
+
 enum tcp_shift_bbr_mode {
     TCP_SHIFT_BBR_MODE_STARTUP = 0,
     TCP_SHIFT_BBR_MODE_DRAIN = 1,
@@ -68,6 +78,36 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
 int tcp_shift_bbr_model_on_ack(struct tcp_shift_bbr_model *model,
                                const struct tcp_shift_cc_rate_sample *sample,
                                uint64_t now_ns);
+
+/* Overflow-safe model arithmetic. BDP is rounded upward so integer truncation
+ * cannot create a negative feedback loop. Saturation is UINT64_MAX. */
+uint64_t tcp_shift_bbr_bdp_bytes(uint64_t bandwidth_bytes_per_sec,
+                                 uint64_t rtt_ns);
+
+/* Startup target helpers use the Linux BBRv1 fixed-point high gain. The pacing
+ * helper additionally applies the 1% pacing margin. */
+uint64_t tcp_shift_bbr_startup_pacing_rate_bytes_per_sec(
+    uint64_t bandwidth_bytes_per_sec);
+uint32_t tcp_shift_bbr_startup_cwnd_target_bytes(
+    uint64_t bandwidth_bytes_per_sec,
+    uint64_t min_rtt_ns,
+    uint32_t mss_bytes,
+    uint32_t cwnd_limit_bytes,
+    uint32_t initial_cwnd_bytes);
+
+/* Publish compact-BBR Startup cwnd/pacing policy from explicit current policy
+ * state. This is pure policy math only: no clock, lwIP object, timer, heap, or
+ * registry binding is owned here. Before full pipe the pacing rate never
+ * decreases; cwnd grows by newly ACKed bytes while below the target or until
+ * the initial window has been delivered. */
+int tcp_shift_bbr_startup_policy(
+    const struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_cc_ack *ack,
+    uint32_t initial_cwnd_bytes,
+    uint32_t current_cwnd_bytes,
+    uint64_t current_pacing_rate_bytes_per_sec,
+    struct tcp_shift_cc_policy *policy);
 
 #ifdef __cplusplus
 }
