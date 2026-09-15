@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "cc/cc.h"
+#include "cc/observation.h"
 #include "cc/registry.h"
 #include "cc/reno.h"
 #include "lwip/cc_hooks.h"
@@ -30,6 +31,10 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t timeout_events;
     uint64_t policy_updates;
     uint64_t controller_errors;
+    uint64_t ack_observation_events;
+    uint64_t srtt_updates;
+    uint64_t ack_last_time_ns;
+    uint64_t ack_last_smoothed_rtt_ns;
     uint64_t delivery_first_tx_events;
     uint64_t delivery_retransmit_events;
     uint64_t delivery_acked_segment_events;
@@ -93,12 +98,14 @@ struct tcp_shift_lwip_cc_adapter {
         union tcp_shift_cc_builtin_state controller_state;
         union tcp_shift_cc_builtin_state reno;
     };
+    struct tcp_shift_cc_srtt srtt;
     struct tcp_shift_lwip_cc_stats *stats;
     struct tcp_pcb *pcb;
     void *delivery_slots;
     uint64_t delivered_bytes;
     uint64_t delivered_mstamp_ns;
     uint64_t delivery_last_event_ns;
+    uint64_t delivery_last_clock_read_ns;
     uint64_t rate_first_tx_mstamp_ns;
     uint64_t app_limited_until_bytes;
     uint64_t pacing_rate_bytes_per_sec;
