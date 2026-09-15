@@ -67,6 +67,7 @@ jobs:
             ethtool \
             git \
             iproute2 \
+            iptables \
             kmod \
             python3
           sudo modprobe tun || true
@@ -92,7 +93,6 @@ jobs:
             TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
             TCP_SHIFT_CUBIC_BENCH_LOSS_PCT="${{ matrix.loss_pct }}" \
             TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
-            TCP_SHIFT_CUBIC_BENCH_SEED=424242 \
             sh scripts/cubic-linux-benchmark.sh
 
       - name: Publish benchmark summary
