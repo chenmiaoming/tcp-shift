@@ -6,18 +6,37 @@
 #include <string.h>
 
 #define TCP_SHIFT_PACING_QUALIFICATION_MAX_LISTENERS 2U
+#define TCP_SHIFT_PACING_QUALIFICATION_MAX_QUANTUM_FLOWS 64U
 
 struct tcp_shift_pacing_qualification_binding {
     struct tcp_pcb *listener;
     tcp_accept_fn accept;
     void *callback_arg;
     unsigned linux_mode;
+    unsigned quantum_mode;
     unsigned used;
+};
+
+/* Qualification-only sidecar used to A/B Linux-shaped batching without
+ * changing the production adapter state layout yet. The base adapter remains
+ * the owner of rate, virtual deadline, scheduler lifetime and TX accounting;
+ * this sidecar owns only the bounded allowance between two deadline checks. */
+struct tcp_shift_pacing_qualification_quantum_flow {
+    struct tcp_shift_lwip_cc_adapter *adapter;
+    uint64_t rate_bytes_per_sec;
+    uint64_t grants;
+    uint32_t quantum_bytes;
+    uint32_t remaining_bytes;
 };
 
 static struct tcp_shift_pacing_qualification_binding
     tcp_shift_pacing_qualification_bindings[
         TCP_SHIFT_PACING_QUALIFICATION_MAX_LISTENERS];
+static struct tcp_shift_pacing_qualification_quantum_flow
+    tcp_shift_pacing_qualification_quantum_flows[
+        TCP_SHIFT_PACING_QUALIFICATION_MAX_QUANTUM_FLOWS];
+static const struct tcp_shift_lwip_cc_hook_ops *
+    tcp_shift_pacing_qualification_base_hook_ops;
 
 static uint32_t tcp_shift_pacing_qualification_cwnd_limit(void)
 {
@@ -33,7 +52,18 @@ static int tcp_shift_pacing_qualification_linux_mode(void)
     const char *mode = getenv("TCP_SHIFT_PACING_QUALIFICATION");
 
     return mode != NULL &&
-           (strcmp(mode, "linux") == 0 || strcmp(mode, "linux-cap") == 0);
+           (strcmp(mode, "linux") == 0 || strcmp(mode, "linux-cap") == 0 ||
+            strcmp(mode, "linux-quantum") == 0 ||
+            strcmp(mode, "linux-cap-quantum") == 0);
+}
+
+static int tcp_shift_pacing_qualification_quantum_mode(void)
+{
+    const char *mode = getenv("TCP_SHIFT_PACING_QUALIFICATION");
+
+    return mode != NULL &&
+           (strcmp(mode, "linux-quantum") == 0 ||
+            strcmp(mode, "linux-cap-quantum") == 0);
 }
 
 static int tcp_shift_pacing_qualification_linux_rate_cap(uint64_t *rate_cap)
@@ -48,7 +78,9 @@ static int tcp_shift_pacing_qualification_linux_rate_cap(uint64_t *rate_cap)
     }
     *rate_cap = 0U;
 
-    if (mode == NULL || strcmp(mode, "linux-cap") != 0) {
+    if (mode == NULL ||
+        (strcmp(mode, "linux-cap") != 0 &&
+         strcmp(mode, "linux-cap-quantum") != 0)) {
         return 0;
     }
 
@@ -96,6 +128,227 @@ static int tcp_shift_pacing_qualification_publish_linux_rate(
      * controller-owned rate or ordinary transport operation. */
     return tcp_shift_transport_pacing_apply_window_fallback(
         transport, adapter->srtt.smoothed_rtt_ns, rate_cap, policy);
+}
+
+static struct tcp_shift_pacing_qualification_quantum_flow *
+tcp_shift_pacing_qualification_quantum_find(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    unsigned i;
+
+    for (i = 0U; i < TCP_SHIFT_PACING_QUALIFICATION_MAX_QUANTUM_FLOWS; i++) {
+        if (tcp_shift_pacing_qualification_quantum_flows[i].adapter == adapter) {
+            return &tcp_shift_pacing_qualification_quantum_flows[i];
+        }
+    }
+    return NULL;
+}
+
+static struct tcp_shift_pacing_qualification_quantum_flow *
+tcp_shift_pacing_qualification_quantum_alloc(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    unsigned i;
+
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    if (flow != NULL) {
+        memset(flow, 0, sizeof(*flow));
+        flow->adapter = adapter;
+        return flow;
+    }
+
+    for (i = 0U; i < TCP_SHIFT_PACING_QUALIFICATION_MAX_QUANTUM_FLOWS; i++) {
+        if (tcp_shift_pacing_qualification_quantum_flows[i].adapter == NULL) {
+            flow = &tcp_shift_pacing_qualification_quantum_flows[i];
+            memset(flow, 0, sizeof(*flow));
+            flow->adapter = adapter;
+            return flow;
+        }
+    }
+    return NULL;
+}
+
+static void tcp_shift_pacing_qualification_quantum_refresh(
+    struct tcp_shift_pacing_qualification_quantum_flow *flow)
+{
+    uint64_t rate;
+    uint32_t quantum;
+    uint32_t mss;
+
+    if (flow == NULL || flow->adapter == NULL) {
+        return;
+    }
+
+    rate = flow->adapter->pacing_rate_bytes_per_sec;
+    mss = flow->adapter->pcb != NULL ? flow->adapter->pcb->mss : 0U;
+    quantum = tcp_shift_transport_pacing_quantum_bytes(rate, mss);
+    if (flow->rate_bytes_per_sec != rate || flow->quantum_bytes != quantum) {
+        /* Rate/mode transitions must not inherit batch credit from a previous
+         * pacing policy. The adapter's absolute next_send deadline is not
+         * touched here, matching the shared flow-pacer lifecycle contract. */
+        flow->remaining_bytes = 0U;
+    }
+    flow->rate_bytes_per_sec = rate;
+    flow->quantum_bytes = quantum;
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_ack(
+    void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    int result = 0;
+
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_ack != NULL) {
+        result = tcp_shift_pacing_qualification_base_hook_ops->on_ack(
+            arg, pcb, acked_bytes);
+    }
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    return result;
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_loss(
+    void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    int result = 0;
+
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_loss != NULL) {
+        result = tcp_shift_pacing_qualification_base_hook_ops->on_loss(
+            arg, pcb, lost_bytes);
+    }
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    return result;
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_timeout(
+    void *arg, struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    int result = 0;
+
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_timeout != NULL) {
+        result = tcp_shift_pacing_qualification_base_hook_ops->on_timeout(arg,
+                                                                           pcb);
+    }
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    return result;
+}
+
+static int tcp_shift_pacing_qualification_quantum_send_eligible(
+    void *arg, struct tcp_pcb *pcb, u16_t payload_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    uint32_t allowance;
+    int eligible;
+
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    if (flow == NULL || payload_bytes == 0U ||
+        tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops
+                ->on_segment_send_eligible == NULL) {
+        return tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+                       tcp_shift_pacing_qualification_base_hook_ops
+                               ->on_segment_send_eligible != NULL
+                   ? tcp_shift_pacing_qualification_base_hook_ops
+                         ->on_segment_send_eligible(arg, pcb, payload_bytes)
+                   : 1;
+    }
+
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    if (flow->remaining_bytes >= payload_bytes) {
+        flow->remaining_bytes -= payload_bytes;
+        return 1;
+    }
+    /* Do not let a sub-MSS tail become free credit for the next full segment. */
+    flow->remaining_bytes = 0U;
+
+    eligible = tcp_shift_pacing_qualification_base_hook_ops
+                   ->on_segment_send_eligible(arg, pcb, payload_bytes);
+    if (eligible == 0) {
+        return 0;
+    }
+
+    allowance = flow->quantum_bytes;
+    if (allowance < payload_bytes) {
+        allowance = payload_bytes;
+    }
+    flow->remaining_bytes = allowance - payload_bytes;
+    flow->grants++;
+    return 1;
+}
+
+static void tcp_shift_pacing_qualification_quantum_on_segment_tx(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const void *segment,
+    u32_t seq_start,
+    u16_t payload_bytes)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_segment_tx != NULL) {
+        tcp_shift_pacing_qualification_base_hook_ops->on_segment_tx(
+            arg, pcb, segment, seq_start, payload_bytes);
+    }
+}
+
+static void tcp_shift_pacing_qualification_quantum_on_segment_acked(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const void *segment,
+    u16_t payload_bytes)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_segment_acked != NULL) {
+        tcp_shift_pacing_qualification_base_hook_ops->on_segment_acked(
+            arg, pcb, segment, payload_bytes);
+    }
+}
+
+static const struct tcp_shift_lwip_cc_hook_ops
+    tcp_shift_pacing_qualification_quantum_hook_ops = {
+        .on_ack = tcp_shift_pacing_qualification_quantum_on_ack,
+        .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
+        .on_timeout = tcp_shift_pacing_qualification_quantum_on_timeout,
+        .on_segment_send_eligible =
+            tcp_shift_pacing_qualification_quantum_send_eligible,
+        .on_segment_tx = tcp_shift_pacing_qualification_quantum_on_segment_tx,
+        .on_segment_acked =
+            tcp_shift_pacing_qualification_quantum_on_segment_acked,
+};
+
+static int tcp_shift_pacing_qualification_quantum_attach(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+
+    if (adapter == NULL || adapter->hook.ops == NULL || adapter->pcb == NULL) {
+        return -1;
+    }
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL) {
+        tcp_shift_pacing_qualification_base_hook_ops = adapter->hook.ops;
+    } else if (tcp_shift_pacing_qualification_base_hook_ops !=
+               adapter->hook.ops) {
+        return -1;
+    }
+
+    flow = tcp_shift_pacing_qualification_quantum_alloc(adapter);
+    if (flow == NULL) {
+        return -1;
+    }
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    adapter->hook.ops = &tcp_shift_pacing_qualification_quantum_hook_ops;
+    return 0;
 }
 
 static int tcp_shift_pacing_qualification_inner_init(
@@ -381,7 +634,9 @@ static err_t tcp_shift_pacing_qualification_accept(void *arg,
     adapter = hook != NULL ? hook->arg : NULL;
 
     if (binding->linux_mode != 0U) {
-        if (tcp_shift_pacing_qualification_reinit_linux(adapter, newpcb) < 0) {
+        if (tcp_shift_pacing_qualification_reinit_linux(adapter, newpcb) < 0 ||
+            (binding->quantum_mode != 0U &&
+             tcp_shift_pacing_qualification_quantum_attach(adapter) < 0)) {
             if (adapter != NULL && adapter->stats != NULL) {
                 adapter->stats->controller_errors++;
             }
@@ -413,6 +668,7 @@ void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
 {
     struct tcp_shift_pacing_qualification_binding *binding;
     unsigned linux_mode;
+    unsigned quantum_mode;
 
     if (pcb == NULL || pcb->state != LISTEN) {
         if (tcp_shift_pacing_qualification_linux_mode() != 0) {
@@ -452,18 +708,23 @@ void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
     }
 
     linux_mode = (unsigned)tcp_shift_pacing_qualification_linux_mode();
+    quantum_mode =
+        (unsigned)tcp_shift_pacing_qualification_quantum_mode();
     memset(binding, 0, sizeof(*binding));
     binding->listener = pcb;
     binding->accept = accept;
     binding->callback_arg = pcb->callback_arg;
     binding->linux_mode = linux_mode;
+    binding->quantum_mode = quantum_mode;
     binding->used = 1U;
 
     tcp_arg(pcb, binding);
     if (linux_mode != 0U) {
         /* Let the normal selector bind Reno/CUBIC first. The child callback
          * then replaces only the controller policy surface with qualification
-         * transport pacing; allocation/lifetime remains owned by the adapter. */
+         * transport pacing; allocation/lifetime remains owned by the adapter.
+         * linux-quantum additionally wraps only the segment eligibility hook;
+         * the base adapter remains authoritative for all other callbacks. */
         tcp_shift_lwip_cc_accept_selected(pcb,
                                           tcp_shift_pacing_qualification_accept);
     } else {
