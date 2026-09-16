@@ -17,6 +17,7 @@ add_library(tcp_shift_cc STATIC
     bbr.c
     bbr_pacing.c
     bbr_drain.c
+    bbr_probe.c
     cubic.c
     cubic_hystart.c
     cubic_controller.c

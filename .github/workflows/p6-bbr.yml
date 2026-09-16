@@ -14,10 +14,12 @@ on:
       - 'src/tests/bbr_model_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
       - 'src/tests/bbr_drain_policy_test.c'
+      - 'src/tests/bbr_probe_policy_test.c'
       - 'src/tests/bbr_delivery_snapshot_test.c'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p6-bbr-startup-policy-contract.sh'
       - 'scripts/p6-bbr-drain-policy-contract.sh'
+      - 'scripts/p6-bbr-probe-policy-contract.sh'
       - 'scripts/p6-delivery-snapshot-contract.sh'
       - 'scripts/validate-p4-cc.sh'
       - 'scripts/fetch-lwip.sh'
@@ -56,6 +58,7 @@ jobs:
           sh -n scripts/p6-bbr-model-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
+          sh -n scripts/p6-bbr-probe-policy-contract.sh
 
       - name: Qualify BBR model estimation
         run: sh scripts/p6-bbr-model-contract.sh
@@ -65,6 +68,9 @@ jobs:
 
       - name: Qualify compact BBR Drain policy
         run: sh scripts/p6-bbr-drain-policy-contract.sh
+
+      - name: Qualify compact BBR ProbeBW and ProbeRTT policy
+        run: sh scripts/p6-bbr-probe-policy-contract.sh
 
       - name: Requalify pure-C CC boundary
         run: sh scripts/validate-p4-cc.sh
@@ -78,6 +84,7 @@ jobs:
             .build/p6-bbr-model-contract
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
+            .build/p6-bbr-probe-policy-contract
             .build/p4-cc/evidence
           if-no-files-found: warn
           include-hidden-files: true
