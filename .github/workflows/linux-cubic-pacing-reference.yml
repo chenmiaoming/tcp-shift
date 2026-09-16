@@ -24,31 +24,37 @@ jobs:
             rtt_ms: 10
             rate_mbit: 20
             payload_bytes: 8388608
+            queue_pkts: 35
           - case: low-bdp
             mode: fq
             rtt_ms: 10
             rate_mbit: 20
             payload_bytes: 8388608
+            queue_pkts: 35
           - case: edge-bdp
             mode: netem
             rtt_ms: 40
             rate_mbit: 10
             payload_bytes: 8388608
+            queue_pkts: 69
           - case: edge-bdp
             mode: fq
             rtt_ms: 40
             rate_mbit: 10
             payload_bytes: 8388608
+            queue_pkts: 69
           - case: high-bdp
             mode: netem
             rtt_ms: 100
             rate_mbit: 50
             payload_bytes: 33554432
+            queue_pkts: 857
           - case: high-bdp
             mode: fq
             rtt_ms: 100
             rate_mbit: 50
             payload_bytes: 33554432
+            queue_pkts: 857
 
     steps:
       - name: Checkout tcp-shift
@@ -73,9 +79,10 @@ jobs:
           TCP_SHIFT_LINUX_PACING_RTT_MS: ${{ matrix.rtt_ms }}
           TCP_SHIFT_LINUX_PACING_RATE_MBIT: ${{ matrix.rate_mbit }}
           TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES: ${{ matrix.payload_bytes }}
+          TCP_SHIFT_LINUX_PACING_QUEUE_PKTS: ${{ matrix.queue_pkts }}
           TCP_SHIFT_LINUX_PACING_OUT: .build/linux-cubic-pacing/${{ matrix.case }}-${{ matrix.mode }}
         run: |
-          sudo --preserve-env=TCP_SHIFT_LINUX_PACING_CASE,TCP_SHIFT_LINUX_PACING_MODE,TCP_SHIFT_LINUX_PACING_RTT_MS,TCP_SHIFT_LINUX_PACING_RATE_MBIT,TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES,TCP_SHIFT_LINUX_PACING_OUT \
+          sudo --preserve-env=TCP_SHIFT_LINUX_PACING_CASE,TCP_SHIFT_LINUX_PACING_MODE,TCP_SHIFT_LINUX_PACING_RTT_MS,TCP_SHIFT_LINUX_PACING_RATE_MBIT,TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES,TCP_SHIFT_LINUX_PACING_QUEUE_PKTS,TCP_SHIFT_LINUX_PACING_OUT \
             sh scripts/linux-cubic-pacing-reference.sh
 
       - name: Publish pacing evidence
