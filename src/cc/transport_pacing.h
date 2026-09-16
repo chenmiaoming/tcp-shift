@@ -12,9 +12,11 @@
  * Generic loss-based TCP pacing fallback.
  *
  * Reno and CUBIC currently publish pacing_rate=0, so the transport may derive
- * a Linux-shaped rate from max(cwnd, in-flight)/SRTT. A congestion controller
- * such as BBR that publishes a nonzero pacing rate owns that rate and bypasses
- * this fallback entirely.
+ * a Linux-shaped rate from max(cwnd, in-flight)/SRTT. Before an RTT sample is
+ * available this helper mirrors Linux generic TCP pacing: it keeps a finite,
+ * deliberately very high startup rate rather than disabling pacing state.
+ * A congestion controller such as BBR that publishes a nonzero pacing rate
+ * owns that rate and bypasses this fallback entirely.
  */
 uint64_t tcp_shift_transport_pacing_window_rate(
     const struct tcp_shift_cc_transport *transport,

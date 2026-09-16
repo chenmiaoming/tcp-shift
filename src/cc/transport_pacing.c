@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #define TCP_SHIFT_TRANSPORT_PACING_NSEC_PER_SEC UINT64_C(1000000000)
+#define TCP_SHIFT_TRANSPORT_PACING_LINUX_PRE_SRTT_BASE UINT64_C(8000000)
 
 static uint64_t tcp_shift_transport_pacing_scale_percent(uint64_t value,
                                                           uint32_t percent)
@@ -15,9 +16,9 @@ static uint64_t tcp_shift_transport_pacing_scale_percent(uint64_t value,
         return 0U;
     }
 
-    /* window_bytes is u32, so the uncapped base rate is bounded by
-     * UINT32_MAX * 1e9. Divide by 100 before applying the small Linux gains so
-     * the intermediate remains within u64 even for a 1 ns RTT. */
+    /* window_bytes is u32. Divide by 100 before applying the small Linux gains
+     * so the intermediate remains within u64 for both RTT-derived and
+     * pre-SRTT startup rates. */
     quotient = value / 100U;
     remainder = value % 100U;
     scaled = quotient * percent + (remainder * percent) / 100U;
@@ -33,7 +34,7 @@ uint64_t tcp_shift_transport_pacing_window_rate(
     uint32_t window_bytes;
     uint32_t percent;
 
-    if (transport == NULL || policy == NULL || smoothed_rtt_ns == 0U) {
+    if (transport == NULL || policy == NULL) {
         return 0U;
     }
 
@@ -49,11 +50,24 @@ uint64_t tcp_shift_transport_pacing_window_rate(
         return 0U;
     }
 
-    base_rate = ((uint64_t)window_bytes *
-                 TCP_SHIFT_TRANSPORT_PACING_NSEC_PER_SEC) /
-                smoothed_rtt_ns;
-    if (base_rate == 0U) {
-        base_rate = 1U;
+    if (smoothed_rtt_ns != 0U) {
+        base_rate = ((uint64_t)window_bytes *
+                     TCP_SHIFT_TRANSPORT_PACING_NSEC_PER_SEC) /
+                    smoothed_rtt_ns;
+        if (base_rate == 0U) {
+            base_rate = 1U;
+        }
+    } else {
+        /* Linux tcp_update_pacing_rate() starts from
+         * MSS * ((USEC_PER_SEC / 100) << 3), multiplies by the cwnd packet
+         * count and the 200/120 percentage, and divides by scaled srtt_us only
+         * when an RTT sample exists. In our byte-domain representation the
+         * same pre-SRTT expression is window_bytes * 8,000,000 before the
+         * percentage helper below. This is intentionally a very high finite
+         * startup rate: it preserves Linux semantics without inventing path
+         * RTT knowledge or using zero to mean "pacer disabled". */
+        base_rate = (uint64_t)window_bytes *
+                    TCP_SHIFT_TRANSPORT_PACING_LINUX_PRE_SRTT_BASE;
     }
 
     percent = policy->cwnd_bytes < policy->ssthresh_bytes / 2U

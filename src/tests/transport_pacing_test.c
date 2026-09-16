@@ -67,13 +67,22 @@ int main(void)
               &policy) == 0);
     CHECK(policy.pacing_rate_bytes_per_sec == UINT64_C(1234567));
 
-    /* Loss-based fallback remains disabled until a usable SRTT exists. Startup
-     * pacing is intentionally a separate policy decision rather than an
-     * arbitrary RTT constant hidden in this helper. */
+    /* Linux generic TCP does not use zero pacing before its first RTT sample.
+     * With no srtt_us divisor, 80 KB in the CA phase becomes a deliberately
+     * high but finite 768 GB/s startup rate. This keeps pacer state explicit
+     * without inventing an RTT estimate. */
     policy.pacing_rate_bytes_per_sec = 0U;
+    rate = tcp_shift_transport_pacing_window_rate(&transport, &policy, 0U);
+    CHECK(rate == UINT64_C(768000000000));
     CHECK(tcp_shift_transport_pacing_apply_window_fallback(
               &transport, 0U, 0U, &policy) == 0);
-    CHECK(policy.pacing_rate_bytes_per_sec == 0U);
+    CHECK(policy.pacing_rate_bytes_per_sec == UINT64_C(768000000000));
+
+    /* The qualification-only cap still applies to a pre-SRTT fallback. */
+    policy.pacing_rate_bytes_per_sec = 0U;
+    CHECK(tcp_shift_transport_pacing_apply_window_fallback(
+              &transport, 0U, UINT64_C(9000000), &policy) == 0);
+    CHECK(policy.pacing_rate_bytes_per_sec == UINT64_C(9000000));
 
     CHECK(tcp_shift_transport_pacing_apply_window_fallback(
               NULL, UINT64_C(10000000), 0U, &policy) < 0);
@@ -82,6 +91,6 @@ int main(void)
 
     printf("transport_pacing=ok fallback=window_over_srtt "
            "ss_gain_percent=200 ca_gain_percent=120 "
-           "controller_rate_precedence=1 startup_rtt=explicit\n");
+           "controller_rate_precedence=1 startup_rate=linux_pre_srtt\n");
     return 0;
 }
