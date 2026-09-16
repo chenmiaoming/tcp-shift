@@ -26,6 +26,10 @@ extern "C" {
 #define TCP_SHIFT_BBR_PACING_MARGIN_NUM 99U
 #define TCP_SHIFT_BBR_PACING_MARGIN_DEN 100U
 #define TCP_SHIFT_BBR_MIN_CWND_PACKETS 4U
+/* Linux bbr_init_pacing_rate_from_rtt() uses a nominal 1 ms RTT before the
+ * first usable SRTT sample. Keep this BBR-specific bootstrap assumption out of
+ * generic Reno/CUBIC transport pacing. */
+#define TCP_SHIFT_BBR_INITIAL_RTT_NS UINT64_C(1000000)
 
 enum tcp_shift_bbr_mode {
     TCP_SHIFT_BBR_MODE_STARTUP = 0,
@@ -97,6 +101,14 @@ uint32_t tcp_shift_bbr_startup_cwnd_target_bytes(
     uint32_t mss_bytes,
     uint32_t cwnd_limit_bytes,
     uint32_t initial_cwnd_bytes);
+
+/* Linux BBRv1 bootstraps pacing from initial cwnd / SRTT, with a nominal 1 ms
+ * RTT until the first usable RTT sample exists. This helper publishes only the
+ * controller-owned initial rate; deadline mechanics remain in the shared
+ * transport pacer. */
+uint64_t tcp_shift_bbr_initial_pacing_rate_bytes_per_sec(
+    uint32_t initial_cwnd_bytes,
+    uint64_t smoothed_rtt_ns);
 
 /* Publish compact-BBR Startup cwnd/pacing policy from explicit current policy
  * state. This is pure policy math only: no clock, lwIP object, timer, heap, or

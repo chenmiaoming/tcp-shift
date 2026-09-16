@@ -15,6 +15,7 @@ add_library(tcp_shift_cc STATIC
     transport_pacing.c
     reno.c
     bbr.c
+    bbr_pacing.c
     bbr_drain.c
     cubic.c
     cubic_hystart.c

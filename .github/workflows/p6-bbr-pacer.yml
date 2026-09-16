@@ -1,0 +1,64 @@
+name: P6 BBR pacer integration
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p6-bbr-pacer.yml'
+      - 'src/cc/bbr.c'
+      - 'src/cc/bbr.h'
+      - 'src/cc/bbr_pacing.c'
+      - 'src/cc/transport_pacing.c'
+      - 'src/cc/transport_pacing.h'
+      - 'src/runtime/pacer.c'
+      - 'src/runtime/pacer.h'
+      - 'src/tests/bbr_pacer_integration_test.c'
+      - 'scripts/p6-bbr-pacer-contract.sh'
+      - 'scripts/validate-p4-cc.sh'
+      - 'src/cc/CMakeLists.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils \
+            build-essential \
+            cmake
+
+      - name: Validate BBR pacer harness
+        run: sh -n scripts/p6-bbr-pacer-contract.sh
+
+      - name: Qualify BBR-owned rate on shared pacer
+        run: sh scripts/p6-bbr-pacer-contract.sh
+
+      - name: Requalify pure-C CC boundary
+        run: sh scripts/validate-p4-cc.sh
+
+      - name: Upload BBR pacer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p6-bbr-pacer
+          path: |
+            .build/p6-bbr-pacer-contract
+            .build/p4-cc/evidence
+          if-no-files-found: warn
+          include-hidden-files: true
