@@ -48,6 +48,29 @@ static inline void tcp_shift_flow_pacer_set_quantum(
     flow->quantum_remaining_bytes = 0U;
 }
 
+/* Publish a rate and its matching batch target as one transport-policy
+ * transition. A rate change invalidates unused allowance even when the
+ * resulting quantum size happens to be unchanged (for example BBR STARTUP ->
+ * DRAIN while both rates still map to the two-MSS minimum). The already
+ * scheduled absolute deadline is deliberately preserved for nonzero rates. */
+static inline void tcp_shift_flow_pacer_set_rate_quantum(
+    struct tcp_shift_flow_pacer *flow,
+    uint64_t rate_bytes_per_sec,
+    uint32_t quantum_bytes)
+{
+    unsigned rate_changed;
+
+    if (flow == NULL) {
+        return;
+    }
+    rate_changed = flow->rate_bytes_per_sec != rate_bytes_per_sec;
+    tcp_shift_flow_pacer_set_rate(flow, rate_bytes_per_sec);
+    if (rate_changed != 0U || flow->quantum_bytes != quantum_bytes) {
+        flow->quantum_remaining_bytes = 0U;
+    }
+    flow->quantum_bytes = quantum_bytes;
+}
+
 /*
  * Decide whether one segment may be sent now. Return 1 when eligible, 0 when
  * the caller must defer until *deadline_ns, and -1 for invalid input.
