@@ -7,8 +7,8 @@
 
 #include "lwip/tcp.h"
 
-#if LWIP_TCP_PCB_NUM_EXT_ARGS != 1
-#error tcp-shift requires exactly one TCP PCB ext-arg slot for transport integration
+#if LWIP_TCP_PCB_NUM_EXT_ARGS < 2
+#error tcp-shift requires PCB ext-arg slots for CC and transport memory integration
 #endif
 
 #define TCP_SHIFT_LWIP_CC_EXT_ARG_ID 0U

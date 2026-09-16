@@ -50,12 +50,12 @@
 #define MEM_ALIGNMENT 8
 
 /*
- * P4 reserves exactly one TCP PCB extension slot for the tcp-shift CC hook ABI.
- * The slot stores only an opaque hook pointer. Unbound P0/P1/probe PCBs execute
- * native lwIP congestion control. The hook header is intentionally independent
- * from src/cc so patched lwIP never links the controller core directly.
+ * Slot 0 is the tcp-shift CC/pacing hook ABI. Slot 1 is transport TCP-memory
+ * state used by runtime tcp_wmem/tcp_mem policy. Both store only project-owned
+ * opaque pointers; patched lwIP remains independent from src/cc and the memory
+ * policy implementation.
  */
-#define LWIP_TCP_PCB_NUM_EXT_ARGS 1
+#define LWIP_TCP_PCB_NUM_EXT_ARGS 2
 #define LWIP_HOOK_FILENAME "lwip/cc_hooks.h"
 
 /*
@@ -64,33 +64,45 @@
  * receive scale at zero: tcp-shift negotiates window scaling but continues to
  * advertise the existing small receive window.
  *
- * The production low-memory sender profile remains 32 KiB. Qualification builds
- * may define TCP_SHIFT_TCP_SND_BUF_BYTES at compile time to measure larger
- * sender capacities without silently changing the production default. The cap
- * below prevents accidental multi-megabyte-per-flow profiles from entering CI
- * without an explicit source review.
+ * TCP_SND_BUF is no longer the per-flow production allocation. It is a
+ * compile-time capability ceiling used by upstream queue-length checks. The
+ * transport memory layer lowers each new production flow to its runtime
+ * tcp_wmem initial value (32 KiB by default) and grows it on demand up to the
+ * configured runtime maximum. MEM_LIBC_MALLOC/MEMP_MEM_MALLOC mean this ceiling
+ * does not preallocate that many bytes for every PCB.
+ *
+ * TCP_SHIFT_TCP_SND_BUF_BYTES is retained as a build-profile compatibility
+ * alias: existing qualification jobs that define it now select the compile
+ * ceiling, not a fixed per-flow runtime send buffer.
  */
 #define LWIP_WND_SCALE 1
 #define TCP_RCV_SCALE 0
 #define TCP_MSS 1460
 #define TCP_WND (32 * 1024)
+#ifndef TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
+#ifdef TCP_SHIFT_TCP_SND_BUF_BYTES
+#define TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES TCP_SHIFT_TCP_SND_BUF_BYTES
+#else
+#define TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES (4 * 1024 * 1024)
+#endif
+#endif
 #ifndef TCP_SHIFT_TCP_SND_BUF_BYTES
-#define TCP_SHIFT_TCP_SND_BUF_BYTES (32 * 1024)
+#define TCP_SHIFT_TCP_SND_BUF_BYTES TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
 #endif
-#if TCP_SHIFT_TCP_SND_BUF_BYTES < (2 * TCP_MSS)
-#error "TCP_SHIFT_TCP_SND_BUF_BYTES is too small for the TCP profile"
+#if TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES < (2 * TCP_MSS)
+#error "TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES is too small for the TCP profile"
 #endif
-#if TCP_SHIFT_TCP_SND_BUF_BYTES > (4 * 1024 * 1024)
-#error "TCP_SHIFT_TCP_SND_BUF_BYTES exceeds the reviewed qualification ceiling"
+#if TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES > (16 * 1024 * 1024)
+#error "TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES exceeds the reviewed capability ceiling"
 #endif
-#define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_BYTES
+#define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + (TCP_MSS - 1)) / TCP_MSS)
 
 /*
  * Upstream's default TCP_SNDLOWAT follows max(TCP_SND_BUF/2, 2*MSS+1), but
- * the field and writable-space arithmetic are still u16_t constrained. Preserve
- * the upstream default exactly for the 32-KiB production profile and cap larger
- * qualification profiles one byte below upstream's 0xffff - 4*MSS sanity bound.
+ * the field and writable-space arithmetic are still u16_t constrained. Keep
+ * the compile-time low-water value below the upstream u16 safety boundary;
+ * runtime tcp_wmem controls the actual per-flow capacity.
  */
 #define TCP_SHIFT_TCP_SNDLOWAT_HALF      (TCP_SND_BUF / 2U)
 #define TCP_SHIFT_TCP_SNDLOWAT_MIN       ((2U * TCP_MSS) + 1U)
@@ -102,9 +114,7 @@
     ((TCP_SHIFT_TCP_SNDLOWAT_BASE < TCP_SHIFT_TCP_SNDLOWAT_U16_MAX) ? \
      TCP_SHIFT_TCP_SNDLOWAT_BASE : TCP_SHIFT_TCP_SNDLOWAT_U16_MAX)
 
-/* Keep upstream max(TCP_SND_QUEUELEN/2, 5) semantics as a constant expression.
- * This lets the standalone config contract validate large queue profiles without
- * depending on LWIP_MAX being visible in that translation unit. */
+/* Keep upstream max(TCP_SND_QUEUELEN/2, 5) semantics as a constant expression. */
 #define TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF (TCP_SND_QUEUELEN / 2U)
 #define TCP_SNDQUEUELOWAT \
     ((TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF > 5U) ? \

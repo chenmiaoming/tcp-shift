@@ -95,6 +95,13 @@ target_include_directories(tcp_shift_probe PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_probe PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_probe PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_lwip_tcp_memory STATIC
+    src/lwip/tcp_memory.c
+)
+target_include_directories(tcp_shift_lwip_tcp_memory PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_lwip_tcp_memory PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_lwip_tcp_memory PUBLIC tcp_shift_lwip)
+
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
     src/lwip/cc_selector.c
@@ -127,11 +134,14 @@ target_include_directories(tcp_shift_bridge PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_bridge PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(tcp_shift_bridge PRIVATE
     tcp_accept=tcp_shift_lwip_cc_accept_selected
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
 )
 target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter
+    tcp_shift_lwip_tcp_memory
 )
 
 add_library(tcp_shift_bridge_paced STATIC
@@ -141,12 +151,15 @@ target_include_directories(tcp_shift_bridge_paced PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_bridge_paced PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_compile_definitions(tcp_shift_bridge_paced PRIVATE
     tcp_accept=tcp_shift_lwip_cc_accept_fixed_pacing
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
 )
 target_link_libraries(tcp_shift_bridge_paced PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter
     tcp_shift_lwip_cc_pacing_qualification
+    tcp_shift_lwip_tcp_memory
 )
 
 add_executable(tcp-shift-config-contract src/config_contract.c)
@@ -284,3 +297,12 @@ target_compile_options(tcp-shift-p5-pacer-loop-contract PRIVATE
 )
 target_link_libraries(tcp-shift-p5-pacer-loop-contract PRIVATE tcp_shift_runtime)
 target_link_options(tcp-shift-p5-pacer-loop-contract PRIVATE -Wl,--gc-sections)
+
+add_executable(tcp-shift-tcp-memory-contract
+    src/tests/tcp_memory_test.c
+)
+target_include_directories(tcp-shift-tcp-memory-contract PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-tcp-memory-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_memory)
