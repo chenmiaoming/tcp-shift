@@ -58,9 +58,19 @@ int main(void)
     CHECK(flow.quantum_remaining_bytes == 1000U);
     CHECK(flow.quantum_grants == 2U);
 
-    /* Replacing the quantum size invalidates unused allowance from the old
-     * bucket. This prevents a rate/quantum update from inheriting stale burst
-     * credit. Re-publishing the same size remains idempotent. */
+    /* A controller rate transition invalidates remaining batch credit even if
+     * both rates map to the same quantum. It must not pull the already-published
+     * absolute deadline forward; the new rate applies when the next TX advances
+     * the virtual clock. This is the BBR STARTUP -> DRAIN safety invariant. */
+    tcp_shift_flow_pacer_set_rate_quantum(
+        &flow, UINT64_C(500000), 2000U);
+    CHECK(flow.rate_bytes_per_sec == UINT64_C(500000));
+    CHECK(flow.quantum_bytes == 2000U);
+    CHECK(flow.quantum_remaining_bytes == 0U);
+    CHECK(flow.next_send_ns == base + 2U * one_ms);
+
+    /* Replacing the quantum size also invalidates unused allowance from the old
+     * bucket. Re-publishing the same size remains idempotent. */
     tcp_shift_flow_pacer_set_quantum(&flow, 3000U);
     CHECK(flow.quantum_bytes == 3000U);
     CHECK(flow.quantum_remaining_bytes == 0U);
@@ -111,6 +121,7 @@ int main(void)
               &flow, base, 1000U, NULL) < 0);
 
     printf("flow_pacer_quantum=ok quantum_bytes=2000 batch_segments=2 "
-           "long_term_spacing_ms=2 stale_credit_cleared=1 strict_mode=1\n");
+           "long_term_spacing_ms=2 stale_credit_cleared=1 strict_mode=1 "
+           "rate_transition_preserves_deadline=1\n");
     return 0;
 }
