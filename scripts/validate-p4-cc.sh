@@ -26,6 +26,7 @@ if awk '
     $0 == "#include \"cc/transport_pacing.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
     $0 == "#include \"cc/bbr.h\"" { next }
+    $0 == "#include \"cc/bbr_probe.h\"" { next }
     $0 == "#include \"cc/cubic.h\"" { next }
     { print; bad = 1 }
     END { exit bad ? 0 : 1 }
