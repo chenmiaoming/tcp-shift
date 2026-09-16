@@ -39,8 +39,11 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 
 HALF_RTT_MS=$((RTT_MS / 2))
 BDP_BYTES=$((RATE_MBIT * RTT_MS * 125))
-QUEUE_PKTS=$(((BDP_BYTES + 1459) / 1460))
-[ "$QUEUE_PKTS" -ge 16 ] || QUEUE_PKTS=16
+DEFAULT_QUEUE_PKTS=$(((BDP_BYTES + 1459) / 1460))
+[ "$DEFAULT_QUEUE_PKTS" -ge 16 ] || DEFAULT_QUEUE_PKTS=16
+QUEUE_PKTS=${TCP_SHIFT_LINUX_PACING_QUEUE_PKTS:-$DEFAULT_QUEUE_PKTS}
+case "$QUEUE_PKTS" in ''|*[!0-9]*) echo "QUEUE_PKTS must be an integer" >&2; exit 1;; esac
+[ "$QUEUE_PKTS" -gt 0 ] || { echo "QUEUE_PKTS must be positive" >&2; exit 1; }
 
 mkdir -p "$OUT"
 
@@ -169,6 +172,11 @@ with open(samples_path, "w", encoding="utf-8") as samples:
         )
         samples.flush()
 conn.shutdown(socket.SHUT_WR)
+# Wait for the receiver to observe EOF and close so final retransmission
+# counters include tail recovery rather than sampling immediately after the
+# application finished writing into the kernel send queue.
+while conn.recv(4096):
+    pass
 final = tcp_info(conn)
 conn.close()
 server.close()
@@ -226,13 +234,16 @@ if [ "$MODE" = fq ]; then
     ip netns exec "$NS_CLIENT" tc -s qdisc show dev "$IFB_CLIENT" > "$OUT/ifb-qdisc-after.txt"
 fi
 
+FINAL_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/server.txt" | tail -n 1)
+[ -n "$FINAL_RETRANS" ] || { echo "missing final retransmission count" >&2; exit 1; }
+
 python3 - "$CASE" "$MODE" "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" \
-    "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
+    "$FINAL_RETRANS" "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
 import statistics
 import sys
 from pathlib import Path
 
-case, mode, rtt_ms, rate_mbit, bdp, queue_pkts, client_path, samples_path = sys.argv[1:]
+case, mode, rtt_ms, rate_mbit, bdp, queue_pkts, final_retrans, client_path, samples_path = sys.argv[1:]
 client = Path(client_path).read_text(encoding="utf-8").strip()
 goodput = float(client.split("goodput_mbps=")[1].split()[0])
 rows = []
@@ -246,7 +257,6 @@ if not rows:
 pacing = [int(row["pacing_rate_Bps"]) for row in rows if int(row["pacing_rate_Bps"]) > 0]
 delivery = [int(row["delivery_rate_Bps"]) for row in rows if int(row["delivery_rate_Bps"]) > 0]
 rtts = [int(row["rtt_us"]) for row in rows if int(row["rtt_us"]) > 0]
-retrans = max(int(row["total_retrans"]) for row in rows)
 print(
     f"linux_cubic_pacing_reference=ok case={case} mode={mode} base_rtt_ms={rtt_ms} "
     f"rate_mbit={rate_mbit} bdp_bytes={bdp} queue_pkts={queue_pkts} "
@@ -254,7 +264,7 @@ print(
     f"pacing_rate_min_Bps={min(pacing)} pacing_rate_median_Bps={int(statistics.median(pacing))} "
     f"pacing_rate_max_Bps={max(pacing)} pacing_rate_final_Bps={pacing[-1]} "
     f"delivery_rate_median_Bps={int(statistics.median(delivery)) if delivery else 0} "
-    f"rtt_median_us={int(statistics.median(rtts)) if rtts else 0} total_retrans={retrans}"
+    f"rtt_median_us={int(statistics.median(rtts)) if rtts else 0} total_retrans={final_retrans}"
 )
 PY
 
