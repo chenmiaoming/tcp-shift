@@ -19,15 +19,18 @@ extern "C" {
 #define TCP_SHIFT_CUBIC_FAST_CONVERGENCE_NUM 17U
 #define TCP_SHIFT_CUBIC_FAST_CONVERGENCE_DEN 20U
 
-/* RFC 9406 HyStart++ recommended constants. tcp-shift's production CUBIC
- * transport is paced, so slow start uses L=infinity: every newly ACKed byte is
- * eligible for cwnd growth and burst control remains the transport pacer's job. */
+/* RFC 9406 HyStart++ recommended constants. The current ordinary tcp-shift
+ * CUBIC path does not yet execute the generic Reno/CUBIC transport pacing
+ * fallback, so it uses the RFC's non-paced L=8 ACK-growth cap. The helper below
+ * keeps the paced L=infinity rule explicit and independently testable for the
+ * point where production per-flow pacing is promoted from qualification. */
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_THRESH_NS UINT64_C(4000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MAX_RTT_THRESH_NS UINT64_C(16000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_DIVISOR 8U
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_SAMPLES 8U
 #define TCP_SHIFT_CUBIC_HYSTARTPP_CSS_GROWTH_DIVISOR 4U
 #define TCP_SHIFT_CUBIC_HYSTARTPP_CSS_ROUNDS 5U
+#define TCP_SHIFT_CUBIC_HYSTARTPP_NON_PACED_L 8U
 
 /* With windows in Q16 segments and time in Q10 seconds, C=0.4=2/5 gives:
  *   cubic_term_q16 = abs(t_q10 - K_q10)^3 / 40960
@@ -113,6 +116,13 @@ int tcp_shift_cubic_model_on_timeout(
 void tcp_shift_cubic_model_set_fast_convergence(
     struct tcp_shift_cubic_model *model,
     unsigned enabled);
+
+/* RFC 9406 slow-start ACK credit. Non-paced senders use min(N, 8*SMSS);
+ * actively paced senders use L=infinity and therefore return N unchanged. */
+uint32_t tcp_shift_cubic_hystartpp_slow_start_credit(
+    uint32_t acked_bytes,
+    uint32_t mss_bytes,
+    unsigned pacing_active);
 
 /* RFC 9406 HyStart++ initial-slow-start observer. Raw RTT samples and
  * cumulative delivery snapshots come from the generic ACK observation. CSS

@@ -93,7 +93,7 @@ static int drive_to_css(union tcp_shift_cc_builtin_state *state,
     return 0;
 }
 
-static int run_paced_l_infinity(void)
+static int run_slow_start_l_policy(void)
 {
     union tcp_shift_cc_builtin_state state;
     struct tcp_shift_cc cc;
@@ -106,15 +106,24 @@ static int run_paced_l_infinity(void)
     struct tcp_shift_cc_ack ack;
     struct tcp_shift_cc_policy policy;
 
+    CHECK(tcp_shift_cubic_hystartpp_slow_start_credit(
+              12000U, 1000U, 0U) == 8000U);
+    CHECK(tcp_shift_cubic_hystartpp_slow_start_credit(
+              12000U, 1000U, 1U) == 12000U);
+    CHECK(tcp_shift_cubic_hystartpp_slow_start_credit(
+              6000U, 1000U, 0U) == 6000U);
+    CHECK(tcp_shift_cubic_hystartpp_slow_start_credit(
+              UINT32_MAX, UINT32_MAX, 0U) == UINT32_MAX);
+
     CHECK(init_cubic(&state, &cc, &transport, &policy) == 0);
     CHECK(state.cubic.hystart_enabled == 1U);
 
-    /* RFC 9406 recommends L=infinity for paced TCP. A 6-SMSS ACK therefore
-     * contributes all 6000 bytes instead of the old Linux-shaped 2-SMSS cap. */
-    set_ack(&ack, 6000U, UINT64_C(100000000), UINT64_C(20000000),
-            UINT64_C(6000));
+    /* The ordinary selector is not yet production-paced. RFC 9406 therefore
+     * applies L=8: a 12-SMSS ACK can grow cwnd by only 8 SMSS. */
+    set_ack(&ack, 12000U, UINT64_C(100000000), UINT64_C(20000000),
+            UINT64_C(12000));
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == 0);
-    CHECK(policy.cwnd_bytes == 22000U);
+    CHECK(policy.cwnd_bytes == 24000U);
     return 0;
 }
 
@@ -161,7 +170,7 @@ static int run_css_growth_and_revert(void)
     CHECK(state.cubic.hystart_exit_events == 0U);
 
     /* The ACK that proves the spike spurious still arrived in CSS. The next
-     * ACK is ordinary slow start again and gets the full paced L=infinity credit. */
+     * ACK is ordinary slow start again and remains below the L=8 cap. */
     cwnd_before = policy.cwnd_bytes;
     delivered += 1000U;
     set_ack(&ack, 1000U, UINT64_C(400000000), UINT64_C(25000000), delivered);
@@ -241,13 +250,13 @@ static int run_initial_only(void)
 
 int main(void)
 {
-    CHECK(run_paced_l_infinity() == 0);
+    CHECK(run_slow_start_l_policy() == 0);
     CHECK(run_css_growth_and_revert() == 0);
     CHECK(run_css_confirmation() == 0);
     CHECK(run_initial_only() == 0);
 
     printf("cubic_hystartpp=ok rfc=9406 min_samples=8 "
            "delay_thresh_ms=4..16 css_divisor=4 css_rounds=5 "
-           "paced_L=infinity detectors=delay_only initial_only=1\n");
+           "nonpaced_L=8 paced_L=infinity detectors=delay_only initial_only=1\n");
     return 0;
 }

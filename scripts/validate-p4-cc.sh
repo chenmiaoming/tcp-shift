@@ -76,7 +76,7 @@ grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
     | tee "$OUT/cubic-hystart-contract.txt"
 grep -F 'cubic_hystartpp=ok rfc=9406 min_samples=8 delay_thresh_ms=4..16' \
     "$OUT/cubic-hystart-contract.txt" >/dev/null
-grep -F 'css_divisor=4 css_rounds=5 paced_L=infinity' \
+grep -F 'css_divisor=4 css_rounds=5 nonpaced_L=8 paced_L=infinity' \
     "$OUT/cubic-hystart-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-controller-contract" \
