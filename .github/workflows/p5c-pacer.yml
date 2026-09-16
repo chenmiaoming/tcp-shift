@@ -18,6 +18,7 @@ on:
       - 'src/p2_main.c'
       - 'src/p2_ipv6_main.c'
       - 'src/tests/fixed_pacing_policy_test.c'
+      - 'src/tests/flow_pacer_quantum_test.c'
       - 'src/tests/pacer_adapter_lifecycle_test.c'
       - 'src/tests/pacer_scheduler_test.c'
       - 'src/tests/pacer_loop_test.c'
