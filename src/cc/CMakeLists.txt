@@ -55,6 +55,14 @@ if(TCP_SHIFT_CC_STANDALONE)
     )
     target_link_libraries(tcp-shift-transport-pacing-contract PRIVATE tcp_shift_cc)
 
+    add_executable(tcp-shift-transport-pacing-quantum-contract
+        ../tests/transport_pacing_quantum_test.c
+    )
+    target_compile_options(tcp-shift-transport-pacing-quantum-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-transport-pacing-quantum-contract PRIVATE tcp_shift_cc)
+
     add_executable(tcp-shift-cubic-model-contract
         ../tests/cubic_model_test.c
     )
