@@ -7,6 +7,19 @@
 #define MIB(value) ((uint64_t)(value) * 1024U * 1024U)
 #define KIB(value) ((uint32_t)(value) * 1024U)
 
+/* The policy contract links against pinned lwIP because struct tcp_pcb is part
+ * of the runtime boundary. These two port hooks are irrelevant to the memory
+ * policy itself; deterministic stubs keep the contract focused and standalone. */
+u32_t sys_now(void)
+{
+    return 1U;
+}
+
+unsigned int lwip_port_rand(void)
+{
+    return 1U;
+}
+
 static int expect(int condition, const char *message)
 {
     if (!condition) {
