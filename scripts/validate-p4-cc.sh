@@ -61,6 +61,13 @@ grep -F 'transport_pacing=ok fallback=window_over_srtt ' \
 grep -F 'controller_rate_precedence=1 startup_rate=linux_pre_srtt' \
     "$OUT/transport-pacing-contract.txt" >/dev/null
 
+"$BUILD/standalone/tcp-shift-transport-pacing-quantum-contract" \
+    | tee "$OUT/transport-pacing-quantum-contract.txt"
+grep -F 'transport_pacing_quantum=ok shift=10 min_segs=2 max_segs=16 ' \
+    "$OUT/transport-pacing-quantum-contract.txt" >/dev/null
+grep -F 'low_segs=2 edge_segs=2 high_linux_segs=4' \
+    "$OUT/transport-pacing-quantum-contract.txt" >/dev/null
+
 "$BUILD/standalone/tcp-shift-cubic-model-contract" | tee "$OUT/cubic-contract.txt"
 grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
     "$OUT/cubic-contract.txt" >/dev/null
@@ -101,6 +108,6 @@ fi
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ntransport_pacing_quantum=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"
