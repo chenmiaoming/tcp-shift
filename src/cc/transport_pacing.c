@@ -1,5 +1,6 @@
 #include "cc/transport_pacing.h"
 
+#include <limits.h>
 #include <stddef.h>
 
 #define TCP_SHIFT_TRANSPORT_PACING_NSEC_PER_SEC UINT64_C(1000000000)
@@ -74,6 +75,40 @@ uint64_t tcp_shift_transport_pacing_window_rate(
                   ? TCP_SHIFT_TRANSPORT_PACING_SS_PERCENT
                   : TCP_SHIFT_TRANSPORT_PACING_CA_PERCENT;
     return tcp_shift_transport_pacing_scale_percent(base_rate, percent);
+}
+
+uint32_t tcp_shift_transport_pacing_quantum_bytes(
+    uint64_t pacing_rate_bytes_per_sec,
+    uint32_t mss_bytes)
+{
+    uint64_t target_bytes;
+    uint64_t quantum_bytes;
+    uint32_t segments;
+
+    if (pacing_rate_bytes_per_sec == 0U || mss_bytes == 0U) {
+        return 0U;
+    }
+
+    /* Linux v6.17 tcp_tso_autosize() starts with sk_pacing_rate shifted by
+     * sk_pacing_shift, whose normal socket default is 10. Reuse that useful
+     * rate-to-batch relation even though this userspace transport has no GSO
+     * skb. Packet-level fq evidence from the qualification matrix maps the
+     * resulting target to the observed 2/2/~4 MSS low/edge/high groups. */
+    target_bytes =
+        pacing_rate_bytes_per_sec >> TCP_SHIFT_TRANSPORT_PACING_QUANTUM_SHIFT;
+    segments = target_bytes / mss_bytes > UINT32_MAX
+                   ? UINT32_MAX
+                   : (uint32_t)(target_bytes / mss_bytes);
+    if (segments < TCP_SHIFT_TRANSPORT_PACING_MIN_QUANTUM_SEGS) {
+        segments = TCP_SHIFT_TRANSPORT_PACING_MIN_QUANTUM_SEGS;
+    }
+    if (segments > TCP_SHIFT_TRANSPORT_PACING_MAX_QUANTUM_SEGS) {
+        segments = TCP_SHIFT_TRANSPORT_PACING_MAX_QUANTUM_SEGS;
+    }
+
+    quantum_bytes = (uint64_t)segments * mss_bytes;
+    return quantum_bytes > UINT32_MAX ? UINT32_MAX
+                                      : (uint32_t)quantum_bytes;
 }
 
 int tcp_shift_transport_pacing_apply_window_fallback(
