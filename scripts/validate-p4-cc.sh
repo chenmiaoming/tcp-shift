@@ -58,7 +58,7 @@ grep -F 'cc_observation=ok srtt_alpha=1/8 time_unit=ns zero_rejected=1' \
     | tee "$OUT/transport-pacing-contract.txt"
 grep -F 'transport_pacing=ok fallback=window_over_srtt ' \
     "$OUT/transport-pacing-contract.txt" >/dev/null
-grep -F 'controller_rate_precedence=1 startup_rtt=explicit' \
+grep -F 'controller_rate_precedence=1 startup_rate=linux_pre_srtt' \
     "$OUT/transport-pacing-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-model-contract" | tee "$OUT/cubic-contract.txt"
