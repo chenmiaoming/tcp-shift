@@ -1,0 +1,95 @@
+name: Linux CUBIC pacing reference
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-cubic-pacing-reference.yml'
+      - 'scripts/linux-cubic-pacing-reference.sh'
+      - 'src/cc/**'
+      - 'src/runtime/pacer.c'
+      - 'src/runtime/pacer.h'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_adapter.h'
+  workflow_dispatch:
+
+jobs:
+  pacing-reference:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            mode: netem
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+          - case: low-bdp
+            mode: fq
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+          - case: edge-bdp
+            mode: netem
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+          - case: edge-bdp
+            mode: fq
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+          - case: high-bdp
+            mode: netem
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+          - case: high-bdp
+            mode: fq
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install pacing probe dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ethtool \
+            iproute2 \
+            kmod \
+            python3
+
+      - name: Validate pacing reference harness
+        run: sh -n scripts/linux-cubic-pacing-reference.sh
+
+      - name: Probe Linux CUBIC pacing state
+        env:
+          TCP_SHIFT_LINUX_PACING_CASE: ${{ matrix.case }}
+          TCP_SHIFT_LINUX_PACING_MODE: ${{ matrix.mode }}
+          TCP_SHIFT_LINUX_PACING_RTT_MS: ${{ matrix.rtt_ms }}
+          TCP_SHIFT_LINUX_PACING_RATE_MBIT: ${{ matrix.rate_mbit }}
+          TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES: ${{ matrix.payload_bytes }}
+          TCP_SHIFT_LINUX_PACING_OUT: .build/linux-cubic-pacing/${{ matrix.case }}-${{ matrix.mode }}
+        run: |
+          sudo --preserve-env=TCP_SHIFT_LINUX_PACING_CASE,TCP_SHIFT_LINUX_PACING_MODE,TCP_SHIFT_LINUX_PACING_RTT_MS,TCP_SHIFT_LINUX_PACING_RATE_MBIT,TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES,TCP_SHIFT_LINUX_PACING_OUT \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Publish pacing evidence
+        if: always()
+        run: |
+          root=.build/linux-cubic-pacing/${{ matrix.case }}-${{ matrix.mode }}
+          if [ -f "$root/summary.txt" ]; then
+            cat "$root/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload pacing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cubic-pacing-${{ matrix.case }}-${{ matrix.mode }}
+          path: .build/linux-cubic-pacing/${{ matrix.case }}-${{ matrix.mode }}
+          if-no-files-found: warn
