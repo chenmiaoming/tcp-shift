@@ -480,8 +480,18 @@ static int tcp_shift_pacing_qualification_cubic_init(
     const struct tcp_shift_cc_init *init,
     struct tcp_shift_cc_policy *policy)
 {
-    return tcp_shift_pacing_qualification_inner_init(state, &tcp_shift_cubic_ops,
-                                                      transport, init, policy);
+    struct tcp_shift_lwip_cc_adapter *adapter = state;
+    int result;
+
+    result = tcp_shift_pacing_qualification_inner_init(
+        adapter, &tcp_shift_cubic_ops, transport, init, policy);
+    if (result == 0) {
+        /* This wrapper has just installed a nonzero transport pacing fallback,
+         * so RFC 9406's paced L=infinity rule now describes the actual flow. */
+        tcp_shift_cubic_model_set_hystart_pacing(
+            &adapter->controller_state.cubic, 1U);
+    }
+    return result;
 }
 
 static int tcp_shift_pacing_qualification_cubic_ack(

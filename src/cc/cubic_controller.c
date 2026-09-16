@@ -26,6 +26,15 @@ uint32_t tcp_shift_cubic_hystartpp_slow_start_credit(
     return acked_bytes < limit ? acked_bytes : limit;
 }
 
+void tcp_shift_cubic_model_set_hystart_pacing(
+    struct tcp_shift_cubic_model *model,
+    unsigned active)
+{
+    if (model != NULL) {
+        model->hystart_pacing_active = active != 0U ? 1U : 0U;
+    }
+}
+
 static int tcp_shift_cubic_controller_init(
     void *opaque_state,
     const struct tcp_shift_cc_transport *transport,
@@ -67,16 +76,11 @@ static int tcp_shift_cubic_controller_on_ack(
 
     if (model->cwnd_q16 < model->ssthresh_q16) {
         growth_ack = *ack;
-        /* The ordinary tcp-shift CUBIC selector does not yet install the
-         * generic Reno/CUBIC transport pacing fallback. Therefore this flow is
-         * non-paced even though a process-wide pacer service may exist, and
-         * RFC 9406 requires the conservative L=8 ACK-growth cap. When the
-         * production transport explicitly reports active per-flow pacing, this
-         * call site can switch to pacing_active=1 without changing HyStart++'s
-         * RTT/CSS state machine. */
         growth_ack.acked_bytes =
             tcp_shift_cubic_hystartpp_slow_start_credit(
-                ack->acked_bytes, transport->mss_bytes, 0U);
+                ack->acked_bytes,
+                transport->mss_bytes,
+                model->hystart_pacing_active);
         model_ack = &growth_ack;
     }
 

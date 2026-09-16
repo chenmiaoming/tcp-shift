@@ -21,9 +21,9 @@ extern "C" {
 
 /* RFC 9406 HyStart++ recommended constants. The current ordinary tcp-shift
  * CUBIC path does not yet execute the generic Reno/CUBIC transport pacing
- * fallback, so it uses the RFC's non-paced L=8 ACK-growth cap. The helper below
- * keeps the paced L=infinity rule explicit and independently testable for the
- * point where production per-flow pacing is promoted from qualification. */
+ * fallback, so it uses the RFC's non-paced L=8 ACK-growth cap. The model owns
+ * one explicit capability bit so a transport that really does pace this flow
+ * can select the RFC's paced L=infinity rule without changing the detector. */
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_THRESH_NS UINT64_C(4000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MAX_RTT_THRESH_NS UINT64_C(16000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_DIVISOR 8U
@@ -89,6 +89,7 @@ struct tcp_shift_cubic_model {
     uint8_t hystart_ack_css;
     uint8_t hystart_exit_pending;
     uint8_t hystart_initial_complete;
+    uint8_t hystart_pacing_active;
 };
 
 int tcp_shift_cubic_model_init(struct tcp_shift_cubic_model *model,
@@ -116,6 +117,12 @@ int tcp_shift_cubic_model_on_timeout(
 void tcp_shift_cubic_model_set_fast_convergence(
     struct tcp_shift_cubic_model *model,
     unsigned enabled);
+
+/* Adapter/transport capability. This changes only RFC 9406 ACK-growth policy;
+ * it does not own or configure pacing mechanics. */
+void tcp_shift_cubic_model_set_hystart_pacing(
+    struct tcp_shift_cubic_model *model,
+    unsigned active);
 
 /* RFC 9406 slow-start ACK credit. Non-paced senders use min(N, 8*SMSS);
  * actively paced senders use L=infinity and therefore return N unchanged. */
