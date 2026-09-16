@@ -74,7 +74,9 @@ grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
 
 "$BUILD/standalone/tcp-shift-cubic-hystart-contract" \
     | tee "$OUT/cubic-hystart-contract.txt"
-grep -F 'cubic_hystart=ok low_window=16 min_samples=8 ack_delta_ms=2' \
+grep -F 'cubic_hystartpp=ok rfc=9406 min_samples=8 delay_thresh_ms=4..16' \
+    "$OUT/cubic-hystart-contract.txt" >/dev/null
+grep -F 'css_divisor=4 css_rounds=5 paced_L=infinity' \
     "$OUT/cubic-hystart-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-controller-contract" \
@@ -108,6 +110,6 @@ fi
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ntransport_pacing_quantum=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ntransport_pacing_quantum=ok\ncubic_model=ok\ncubic_hystartpp=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"

@@ -52,8 +52,17 @@ static int tcp_shift_cubic_controller_on_loss(
     const struct tcp_shift_cc_loss *loss,
     struct tcp_shift_cc_policy *policy)
 {
-    return tcp_shift_cubic_model_on_loss(
-        (struct tcp_shift_cubic_model *)opaque_state, transport, loss, policy);
+    struct tcp_shift_cubic_model *model =
+        (struct tcp_shift_cubic_model *)opaque_state;
+    int result;
+
+    result = tcp_shift_cubic_model_on_loss(model, transport, loss, policy);
+    if (result == 0) {
+        /* RFC 9406 recommends HyStart++ only for the initial slow start.
+         * Any congestion signal ends that initial attempt permanently. */
+        tcp_shift_cubic_hystart_disable(model);
+    }
+    return result;
 }
 
 static int tcp_shift_cubic_controller_on_timeout(
@@ -67,7 +76,9 @@ static int tcp_shift_cubic_controller_on_timeout(
 
     result = tcp_shift_cubic_model_on_timeout(model, transport, policy);
     if (result == 0) {
-        tcp_shift_cubic_hystart_reset(model);
+        /* Subsequent slow starts use ordinary paced slow start and the learned
+         * ssthresh; do not re-arm HyStart++ after an RTO. */
+        tcp_shift_cubic_hystart_disable(model);
     }
     return result;
 }
