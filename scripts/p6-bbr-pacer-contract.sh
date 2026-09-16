@@ -14,6 +14,7 @@ ${CC:-cc} \
     -I"$ROOT/src" \
     "$ROOT/src/cc/bbr.c" \
     "$ROOT/src/cc/bbr_pacing.c" \
+    "$ROOT/src/cc/bbr_drain.c" \
     "$ROOT/src/cc/transport_pacing.c" \
     "$ROOT/src/runtime/pacer.c" \
     "$ROOT/src/tests/bbr_pacer_integration_test.c" \
@@ -22,10 +23,14 @@ ${CC:-cc} \
 "$BINARY" | tee "$BUILD/summary.txt"
 grep -F 'bbr_pacer_integration=ok nominal_rtt_ms=1 ' \
     "$BUILD/summary.txt" >/dev/null
-grep -F 'controller_rate_precedence=1 zero_catch_up=1 ' \
+grep -F 'controller_rate_precedence=1 zero_catch_up=1' \
+    "$BUILD/summary.txt" >/dev/null
+grep -F 'bbr_pacer_lifecycle=ok ' "$BUILD/summary.txt" >/dev/null
+grep -F 'deadline_preserved=1 probe_bw_boundary=1' \
     "$BUILD/summary.txt" >/dev/null
 
 printf '%s\n' \
     'bbr_initial_pacing_reference=linux-v6.17-tcp_bbr-bbr_init_pacing_rate_from_rtt' \
+    'bbr_rate_lifecycle=initial-startup-drain' \
     'transport_pacer=shared-per-flow-virtual-clock' \
     | tee "$BUILD/reference.txt"

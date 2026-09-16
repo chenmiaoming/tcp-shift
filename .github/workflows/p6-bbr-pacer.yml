@@ -9,6 +9,7 @@ on:
       - 'src/cc/bbr.c'
       - 'src/cc/bbr.h'
       - 'src/cc/bbr_pacing.c'
+      - 'src/cc/bbr_drain.c'
       - 'src/cc/transport_pacing.c'
       - 'src/cc/transport_pacing.h'
       - 'src/runtime/pacer.c'
@@ -46,7 +47,7 @@ jobs:
       - name: Validate BBR pacer harness
         run: sh -n scripts/p6-bbr-pacer-contract.sh
 
-      - name: Qualify BBR-owned rate on shared pacer
+      - name: Qualify BBR rate lifecycle on shared pacer
         run: sh scripts/p6-bbr-pacer-contract.sh
 
       - name: Requalify pure-C CC boundary
