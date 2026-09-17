@@ -178,6 +178,83 @@ static int check_lifecycle(void)
     return 0;
 }
 
+static int check_recovery_composition(void)
+{
+    struct tcp_shift_bbr_controller_state state;
+    struct tcp_shift_cc_transport transport;
+    struct tcp_shift_cc_init init;
+    struct tcp_shift_cc_policy policy;
+    uint64_t pacing_before_recovery;
+    const uint32_t valid = TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+
+    memset(&state, 0, sizeof(state));
+    memset(&transport, 0, sizeof(transport));
+    memset(&init, 0, sizeof(init));
+
+    transport.mss_bytes = 1460U;
+    transport.send_window_bytes = 1000000U;
+    transport.cwnd_limit_bytes = 1000000U;
+    transport.inflight_bytes = 12000U;
+    init.initial_cwnd_bytes = 14600U;
+    init.initial_ssthresh_bytes = transport.cwnd_limit_bytes;
+    init.min_cwnd_bytes = 2920U;
+
+    CHECK(tcp_shift_bbr_controller_init(
+              &state, &transport, &init, 0U, &policy) == 0);
+
+    /* Establish a cumulative-delivered marker. Recovery entry must reset the
+     * next packet-timed round boundary to exactly this snapshot. */
+    CHECK(drive_ack(&state, &transport, UINT64_C(1000000000),
+                    UINT64_C(10000000), 0U, 10000U, 12000U,
+                    valid, &policy) == 0);
+    CHECK(state.delivered_bytes == 10000U);
+    state.cwnd_bytes = 20000U;
+    pacing_before_recovery = state.pacing_rate_bytes_per_sec;
+
+    CHECK(tcp_shift_bbr_controller_recovery_enter(
+              &state, &transport, transport.mss_bytes, &policy) == 0);
+    CHECK(state.recovery.in_recovery == 1U);
+    CHECK(state.recovery.packet_conservation == 1U);
+    CHECK(state.recovery.prior_cwnd_bytes == 20000U);
+    CHECK(state.model.next_round_delivered == 10000U);
+    CHECK(state.model.round_start == 0U);
+    CHECK(policy.cwnd_bytes == 12000U);
+    CHECK(policy.pacing_rate_bytes_per_sec == pacing_before_recovery);
+
+    /* A recovery ACK whose prior-delivered snapshot predates the entry marker
+     * is still in the first packet-timed recovery round. Normal STARTUP policy
+     * would grow cwnd, but packet conservation must retain ownership. */
+    transport.inflight_bytes = 10000U;
+    CHECK(drive_ack(&state, &transport, UINT64_C(1020000000),
+                    UINT64_C(10000000), 9000U, 11460U, 10000U,
+                    valid, &policy) == 0);
+    CHECK(state.model.round_start == 0U);
+    CHECK(state.recovery.packet_conservation == 1U);
+    CHECK(policy.cwnd_bytes == 12000U);
+
+    /* Once prior_delivered reaches the entry marker, model.round_start opens a
+     * new packet-timed round. That ACK releases packet conservation and normal
+     * BBR cwnd growth resumes from the recovery-adjusted cwnd. */
+    transport.inflight_bytes = 8500U;
+    CHECK(drive_ack(&state, &transport, UINT64_C(1040000000),
+                    UINT64_C(10000000), 10000U, 12920U, 8500U,
+                    valid, &policy) == 0);
+    CHECK(state.model.round_start == 1U);
+    CHECK(state.recovery.packet_conservation == 0U);
+    CHECK(policy.cwnd_bytes > 12000U);
+
+    /* Transport-observed exit restores the last known-good pre-recovery cwnd.
+     * The real adapter will then feed the same/new ACK through normal policy,
+     * which can cap it to the current BDP target. */
+    CHECK(tcp_shift_bbr_controller_recovery_exit(
+              &state, &transport, &policy) == 0);
+    CHECK(state.recovery.in_recovery == 0U);
+    CHECK(policy.cwnd_bytes >= 20000U);
+    CHECK(state.cwnd_bytes == policy.cwnd_bytes);
+    CHECK(policy.pacing_rate_bytes_per_sec != 0U);
+    return 0;
+}
+
 static int check_invalid_inputs(void)
 {
     struct tcp_shift_bbr_controller_state state;
@@ -201,6 +278,10 @@ static int check_invalid_inputs(void)
     ack.acked_bytes = 1460U;
     CHECK(tcp_shift_bbr_controller_on_ack(
               &state, &transport, &ack, &policy) < 0);
+    CHECK(tcp_shift_bbr_controller_recovery_enter(
+              &state, &transport, 0U, &policy) < 0);
+    CHECK(tcp_shift_bbr_controller_recovery_exit(
+              &state, &transport, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_init(
               NULL, &transport, &init, 0U, &policy) < 0);
     transport.mss_bytes = 0U;
@@ -212,9 +293,12 @@ static int check_invalid_inputs(void)
 int main(void)
 {
     CHECK(check_lifecycle() == 0);
+    CHECK(check_recovery_composition() == 0);
     CHECK(check_invalid_inputs() == 0);
 
     printf("bbr_controller_lifecycle=ok modes=startup-drain-probebw-probertt-probebw "
            "public_ops=disabled loss_timeout=pending cycle_seed=external\n");
+    printf("bbr_controller_recovery=ok conservation=one-packet-round "
+           "round_marker=delivered restore=prior_cwnd public_ops=disabled\n");
     return 0;
 }
