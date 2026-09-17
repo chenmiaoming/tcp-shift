@@ -138,6 +138,16 @@ const char *tcp_shift_lwip_cc_configured_controller_name(void);
 int tcp_shift_lwip_cc_apply_configured_controller(
     struct tcp_shift_lwip_cc_adapter *adapter);
 
+/* Internal-only BBR binding used by P6 qualification. This does not add BBR to
+ * the public registry or CLI. The full BBR state lives in a lazily allocated
+ * PCB sidecar and the existing adapter still owns delivery sampling and pacing.
+ * Loss/RTO ownership remains a later integration step. */
+int tcp_shift_lwip_cc_apply_internal_bbr(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    uint32_t cycle_seed);
+int tcp_shift_lwip_cc_internal_bbr_active(
+    const struct tcp_shift_lwip_cc_adapter *adapter);
+
 void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
                                        tcp_accept_fn accept);
 void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
