@@ -9,6 +9,16 @@ static int tcp_shift_bbr_controller_valid_transport(
            transport->cwnd_limit_bytes >= transport->mss_bytes;
 }
 
+static uint32_t tcp_shift_bbr_controller_add_limit(uint32_t a,
+                                                    uint32_t b,
+                                                    uint32_t limit)
+{
+    if (a >= limit || b > limit - a) {
+        return limit;
+    }
+    return a + b;
+}
+
 static void tcp_shift_bbr_controller_publish(
     const struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
@@ -222,6 +232,49 @@ int tcp_shift_bbr_controller_recovery_exit(
     }
 
     state->cwnd_bytes = cwnd;
+    tcp_shift_bbr_controller_publish(state, transport, policy);
+    return 0;
+}
+
+int tcp_shift_bbr_controller_on_timeout(
+    struct tcp_shift_bbr_controller_state *state,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_bbr_timeout_observation *timeout,
+    struct tcp_shift_cc_policy *policy)
+{
+    uint32_t cwnd;
+
+    if (state == NULL || timeout == NULL || policy == NULL ||
+        state->initialized == 0U ||
+        !tcp_shift_bbr_controller_valid_transport(transport) ||
+        state->cwnd_bytes == 0U ||
+        state->cwnd_bytes > transport->cwnd_limit_bytes) {
+        return -1;
+    }
+
+    /* Linux BBRv1 bbr_set_state(TCP_CA_Loss) resets only the full-bandwidth
+     * baseline and marks the event as a round boundary. It does not reset mode,
+     * max_bw/min_rtt filters, full_bw_cnt/full_bw_reached, or pacing. */
+    state->model.full_bw_bytes_per_sec = 0U;
+    state->model.full_bw_now = 0U;
+    state->model.round_start = 1U;
+
+    /* An RTO supersedes fast-recovery packet conservation. A future spurious
+     * timeout undo contract can preserve/restore separate prior-cwnd state;
+     * do not leave stale Recovery ownership active meanwhile. */
+    tcp_shift_bbr_recovery_init(&state->recovery);
+
+    /* Linux tcp_enter_loss() sets cwnd to tcp_packets_in_flight()+1 packet after
+     * timeout loss marking. The caller therefore supplies that post-marking
+     * in-flight value explicitly instead of reusing raw outstanding bytes. */
+    cwnd = tcp_shift_bbr_controller_add_limit(
+        timeout->post_loss_inflight_bytes, transport->mss_bytes,
+        transport->cwnd_limit_bytes);
+    if (cwnd < transport->mss_bytes) {
+        cwnd = transport->mss_bytes;
+    }
+    state->cwnd_bytes = cwnd;
+
     tcp_shift_bbr_controller_publish(state, transport, policy);
     return 0;
 }

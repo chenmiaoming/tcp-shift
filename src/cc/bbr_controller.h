@@ -14,9 +14,10 @@ extern "C" {
 /* Internal compact BBR lifecycle state.
  *
  * This deliberately is not exposed as tcp_shift_cc_ops yet. The generic
- * controller ABI requires qualified recovery ownership and timeout semantics;
- * until those are implemented, keeping this as an explicit internal lifecycle
- * prevents a partially specified BBR from entering the public registry.
+ * controller ABI requires qualified recovery ownership and an lwIP mapping for
+ * post-loss in-flight state; until those are implemented, keeping this as an
+ * explicit internal lifecycle prevents a partially specified BBR from entering
+ * the public registry.
  */
 struct tcp_shift_bbr_controller_state {
     struct tcp_shift_bbr_model model;
@@ -27,6 +28,14 @@ struct tcp_shift_bbr_controller_state {
     uint32_t initial_cwnd_bytes;
     uint32_t cwnd_bytes;
     uint8_t initialized;
+};
+
+/* RTO/Loss-state cwnd input after the transport has marked timeout losses.
+ * This is deliberately distinct from tcp_shift_cc_transport.inflight_bytes:
+ * the latter is raw outstanding sequence space on lwIP, while Linux
+ * tcp_enter_loss() uses tcp_packets_in_flight() after timeout loss marking. */
+struct tcp_shift_bbr_timeout_observation {
+    uint32_t post_loss_inflight_bytes;
 };
 
 int tcp_shift_bbr_controller_init(
@@ -63,6 +72,18 @@ int tcp_shift_bbr_controller_recovery_enter(
 int tcp_shift_bbr_controller_recovery_exit(
     struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy);
+
+/* Apply the controller-side part of Linux BBRv1's TCP_CA_Loss transition.
+ * The caller must supply post-loss in-flight bytes, not raw outstanding bytes.
+ * Mode, max-bw/min-RTT filters, full_bw_count/full_bw_reached and pacing are
+ * preserved; the full_bw baseline is reset and the timeout is treated as a
+ * round boundary. cwnd becomes post-loss inflight + one MSS, capped by the
+ * transport limit. */
+int tcp_shift_bbr_controller_on_timeout(
+    struct tcp_shift_bbr_controller_state *state,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_bbr_timeout_observation *timeout,
     struct tcp_shift_cc_policy *policy);
 
 #ifdef __cplusplus

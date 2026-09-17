@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build/p6-bbr-controller-contract"
 BINARY="$BUILD/tcp-shift-p6-bbr-controller-contract"
 RECOVERY_BINARY="$BUILD/tcp-shift-p6-bbr-recovery-contract"
+TIMEOUT_BINARY="$BUILD/tcp-shift-p6-bbr-timeout-contract"
 HOOK_BINARY="$BUILD/tcp-shift-p6-lwip-recovery-observation-contract"
 STUB="$BUILD/stub"
 
@@ -33,6 +34,20 @@ ${CC:-cc} \
     "$ROOT/src/cc/bbr_recovery.c" \
     "$ROOT/src/tests/bbr_recovery_test.c" \
     -o "$RECOVERY_BINARY"
+
+${CC:-cc} \
+    -std=c11 \
+    -Wall -Wextra -Wpedantic -Werror \
+    -ffreestanding -fno-builtin \
+    -I"$ROOT/src" \
+    "$ROOT/src/cc/bbr.c" \
+    "$ROOT/src/cc/bbr_pacing.c" \
+    "$ROOT/src/cc/bbr_drain.c" \
+    "$ROOT/src/cc/bbr_probe.c" \
+    "$ROOT/src/cc/bbr_recovery.c" \
+    "$ROOT/src/cc/bbr_controller.c" \
+    "$ROOT/src/tests/bbr_timeout_test.c" \
+    -o "$TIMEOUT_BINARY"
 
 cat > "$STUB/lwip/opt.h" <<'EOF'
 #ifndef LWIP_OPT_H
@@ -85,6 +100,14 @@ grep -F 'bbr_recovery=ok packet_conservation=first_round ' \
 grep -F 'restore=prior_cwnd sndbuf_expand=3x units=bytes' \
     "$BUILD/recovery-summary.txt" >/dev/null
 
+"$TIMEOUT_BINARY" | tee "$BUILD/timeout-summary.txt"
+grep -F 'bbr_controller_timeout=ok loss_state=preserve-mode ' \
+    "$BUILD/timeout-summary.txt" >/dev/null
+grep -F 'full_bw_baseline=reset full_bw_reached=preserved ' \
+    "$BUILD/timeout-summary.txt" >/dev/null
+grep -F 'cwnd=post-loss-inflight-plus-one-mss pacing=preserved' \
+    "$BUILD/timeout-summary.txt" >/dev/null
+
 "$HOOK_BINARY" | tee "$BUILD/recovery-observation-summary.txt"
 grep -F 'lwip_recovery_observation=ok enter=handled-fast-loss ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
@@ -97,6 +120,7 @@ printf '%s\n' \
     'p6i_bbr_recovery=packet-conservation-model-qualified' \
     'p6i_lwip_recovery_observation=hook-state-qualified' \
     'p6i_bbr_recovery_consumption=internal-controller-qualified' \
+    'p6j_bbr_timeout=loss-state-model-qualified' \
+    'p6j_timeout_post_loss_inflight=transport-observation-required' \
     'p6j_lwip_bbr_binding=pending' \
-    'p6j_timeout_semantics=pending' \
     | tee "$BUILD/reference.txt"

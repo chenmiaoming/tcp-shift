@@ -16,6 +16,7 @@ on:
       - 'src/tests/bbr_drain_policy_test.c'
       - 'src/tests/bbr_probe_policy_test.c'
       - 'src/tests/bbr_controller_test.c'
+      - 'src/tests/bbr_timeout_test.c'
       - 'src/tests/bbr_delivery_snapshot_test.c'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p6-bbr-startup-policy-contract.sh'
