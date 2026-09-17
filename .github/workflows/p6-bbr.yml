@@ -10,6 +10,9 @@ on:
       - 'src/cc/**'
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_adapter.h'
+      - 'src/lwip/cc_bbr_internal.c'
+      - 'src/lwip/tcp_memory.c'
+      - 'src/lwip/tcp_memory.h'
       - 'src/lwipopts.h'
       - 'src/tests/bbr_model_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
@@ -18,12 +21,14 @@ on:
       - 'src/tests/bbr_controller_test.c'
       - 'src/tests/bbr_timeout_test.c'
       - 'src/tests/bbr_delivery_snapshot_test.c'
+      - 'src/tests/bbr_lwip_binding_test.c'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p6-bbr-startup-policy-contract.sh'
       - 'scripts/p6-bbr-drain-policy-contract.sh'
       - 'scripts/p6-bbr-probe-policy-contract.sh'
       - 'scripts/p6-bbr-controller-contract.sh'
       - 'scripts/p6-delivery-snapshot-contract.sh'
+      - 'scripts/p6-bbr-lwip-binding-contract.sh'
       - 'scripts/validate-p4-cc.sh'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
@@ -116,20 +121,26 @@ jobs:
         run: |
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p6-delivery-snapshot-contract.sh
+          sh -n scripts/p6-bbr-lwip-binding-contract.sh
 
       - name: Build pinned lwIP delivery adapter
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build --target tcp_shift_lwip_cc_adapter --parallel
+          cmake --build .build --target tcp_shift_lwip_cc_adapter tcp_shift_lwip_tcp_memory --parallel
 
       - name: Qualify cumulative delivered snapshots
         run: sh scripts/p6-delivery-snapshot-contract.sh
+
+      - name: Qualify internal BBR lwIP ACK binding
+        run: sh scripts/p6-bbr-lwip-binding-contract.sh
 
       - name: Upload P6c snapshot diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tcp-shift-p6-delivery-snapshot
-          path: .build/p6-delivery-snapshot-summary.txt
+          path: |
+            .build/p6-delivery-snapshot-summary.txt
+            .build/p6-bbr-lwip-binding-summary.txt
           if-no-files-found: warn
