@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 PAYLOAD_BYTES=${TCP_SHIFT_P5_PAYLOAD_BYTES:-262144}
 METADATA_BYTES_PER_SLOT=${TCP_SHIFT_P5_METADATA_BYTES_PER_SLOT:-56}
+CONFIG_CONTRACT=${TCP_SHIFT_P5_CONFIG_CONTRACT:-$BUILD/tcp-shift-config-contract}
 MODE=${1:-normal}
 
 fail()
@@ -35,6 +36,32 @@ field_from_line()
     ' "$file")
     case "$value" in
         ''|*[!0-9]*) fail "missing/invalid ${key} in $file" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+config_field()
+{
+    key=$1
+    [ -x "$CONFIG_CONTRACT" ] ||
+        fail "missing executable config contract: $CONFIG_CONTRACT"
+    value=$($CONFIG_CONTRACT | awk -v key="$key" '
+        $1 == "config_contract=ok" {
+            for (i = 2; i <= NF; i++) {
+                split($i, pair, "=")
+                if (pair[1] == key) {
+                    value = pair[2]
+                }
+            }
+        }
+        END {
+            if (value ~ /^[0-9]+$/) {
+                print value
+            }
+        }
+    ')
+    case "$value" in
+        ''|*[!0-9]*) fail "missing/invalid ${key} from config contract" ;;
     esac
     printf '%s\n' "$value"
 }
@@ -74,6 +101,10 @@ check_delivery_and_rate()
     live=$(delivery_field live_slots "$runtime")
     peak=$(delivery_field peak_slots_per_flow "$runtime")
     capacity=$(delivery_field peak_capacity_slots_per_flow "$runtime")
+    capacity_limit=$(config_field tcp_snd_queuelen)
+    if [ "$capacity_limit" -gt 65535 ]; then
+        capacity_limit=65535
+    fi
 
     samples=$(rate_field samples "$runtime")
     valid=$(rate_field valid_samples "$runtime")
@@ -102,8 +133,8 @@ check_delivery_and_rate()
     [ "$peak" -gt 0 ] || fail "no peak metadata residency observed"
     [ "$capacity" -ge "$peak" ] ||
         fail "capacity $capacity below peak live slots $peak"
-    [ "$capacity" -le 90 ] ||
-        fail "metadata capacity $capacity exceeds current TCP_SND_QUEUELEN=90"
+    [ "$capacity" -le "$capacity_limit" ] ||
+        fail "metadata capacity $capacity exceeds build TCP_SND_QUEUELEN=$capacity_limit"
 
     [ "$samples" -gt 0 ] || fail "no rate samples"
     [ "$valid" -gt 0 ] || fail "no valid rate samples"
@@ -124,9 +155,9 @@ check_delivery_and_rate()
             fail "RTO workload did not produce a retransmitted rate candidate"
     fi
 
-    printf 'mode=%s payload_bytes=%s first_tx_events=%s retransmit_events=%s acked_segment_events=%s delivered_payload_bytes=%s metadata_bytes_per_slot=%s peak_slots_per_flow=%s peak_capacity_slots_per_flow=%s live_slots=%s rate_samples=%s valid_rate_samples=%s invalid_rate_samples=%s retransmitted_rate_samples=%s max_rate_bytes_per_sec=%s last_interval_ns=%s last_ack_interval_ns=%s sampler=ok\n' \
+    printf 'mode=%s payload_bytes=%s first_tx_events=%s retransmit_events=%s acked_segment_events=%s delivered_payload_bytes=%s metadata_bytes_per_slot=%s peak_slots_per_flow=%s peak_capacity_slots_per_flow=%s metadata_capacity_limit_slots=%s live_slots=%s rate_samples=%s valid_rate_samples=%s invalid_rate_samples=%s retransmitted_rate_samples=%s max_rate_bytes_per_sec=%s last_interval_ns=%s last_ack_interval_ns=%s sampler=ok\n' \
         "$MODE" "$delivered" "$first_tx" "$retransmit" "$acked" \
-        "$delivered" "$bytes_per_slot" "$peak" "$capacity" "$live" \
+        "$delivered" "$bytes_per_slot" "$peak" "$capacity" "$capacity_limit" "$live" \
         "$samples" "$valid" "$invalid" "$retrans_samples" "$max_rate" \
         "$interval" "$ack_interval"
 }
