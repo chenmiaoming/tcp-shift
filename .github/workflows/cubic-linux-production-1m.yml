@@ -1,0 +1,143 @@
+name: Production CUBIC pacing parity 1 MiB
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cubic-linux-production-1m.yml'
+      - 'scripts/cubic-linux-benchmark.sh'
+      - 'src/lwipopts.h'
+      - 'src/config_contract.c'
+      - 'src/cc/transport_pacing.c'
+      - 'src/cc/transport_pacing.h'
+      - 'src/cc/cubic.c'
+      - 'src/cc/cubic.h'
+      - 'src/cc/cubic_hystart.c'
+      - 'src/cc/cubic_controller.c'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_adapter.h'
+      - 'src/lwip/cc_selector.c'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compare-linux-cubic-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp-small-buffer
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 4194304
+            queue_pkts: 18
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 4194304
+            queue_pkts: 69
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 8388608
+            queue_pkts: 857
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate benchmark harness
+        run: sh -n scripts/cubic-linux-benchmark.sh
+
+      - name: Build 1 MiB production runtime
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-production-1m \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
+          cmake --build .build-production-1m \
+            --target tcp-shift-config-contract tcp-shift-p2 \
+            --parallel
+          .build-production-1m/tcp-shift-config-contract | tee .build-production-1m/config-contract.txt
+          grep -F 'tcp_snd_buf=1048576' .build-production-1m/config-contract.txt
+
+      - name: Compare production tcp-shift CUBIC with Linux tcp_cubic
+        run: |
+          sudo env \
+            TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-production-1m/tcp-shift-p2" \
+            TCP_SHIFT_CUBIC_BENCH_CASE="production-1m-${{ matrix.case }}" \
+            TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_CUBIC_BENCH_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_CUBIC_BENCH_LOSS_PCT=0 \
+            TCP_SHIFT_CUBIC_BENCH_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_CUBIC_BENCH_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_CUBIC_BENCH_OUT="$PWD/.build/cubic-linux-production-1m/${{ matrix.case }}" \
+            sh scripts/cubic-linux-benchmark.sh
+
+      - name: Assert production pacing execution
+        run: |
+          runtime=".build/cubic-linux-production-1m/${{ matrix.case }}/tcp-shift/runtime.stderr"
+          grep -E 'tcp-shift-p2-pacing: .*deferrals=[1-9][0-9]*' "$runtime"
+          grep -E 'tcp-shift-p2-pacing: .*scheduler_errors=0' "$runtime"
+          grep -E 'tcp-shift-p2-pacing: .*last_rate_bytes_per_sec=[1-9][0-9]*' "$runtime"
+
+      - name: Publish benchmark summary
+        if: always()
+        run: |
+          root=".build/cubic-linux-production-1m/${{ matrix.case }}"
+          {
+            echo "## 1 MiB production CUBIC: ${{ matrix.case }}"
+            if [ -f "$root/summary.txt" ]; then
+              echo '```text'
+              cat "$root/summary.txt"
+              echo '```'
+            fi
+            if [ -f "$root/tcp-shift/runtime.stderr" ]; then
+              echo
+              echo '### Production pacing telemetry'
+              echo '```text'
+              grep 'tcp-shift-p2-pacing:' "$root/tcp-shift/runtime.stderr" || true
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubic-linux-production-1m-${{ matrix.case }}
+          path: |
+            .build-production-1m/config-contract.txt
+            .build/cubic-linux-production-1m/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true

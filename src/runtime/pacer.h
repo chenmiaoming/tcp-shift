@@ -4,6 +4,137 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Per-flow transport pacing clock.
+ *
+ * Congestion control owns the target rate; this state owns only the conversion
+ * from bytes/rate into send eligibility timestamps. max_catch_up_bytes bounds
+ * credit accumulated while the event loop is late so a delayed timer cannot
+ * turn into an unbounded burst. A value of zero disables catch-up entirely.
+ *
+ * quantum_bytes is a separate bounded batching allowance. Once a pacing
+ * deadline becomes eligible, at most one quantum may pass without consulting
+ * another deadline. The virtual clock is still advanced by each transmitted
+ * byte, so batching changes packet grouping rather than the long-term rate.
+ */
+struct tcp_shift_flow_pacer {
+    uint64_t rate_bytes_per_sec;
+    uint64_t next_send_ns;
+    uint32_t max_catch_up_bytes;
+    uint32_t quantum_bytes;
+    uint32_t quantum_remaining_bytes;
+    uint64_t tx_events;
+    uint64_t tx_bytes;
+    uint64_t catch_up_clamps;
+    uint64_t quantum_grants;
+};
+
+void tcp_shift_flow_pacer_init(struct tcp_shift_flow_pacer *flow,
+                               uint32_t max_catch_up_bytes);
+void tcp_shift_flow_pacer_reset(struct tcp_shift_flow_pacer *flow);
+void tcp_shift_flow_pacer_set_rate(struct tcp_shift_flow_pacer *flow,
+                                   uint64_t rate_bytes_per_sec);
+
+/* Update the bounded batch allowance. Changing its size invalidates unused
+ * credit from the previous quantum; publishing the same value is idempotent. */
+static inline void tcp_shift_flow_pacer_set_quantum(
+    struct tcp_shift_flow_pacer *flow,
+    uint32_t quantum_bytes)
+{
+    if (flow == NULL || flow->quantum_bytes == quantum_bytes) {
+        return;
+    }
+    flow->quantum_bytes = quantum_bytes;
+    flow->quantum_remaining_bytes = 0U;
+}
+
+/* Publish a rate and its matching batch target as one transport-policy
+ * transition. A rate change invalidates unused allowance even when the
+ * resulting quantum size happens to be unchanged (for example BBR STARTUP ->
+ * DRAIN while both rates still map to the two-MSS minimum). The already
+ * scheduled absolute deadline is deliberately preserved for nonzero rates. */
+static inline void tcp_shift_flow_pacer_set_rate_quantum(
+    struct tcp_shift_flow_pacer *flow,
+    uint64_t rate_bytes_per_sec,
+    uint32_t quantum_bytes)
+{
+    unsigned rate_changed;
+
+    if (flow == NULL) {
+        return;
+    }
+    rate_changed = flow->rate_bytes_per_sec != rate_bytes_per_sec;
+    tcp_shift_flow_pacer_set_rate(flow, rate_bytes_per_sec);
+    if (rate_changed != 0U || flow->quantum_bytes != quantum_bytes) {
+        flow->quantum_remaining_bytes = 0U;
+    }
+    flow->quantum_bytes = quantum_bytes;
+}
+
+/*
+ * Decide whether one segment may be sent now. Return 1 when eligible, 0 when
+ * the caller must defer until *deadline_ns, and -1 for invalid input.
+ *
+ * Eligibility credit is consumed before the transport send. If the subsequent
+ * send fails, the only consequence is conservative under-use of that quantum;
+ * credit is never created by a failed send. A zero quantum preserves strict
+ * one-segment pacing by granting only the requested segment at each deadline.
+ */
+static inline int tcp_shift_flow_pacer_segment_eligible(
+    struct tcp_shift_flow_pacer *flow,
+    uint64_t now_ns,
+    uint32_t bytes,
+    uint64_t *deadline_ns)
+{
+    uint32_t allowance;
+
+    if (flow == NULL || now_ns == 0U || bytes == 0U || deadline_ns == NULL) {
+        return -1;
+    }
+    *deadline_ns = 0U;
+
+    if (flow->rate_bytes_per_sec == 0U) {
+        return 1;
+    }
+    if (flow->quantum_remaining_bytes >= bytes) {
+        flow->quantum_remaining_bytes -= bytes;
+        return 1;
+    }
+
+    /* Discard a sub-segment tail. Quantum sizing is normally MSS-aligned, and
+     * this keeps a short tail from bypassing a future pacing deadline. */
+    flow->quantum_remaining_bytes = 0U;
+    if (flow->next_send_ns != 0U && flow->next_send_ns > now_ns) {
+        *deadline_ns = flow->next_send_ns;
+        return 0;
+    }
+
+    allowance = flow->quantum_bytes;
+    if (allowance < bytes) {
+        allowance = bytes;
+    }
+    flow->quantum_remaining_bytes = allowance - bytes;
+    flow->quantum_grants++;
+    return 1;
+}
+
+/*
+ * Return the absolute CLOCK_MONOTONIC deadline for the next send. Zero means
+ * pacing is disabled or the raw virtual clock is currently eligible. Callers
+ * using bounded batching should prefer tcp_shift_flow_pacer_segment_eligible().
+ */
+uint64_t tcp_shift_flow_pacer_deadline(const struct tcp_shift_flow_pacer *flow,
+                                       uint64_t now_ns);
+
+/*
+ * Advance the virtual send clock after bytes were handed to the transport.
+ * Returns 0 on success and -1 for invalid input. The caller must still enforce
+ * cwnd/rwnd; this primitive only enforces the requested pacing rate.
+ */
+int tcp_shift_flow_pacer_note_tx(struct tcp_shift_flow_pacer *flow,
+                                 uint64_t now_ns,
+                                 uint32_t bytes);
+
 struct tcp_shift_pacer_event {
     uint64_t deadline_ns;
     uint64_t flow_id;

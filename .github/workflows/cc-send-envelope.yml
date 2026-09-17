@@ -1,0 +1,148 @@
+name: CC send envelope
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cc-send-envelope.yml'
+      - 'scripts/cc-send-envelope-analyze.py'
+      - 'scripts/cc-send-envelope-benchmark.sh'
+      - 'scripts/cubic-linux-benchmark.sh'
+      - 'src/runtime/pacer.c'
+      - 'src/runtime/pacer.h'
+      - 'src/cc/transport_pacing.c'
+      - 'src/cc/transport_pacing.h'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_pacing_qualification.c'
+      - 'src/p2_main.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  envelope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+            queue_pkts: 35
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+            queue_pkts: 69
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+            queue_pkts: 857
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install envelope dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3 \
+            tcpdump
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Validate envelope harness
+        run: |
+          sh -n scripts/cc-send-envelope-benchmark.sh
+          python3 -m py_compile scripts/cc-send-envelope-analyze.py
+
+      - name: Build 1 MiB paced sender profile
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-cc-envelope \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
+          cmake --build .build-cc-envelope \
+            --target tcp-shift-p5c-paced \
+            --parallel
+
+      - name: Capture dynamic pacing envelope
+        run: |
+          out="$PWD/.build/cc-send-envelope/${{ matrix.case }}/linux"
+          sudo env \
+            TCP_SHIFT_SEND_ENVELOPE_BUILD="$PWD/.build-cc-envelope" \
+            TCP_SHIFT_SEND_ENVELOPE_CASE="${{ matrix.case }}" \
+            TCP_SHIFT_SEND_ENVELOPE_MODE=linux \
+            TCP_SHIFT_SEND_ENVELOPE_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_SEND_ENVELOPE_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_SEND_ENVELOPE_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_SEND_ENVELOPE_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_SEND_ENVELOPE_OUT="$out" \
+            sh scripts/cc-send-envelope-benchmark.sh
+
+      - name: Capture 90% cap envelope
+        run: |
+          out="$PWD/.build/cc-send-envelope/${{ matrix.case }}/linux-cap"
+          cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
+          sudo env \
+            TCP_SHIFT_SEND_ENVELOPE_BUILD="$PWD/.build-cc-envelope" \
+            TCP_SHIFT_SEND_ENVELOPE_CASE="${{ matrix.case }}" \
+            TCP_SHIFT_SEND_ENVELOPE_MODE=linux-cap \
+            TCP_SHIFT_SEND_ENVELOPE_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_SEND_ENVELOPE_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_SEND_ENVELOPE_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_SEND_ENVELOPE_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_SEND_ENVELOPE_RATE_CAP_BYTES_PER_SEC="$cap_bytes_per_sec" \
+            TCP_SHIFT_SEND_ENVELOPE_OUT="$out" \
+            sh scripts/cc-send-envelope-benchmark.sh
+
+      - name: Publish send-envelope evidence
+        if: always()
+        run: |
+          root="$PWD/.build/cc-send-envelope/${{ matrix.case }}"
+          sudo chown -R "$USER:$USER" "$root" || true
+          {
+            echo "## tcp-shift send envelope: ${{ matrix.case }}"
+            echo
+            echo "RTT=${{ matrix.rtt_ms }}ms rate=${{ matrix.rate_mbit }}Mbit queue=${{ matrix.queue_pkts }} packets"
+            for mode in linux linux-cap; do
+              if [ -f "$root/$mode/envelope.txt" ]; then
+                echo
+                echo "### $mode"
+                echo '```text'
+                cat "$root/$mode/envelope.txt"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload send-envelope diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-send-envelope-${{ matrix.case }}
+          path: .build/cc-send-envelope/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true

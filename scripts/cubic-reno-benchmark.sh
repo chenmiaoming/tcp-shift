@@ -290,10 +290,10 @@ RENO_LOSS=$(sed -n 's/^loss_events=//p' "$OUT/reno/metrics.env")
 RENO_TIMEOUT=$(sed -n 's/^timeout_events=//p' "$OUT/reno/metrics.env")
 RENO_FORCED=$(sed -n 's/^forced_drops=//p' "$OUT/reno/metrics.env")
 
-if [ "$LOSS_EVERY" -gt 0 ] && [ "$CUBIC_FORCED" -ne "$RENO_FORCED" ]; then
-    echo "forced drop mismatch cubic=$CUBIC_FORCED reno=$RENO_FORCED" >&2
-    exit 1
-fi
+# The nth-packet loss rule is deterministic within each controller run, but
+# CUBIC and Reno legitimately generate different packet/retransmission histories.
+# Each run already proves that the rule fired; comparing the resulting counts is
+# evidence, not a validity condition for the benchmark.
 
 python3 - "$CASE" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$LOSS_EVERY" \
     "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" \

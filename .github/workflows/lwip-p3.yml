@@ -66,11 +66,18 @@ jobs:
           test -c /dev/net/tun
           test -r /proc/self/smaps_rollup
 
-      - name: Build pinned bridge runtime
+      - name: Build pinned bridge runtime and TCP memory contract
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build --target tcp-shift-p2 --parallel
+          cmake --build .build --target tcp-shift-tcp-memory-contract tcp-shift-p2 --parallel
+
+      - name: Validate runtime tcp_wmem and tcp_mem policy
+        run: |
+          .build/tcp-shift-tcp-memory-contract | tee .build/tcp-memory-contract.txt
+          grep -F 'tcp_memory_contract=ok' .build/tcp-memory-contract.txt
+          grep -F 'pressure=ok high=ok autotune=2xcwnd accounting=queued_payload' \
+            .build/tcp-memory-contract.txt
 
       - name: Measure staged idle connection memory
         run: |
@@ -107,6 +114,7 @@ jobs:
         with:
           name: tcp-shift-p3-memory-baseline
           path: |
+            .build/tcp-memory-contract.txt
             .build/p3-memory-baseline
             .build/p3-public-to-backend-residency
             .build/p3-backend-to-public-residency

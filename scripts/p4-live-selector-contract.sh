@@ -18,6 +18,10 @@ CC=${CC:-cc}
     echo "missing built lwIP archive" >&2
     exit 1
 }
+[ -f "$BUILD/libtcp_shift_pacer.a" ] || {
+    echo "missing built pacer archive" >&2
+    exit 1
+}
 
 "$CC" -std=gnu11 -Wall -Wextra -Wpedantic -Werror \
     -I"$ROOT/src" \
@@ -28,6 +32,7 @@ CC=${CC:-cc}
     "$BUILD/libtcp_shift_lwip_cc_adapter.a" \
     "$BUILD/src/cc/libtcp_shift_cc.a" \
     "$BUILD/libtcp_shift_lwip.a" \
+    "$BUILD/libtcp_shift_pacer.a" \
     -o "$OUT"
 
 "$OUT" | tee "$BUILD/p4-live-selector-summary.txt"

@@ -23,8 +23,12 @@ if awk '
     $0 == "#include \"cc/cc.h\"" { next }
     $0 == "#include \"cc/registry.h\"" { next }
     $0 == "#include \"cc/observation.h\"" { next }
+    $0 == "#include \"cc/transport_pacing.h\"" { next }
     $0 == "#include \"cc/reno.h\"" { next }
     $0 == "#include \"cc/bbr.h\"" { next }
+    $0 == "#include \"cc/bbr_probe.h\"" { next }
+    $0 == "#include \"cc/bbr_recovery.h\"" { next }
+    $0 == "#include \"cc/bbr_controller.h\"" { next }
     $0 == "#include \"cc/cubic.h\"" { next }
     { print; bad = 1 }
     END { exit bad ? 0 : 1 }
@@ -53,13 +57,29 @@ grep -F 'cc_registry=ok default=reno available=reno,cubic unavailable=bbr,bbrv3'
 grep -F 'cc_observation=ok srtt_alpha=1/8 time_unit=ns zero_rejected=1' \
     "$OUT/observation-contract.txt" >/dev/null
 
+"$BUILD/standalone/tcp-shift-transport-pacing-contract" \
+    | tee "$OUT/transport-pacing-contract.txt"
+grep -F 'transport_pacing=ok fallback=window_over_srtt ' \
+    "$OUT/transport-pacing-contract.txt" >/dev/null
+grep -F 'controller_rate_precedence=1 startup_rate=linux_pre_srtt' \
+    "$OUT/transport-pacing-contract.txt" >/dev/null
+
+"$BUILD/standalone/tcp-shift-transport-pacing-quantum-contract" \
+    | tee "$OUT/transport-pacing-quantum-contract.txt"
+grep -F 'transport_pacing_quantum=ok shift=10 min_segs=2 max_segs=16 ' \
+    "$OUT/transport-pacing-quantum-contract.txt" >/dev/null
+grep -F 'low_segs=2 edge_segs=2 high_linux_segs=4' \
+    "$OUT/transport-pacing-quantum-contract.txt" >/dev/null
+
 "$BUILD/standalone/tcp-shift-cubic-model-contract" | tee "$OUT/cubic-contract.txt"
 grep -F 'cubic_model_contract=ok beta=7/10 C=2/5 reno_alpha=9/17' \
     "$OUT/cubic-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-hystart-contract" \
     | tee "$OUT/cubic-hystart-contract.txt"
-grep -F 'cubic_hystart=ok low_window=16 min_samples=8 ack_delta_ms=2' \
+grep -F 'cubic_hystartpp=ok rfc=9406 min_samples=8 delay_thresh_ms=4..16' \
+    "$OUT/cubic-hystart-contract.txt" >/dev/null
+grep -F 'css_divisor=4 css_rounds=5 nonpaced_L=8 paced_L=infinity' \
     "$OUT/cubic-hystart-contract.txt" >/dev/null
 
 "$BUILD/standalone/tcp-shift-cubic-controller-contract" \
@@ -93,6 +113,6 @@ fi
 # process residency; later P4/P5/P6 measurements still compare real PSS to P3.
 size "$LIB" | tee "$OUT/archive-size.txt"
 
-printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ncubic_model=ok\ncubic_hystart=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
+printf 'cc_boundary=pure-c\ncontroller_default=reno\nregistry=reno,cubic\nack_observation=ok\ntransport_pacing=ok\ntransport_pacing_quantum=ok\ncubic_model=ok\ncubic_hystartpp=ok\ncubic_controller=ok\nexternal_symbols=0\n' \
     | tee "$OUT/summary.txt"
 echo "P4 standalone congestion-control boundary passed"

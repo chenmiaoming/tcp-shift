@@ -1,0 +1,102 @@
+name: Linux CUBIC send envelope
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/linux-cubic-send-envelope.yml'
+      - 'scripts/linux-cubic-send-envelope.sh'
+      - 'scripts/cc-send-envelope-analyze.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  envelope-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+            queue_pkts: 35
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+            queue_pkts: 69
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+            queue_pkts: 857
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install Linux envelope dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ethtool \
+            iproute2 \
+            kmod \
+            python3 \
+            tcpdump
+          sudo modprobe ifb || true
+
+      - name: Validate Linux envelope harness
+        run: |
+          sh -n scripts/linux-cubic-send-envelope.sh
+          python3 -m py_compile scripts/cc-send-envelope-analyze.py
+
+      - name: Capture Linux sch_fq send envelope
+        env:
+          TCP_SHIFT_LINUX_ENVELOPE_CASE: ${{ matrix.case }}
+          TCP_SHIFT_LINUX_ENVELOPE_RTT_MS: ${{ matrix.rtt_ms }}
+          TCP_SHIFT_LINUX_ENVELOPE_RATE_MBIT: ${{ matrix.rate_mbit }}
+          TCP_SHIFT_LINUX_ENVELOPE_PAYLOAD_BYTES: ${{ matrix.payload_bytes }}
+          TCP_SHIFT_LINUX_ENVELOPE_QUEUE_PKTS: ${{ matrix.queue_pkts }}
+          TCP_SHIFT_LINUX_ENVELOPE_OUT: .build/linux-cubic-envelope/${{ matrix.case }}
+        run: |
+          sudo --preserve-env=TCP_SHIFT_LINUX_ENVELOPE_CASE,TCP_SHIFT_LINUX_ENVELOPE_RTT_MS,TCP_SHIFT_LINUX_ENVELOPE_RATE_MBIT,TCP_SHIFT_LINUX_ENVELOPE_PAYLOAD_BYTES,TCP_SHIFT_LINUX_ENVELOPE_QUEUE_PKTS,TCP_SHIFT_LINUX_ENVELOPE_OUT \
+            sh scripts/linux-cubic-send-envelope.sh
+
+      - name: Publish Linux envelope evidence
+        if: always()
+        run: |
+          root=.build/linux-cubic-envelope/${{ matrix.case }}
+          sudo chown -R "$USER:$USER" "$root" 2>/dev/null || true
+          {
+            echo "## Linux CUBIC sch_fq send envelope: ${{ matrix.case }}"
+            echo
+            echo "RTT=${{ matrix.rtt_ms }}ms rate=${{ matrix.rate_mbit }}Mbit queue=${{ matrix.queue_pkts }} packets"
+            for file in summary.txt envelope.txt; do
+              if [ -f "$root/$file" ]; then
+                echo
+                echo '```text'
+                cat "$root/$file"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux envelope evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cubic-send-envelope-${{ matrix.case }}
+          path: .build/linux-cubic-envelope/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true

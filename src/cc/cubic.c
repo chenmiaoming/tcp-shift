@@ -180,6 +180,29 @@ static void tcp_shift_cubic_publish(
     policy->pacing_rate_bytes_per_sec = 0U;
 }
 
+static void tcp_shift_cubic_finish_hystartpp(struct tcp_shift_cubic_model *model)
+{
+    if (model->hystart_exit_pending == 0U) {
+        return;
+    }
+
+    /* RFC 9438 section 4.10 special case: HyStart++ can leave the initial slow
+     * start without loss, so define Wmax at the handoff point and use K=0. */
+    model->ssthresh_q16 = model->cwnd_q16;
+    model->cwnd_prior_q16 = model->cwnd_q16;
+    model->w_max_q16 = model->cwnd_q16;
+    model->has_w_max = 1U;
+    model->k_q10 = 0U;
+    model->epoch_active = 0U;
+    model->after_timeout = 0U;
+    model->hystart_enabled = 0U;
+    model->hystart_css = 0U;
+    model->hystart_ack_css = 0U;
+    model->hystart_exit_pending = 0U;
+    model->hystart_initial_complete = 1U;
+    model->hystart_exit_events++;
+}
+
 static uint64_t tcp_shift_cubic_time_q10(uint64_t time_ns)
 {
     uint64_t seconds = time_ns / TCP_SHIFT_NSEC_PER_SEC;
@@ -397,7 +420,6 @@ int tcp_shift_cubic_model_on_ack(struct tcp_shift_cubic_model *model,
     uint64_t increment_q16;
     uint32_t cwnd_bytes;
     uint32_t increase_bytes;
-    uint32_t slow_start_limit;
     int in_congestion_avoidance;
 
     if (model == NULL || transport == NULL || ack == NULL || policy == NULL ||
@@ -427,6 +449,7 @@ int tcp_shift_cubic_model_on_ack(struct tcp_shift_cubic_model *model,
         model->last_ack_time_ns = now_ns;
         model->ack_events++;
         model->app_limited_acks++;
+        tcp_shift_cubic_finish_hystartpp(model);
         tcp_shift_cubic_publish(model, transport, policy);
         return 0;
     }
@@ -447,11 +470,14 @@ int tcp_shift_cubic_model_on_ack(struct tcp_shift_cubic_model *model,
         cwnd_bytes = tcp_shift_cubic_bytes_from_q16(
             model->cwnd_q16, transport->mss_bytes,
             transport->cwnd_limit_bytes);
-        slow_start_limit = tcp_shift_cubic_mul2_cap(
-            transport->mss_bytes, transport->cwnd_limit_bytes);
-        increase_bytes = ack->acked_bytes < slow_start_limit
-                             ? ack->acked_bytes
-                             : slow_start_limit;
+
+        /* RFC 9406 recommends L=infinity for paced senders. tcp-shift's CUBIC
+         * transport is paced by the shared fallback, so all newly ACKed bytes
+         * may grow cwnd. CSS applies the RFC's conservative 1/4 multiplier. */
+        increase_bytes = ack->acked_bytes;
+        if (model->hystart_ack_css != 0U) {
+            increase_bytes /= TCP_SHIFT_CUBIC_HYSTARTPP_CSS_GROWTH_DIVISOR;
+        }
         if (increase_bytes > transport->cwnd_limit_bytes - cwnd_bytes) {
             cwnd_bytes = transport->cwnd_limit_bytes;
         } else {
@@ -459,6 +485,7 @@ int tcp_shift_cubic_model_on_ack(struct tcp_shift_cubic_model *model,
         }
         model->cwnd_q16 = tcp_shift_cubic_q16_from_bytes(
             cwnd_bytes, transport->mss_bytes);
+        tcp_shift_cubic_finish_hystartpp(model);
         tcp_shift_cubic_publish(model, transport, policy);
         return 0;
     }

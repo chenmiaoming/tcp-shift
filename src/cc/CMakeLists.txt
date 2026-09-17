@@ -12,9 +12,14 @@ endif()
 add_library(tcp_shift_cc STATIC
     cc.c
     observation.c
+    transport_pacing.c
     reno.c
     bbr.c
+    bbr_pacing.c
     bbr_drain.c
+    bbr_probe.c
+    bbr_recovery.c
+    bbr_controller.c
     cubic.c
     cubic_hystart.c
     cubic_controller.c
@@ -44,6 +49,22 @@ if(TCP_SHIFT_CC_STANDALONE)
         -Wall -Wextra -Wpedantic -Werror
     )
     target_link_libraries(tcp-shift-cc-observation-contract PRIVATE tcp_shift_cc)
+
+    add_executable(tcp-shift-transport-pacing-contract
+        ../tests/transport_pacing_test.c
+    )
+    target_compile_options(tcp-shift-transport-pacing-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-transport-pacing-contract PRIVATE tcp_shift_cc)
+
+    add_executable(tcp-shift-transport-pacing-quantum-contract
+        ../tests/transport_pacing_quantum_test.c
+    )
+    target_compile_options(tcp-shift-transport-pacing-quantum-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-transport-pacing-quantum-contract PRIVATE tcp_shift_cc)
 
     add_executable(tcp-shift-cubic-model-contract
         ../tests/cubic_model_test.c
