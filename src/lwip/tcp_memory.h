@@ -67,6 +67,8 @@ struct tcp_shift_tcp_memory_manager {
 struct tcp_shift_tcp_memory_flow {
     struct tcp_shift_tcp_memory_manager *manager;
     uint32_t capacity_bytes;
+    uint32_t sndbuf_expand_num;
+    uint32_t sndbuf_expand_den;
     uint64_t queued_bytes;
 };
 
@@ -95,6 +97,14 @@ int tcp_shift_tcp_memory_flow_init(
     struct tcp_shift_tcp_memory_manager *manager,
     struct tcp_shift_tcp_memory_flow *flow,
     struct tcp_pcb *pcb);
+
+/* Set a controller-provided sender-buffer expansion requirement. Allocation,
+ * wmem.max and global tcp_mem pressure/high-water enforcement remain owned by
+ * the transport memory manager. */
+int tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+    struct tcp_shift_tcp_memory_flow *flow,
+    uint32_t expand_num,
+    uint32_t expand_den);
 
 int tcp_shift_tcp_memory_flow_maybe_grow(
     struct tcp_shift_tcp_memory_flow *flow,
@@ -126,6 +136,14 @@ err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
                                       u16_t len,
                                       u8_t apiflags);
 void tcp_shift_lwip_tcp_memory_sent(struct tcp_pcb *pcb, tcp_sent_fn sent);
+
+/* Apply a per-PCB controller hint. Calling this before the first tcp_write is
+ * supported: the memory extension is created lazily and still starts from the
+ * configured runtime initial sndbuf. */
+int tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
+    struct tcp_pcb *pcb,
+    uint32_t expand_num,
+    uint32_t expand_den);
 
 const struct tcp_shift_tcp_memory_config *
 tcp_shift_lwip_tcp_memory_process_config(void);

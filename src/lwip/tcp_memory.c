@@ -345,8 +345,24 @@ int tcp_shift_tcp_memory_flow_init(
     memset(flow, 0, sizeof(*flow));
     flow->manager = manager;
     flow->capacity_bytes = manager->config.wmem.initial_bytes;
+    flow->sndbuf_expand_num = TCP_SHIFT_TCP_SNDBUF_EXPAND_NUM;
+    flow->sndbuf_expand_den = TCP_SHIFT_TCP_SNDBUF_EXPAND_DEN;
     pcb->snd_buf = (tcpwnd_size_t)flow->capacity_bytes;
     manager->stats.flow_inits++;
+    return 0;
+}
+
+int tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+    struct tcp_shift_tcp_memory_flow *flow,
+    uint32_t expand_num,
+    uint32_t expand_den)
+{
+    if (flow == NULL || flow->manager == NULL ||
+        expand_num == 0U || expand_den == 0U) {
+        return -1;
+    }
+    flow->sndbuf_expand_num = expand_num;
+    flow->sndbuf_expand_den = expand_den;
     return 0;
 }
 
@@ -489,6 +505,8 @@ void tcp_shift_tcp_memory_flow_release(
     manager->stats.charged_bytes -= amount;
     flow->queued_bytes = 0U;
     flow->capacity_bytes = 0U;
+    flow->sndbuf_expand_num = 0U;
+    flow->sndbuf_expand_den = 0U;
     flow->manager = NULL;
     manager->stats.flow_releases++;
     tcp_shift_tcp_memory_update_pressure(manager);
@@ -646,8 +664,8 @@ err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
     }
     if (tcp_shift_tcp_memory_flow_maybe_grow(
             &ext->flow, pcb,
-            TCP_SHIFT_TCP_SNDBUF_EXPAND_NUM,
-            TCP_SHIFT_TCP_SNDBUF_EXPAND_DEN) < 0) {
+            ext->flow.sndbuf_expand_num,
+            ext->flow.sndbuf_expand_den) < 0) {
         return ERR_MEM;
     }
     if (tcp_shift_tcp_memory_flow_can_write(&ext->flow, pcb, len) == 0) {
@@ -688,6 +706,24 @@ void tcp_shift_lwip_tcp_memory_sent(struct tcp_pcb *pcb, tcp_sent_fn sent)
     }
     ext->app_sent = sent;
     tcp_sent(pcb, tcp_shift_lwip_tcp_memory_sent_dispatch);
+}
+
+int tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
+    struct tcp_pcb *pcb,
+    uint32_t expand_num,
+    uint32_t expand_den)
+{
+    struct tcp_shift_lwip_tcp_memory_ext *ext;
+
+    if (pcb == NULL || expand_num == 0U || expand_den == 0U) {
+        return -1;
+    }
+    ext = tcp_shift_lwip_tcp_memory_ensure(pcb);
+    if (ext == NULL) {
+        return -1;
+    }
+    return tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+        &ext->flow, expand_num, expand_den);
 }
 
 const struct tcp_shift_tcp_memory_config *
