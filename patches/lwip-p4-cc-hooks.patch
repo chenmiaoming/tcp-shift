@@ -33,7 +33,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    tcp_shift_lwip_cc_hook_segment_acked(pcb, next, next->len);
      tcp_seg_free(next);
  
-@@ -1238,8 +1239,9 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1238,7 +1239,8 @@ tcp_receive(struct tcp_pcb *pcb)
        /* Reset the "IN Fast Retransmit" flag, since we are no longer
           in fast retransmit. Also reset the congestion window to the
           slow start threshold. */
