@@ -7,6 +7,7 @@ BINARY=${TCP_SHIFT_P6_BBR_LONG_BINARY:-"$BUILD/tcp-shift-p6-bbr"}
 RTT_MS=${TCP_SHIFT_P6_BBR_LONG_RTT_MS:-40}
 RATE_MBIT=${TCP_SHIFT_P6_BBR_LONG_RATE_MBIT:-10}
 PAYLOAD_BYTES=${TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES:-4194304}
+LOSS_PCT=${TCP_SHIFT_P6_BBR_LONG_LOSS_PCT:-0}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -43,6 +44,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 case "$RTT_MS" in ''|*[!0-9]*) echo "RTT_MS must be an integer" >&2; exit 1;; esac
 case "$RATE_MBIT" in ''|*[!0-9]*) echo "RATE_MBIT must be an integer" >&2; exit 1;; esac
 case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&2; exit 1;; esac
+case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative decimal" >&2; exit 1;; esac
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
     echo "RTT_MS must be a positive even integer" >&2
     exit 1
@@ -160,8 +162,16 @@ ip link set "$IFB_NAME" up
 tc qdisc add dev "$TUN_NAME" handle ffff: ingress
 tc filter add dev "$TUN_NAME" parent ffff: protocol ip prio 1 u32 \
     match u32 0 0 action mirred egress redirect dev "$IFB_NAME"
-tc qdisc replace dev "$IFB_NAME" root netem \
-    delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
+    LOSS_MODE=none
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+else
+    LOSS_MODE=random
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
+        loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
+fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
@@ -216,13 +226,23 @@ tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
 
 ifb_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/ifb-qdisc-after.txt" | head -n 1)
 tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.txt" | head -n 1)
-[ -n "$ifb_drops" ] && [ "$ifb_drops" -eq 0 ] &&
-[ -n "$tun_drops" ] && [ "$tun_drops" -eq 0 ] || {
+[ -n "$ifb_drops" ] && [ -n "$tun_drops" ] || {
     cat "$OUT/ifb-qdisc-after.txt" >&2 || true
     cat "$OUT/tun-qdisc-after.txt" >&2 || true
-    echo "P6 BBR clean long-flow qdisc dropped packets: ifb=${ifb_drops:-missing} tun=${tun_drops:-missing}" >&2
+    echo "P6 BBR long-flow qdisc counters missing" >&2
     exit 1
 }
+if [ "$LOSS_MODE" = none ]; then
+    [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+        echo "P6 BBR clean long-flow qdisc dropped packets: ifb=$ifb_drops tun=$tun_drops" >&2
+        exit 1
+    }
+else
+    [ "$ifb_drops" -ge 1 ] && [ "$tun_drops" -eq 0 ] || {
+        echo "P6 BBR random-loss path did not isolate data loss: ifb=$ifb_drops tun=$tun_drops" >&2
+        exit 1
+    }
+fi
 
 sleep 0.2
 kill -TERM "$RUNTIME_PID"
@@ -249,12 +269,22 @@ loss_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_loss_events=\([0-9][0-9]
 timeout_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_timeout_events=\([0-9][0-9]*\).*/\1/p')
 cwnd_bytes=$(printf '%s\n' "$events" | sed -n 's/.* cc_last_cwnd=\([0-9][0-9]*\).*/\1/p')
 [ -n "$policy_updates" ] && [ "$policy_updates" -ge 1 ] &&
-[ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
-[ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] &&
+[ -n "$loss_events" ] && [ -n "$timeout_events" ] &&
 [ -n "$cwnd_bytes" ] && [ "$cwnd_bytes" -ge 1 ] || {
     echo "invalid BBR long-flow controller telemetry" >&2
     exit 1
 }
+if [ "$LOSS_MODE" = none ]; then
+    [ "$loss_events" -eq 0 ] && [ "$timeout_events" -eq 0 ] || {
+        echo "clean BBR long-flow entered recovery: loss=$loss_events timeout=$timeout_events" >&2
+        exit 1
+    }
+else
+    [ $((loss_events + timeout_events)) -ge 1 ] || {
+        echo "random-loss BBR long-flow produced no recovery observation" >&2
+        exit 1
+    }
+fi
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
 delivered_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* delivered_payload_bytes=\([0-9][0-9]*\).*/\1/p')
@@ -263,13 +293,24 @@ metadata_failures=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_alloc_fail
 metadata_misses=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_misses=\([0-9][0-9]*\).*/\1/p')
 live_slots=$(printf '%s\n' "$delivery" | sed -n 's/.* live_slots=\([0-9][0-9]*\).*/\1/p')
 [ -n "$delivered_bytes" ] && [ "$delivered_bytes" -eq "$PAYLOAD_BYTES" ] &&
-[ -n "$retransmit_events" ] && [ "$retransmit_events" -eq 0 ] &&
+[ -n "$retransmit_events" ] &&
 [ -n "$metadata_failures" ] && [ "$metadata_failures" -eq 0 ] &&
 [ -n "$metadata_misses" ] && [ "$metadata_misses" -eq 0 ] &&
 [ -n "$live_slots" ] && [ "$live_slots" -eq 0 ] || {
     echo "invalid BBR long-flow delivery telemetry" >&2
     exit 1
 }
+if [ "$LOSS_MODE" = none ]; then
+    [ "$retransmit_events" -eq 0 ] || {
+        echo "clean BBR long-flow retransmitted unexpectedly: $retransmit_events" >&2
+        exit 1
+    }
+else
+    [ "$retransmit_events" -ge 1 ] || {
+        echo "random-loss BBR long-flow observed no retransmission" >&2
+        exit 1
+    }
+fi
 
 rate=$(grep -m1 'tcp-shift-p2-rate:' "$OUT/runtime.stderr")
 valid_samples=$(printf '%s\n' "$rate" | sed -n 's/.* valid_samples=\([0-9][0-9]*\).*/\1/p')
@@ -291,13 +332,17 @@ heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*
 [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
 [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
-[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$PAYLOAD_BYTES" ] &&
+[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -ge "$PAYLOAD_BYTES" ] &&
 [ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
 [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
 [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
     echo "invalid BBR long-flow shared-pacer telemetry" >&2
     exit 1
 }
+if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
+    echo "clean BBR long-flow paced unexpected bytes: $pacing_tx_bytes" >&2
+    exit 1
+fi
 
 client_sha=$(sed -n 's/.* sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' "$OUT/client.stdout")
 backend_sha=$(sed -n 's/.* sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' "$OUT/backend.stdout")
@@ -307,13 +352,13 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'p6_bbr_long_flow=ok base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
-    "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" \
+    "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
     "$ifb_drops" "$tun_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
-printf 'base_rtt_ms=%s\nrate_mbit=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'base_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
