@@ -384,6 +384,7 @@ jobs:
       - name: Compare same-stack loss behavior
         run: |
           root="$PWD/.build/p6-bbr-loss/moderate-260ms"
+          sudo chown "$USER:$USER" "$root"
           sudo chown -R "$USER:$USER" "$root/tcp-shift" "$root/cubic"
           python3 scripts/p6-bbr-loss-same-stack-evaluate.py \
             "$root/tcp-shift/summary.txt" \
