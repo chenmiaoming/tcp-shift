@@ -9,7 +9,9 @@ on:
       - 'scripts/p6-bbr-long-flow.sh'
       - 'scripts/p6-bbr-multiflow.sh'
       - 'scripts/linux-cubic-pacing-reference.sh'
+      - 'scripts/linux-bbr-multiflow-reference.sh'
       - 'scripts/p6-bbr-reference-evaluate.py'
+      - 'scripts/p6-bbr-multiflow-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -152,7 +154,7 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
 
-  internal-multiflow:
+  multiflow-reference:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -166,6 +168,7 @@ jobs:
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
+            ethtool \
             git \
             iproute2 \
             kmod \
@@ -174,8 +177,11 @@ jobs:
           sudo modprobe ifb || true
           test -c /dev/net/tun
 
-      - name: Validate multi-flow harness
-        run: sh -n scripts/p6-bbr-multiflow.sh
+      - name: Validate multi-flow harnesses
+        run: |
+          sh -n scripts/p6-bbr-multiflow.sh
+          sh -n scripts/linux-bbr-multiflow-reference.sh
+          python3 -m py_compile scripts/p6-bbr-multiflow-evaluate.py
 
       - name: Build internal BBR qualification target
         run: |
@@ -195,20 +201,53 @@ jobs:
             TCP_SHIFT_P6_BBR_MULTI_OUT="$PWD/.build/p6-bbr-multiflow/edge-bdp" \
             sh scripts/p6-bbr-multiflow.sh
 
+      - name: Run four Linux BBR flows on the same path model
+        run: |
+          sudo env \
+            TCP_SHIFT_LINUX_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_LINUX_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_LINUX_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_BBR_MULTI_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_LINUX_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_LINUX_BBR_MULTI_OUT="$PWD/.build/linux-bbr-multiflow/edge-bdp" \
+            sh scripts/linux-bbr-multiflow-reference.sh
+
+      - name: Compare multi-flow behavior
+        run: |
+          sudo chown -R "$USER:$USER" \
+            "$PWD/.build/p6-bbr-multiflow/edge-bdp" \
+            "$PWD/.build/linux-bbr-multiflow/edge-bdp"
+          python3 scripts/p6-bbr-multiflow-evaluate.py \
+            "$PWD/.build/p6-bbr-multiflow/edge-bdp/summary.txt" \
+            "$PWD/.build/linux-bbr-multiflow/edge-bdp/summary.txt" \
+            | tee "$PWD/.build/p6-bbr-multiflow/edge-bdp/comparison.txt"
+
       - name: Publish multi-flow evidence
         if: always()
         run: |
-          root=.build/p6-bbr-multiflow/edge-bdp
-          if [ -f "$root/summary.txt" ]; then
-            cat "$root/summary.txt" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            echo "## P6 BBR multi-flow reference"
+            for file in \
+              .build/p6-bbr-multiflow/edge-bdp/summary.txt \
+              .build/linux-bbr-multiflow/edge-bdp/summary.txt \
+              .build/p6-bbr-multiflow/edge-bdp/comparison.txt; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload multi-flow diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: p6-bbr-multiflow-edge-bdp
-          path: .build/p6-bbr-multiflow/edge-bdp
+          path: |
+            .build/p6-bbr-multiflow/edge-bdp
+            .build/linux-bbr-multiflow/edge-bdp
           if-no-files-found: warn
           include-hidden-files: true
 
