@@ -4,6 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 BINARY=${TCP_SHIFT_P6_BBR_LONG_BINARY:-"$BUILD/tcp-shift-p6-bbr"}
+CC=${TCP_SHIFT_P6_BBR_LONG_CC:-bbr-internal}
 RTT_MS=${TCP_SHIFT_P6_BBR_LONG_RTT_MS:-40}
 RATE_MBIT=${TCP_SHIFT_P6_BBR_LONG_RATE_MBIT:-10}
 PAYLOAD_BYTES=${TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES:-4194304}
@@ -131,7 +132,7 @@ grep -F 'backend-ready ' "$OUT/backend.stdout" >/dev/null || {
 }
 
 "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
-    "$PUBLIC_PORT" "$BACKEND_PORT" bbr-internal \
+    "$PUBLIC_PORT" "$BACKEND_PORT" "$CC" \
     > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 RUNTIME_PID=$!
 
@@ -139,7 +140,7 @@ i=0
 while [ "$i" -lt 100 ]; do
     if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
        grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1 &&
-       grep -F 'cc=bbr-internal' "$OUT/runtime.stdout" >/dev/null 2>&1; then
+       grep -F "cc=$CC" "$OUT/runtime.stdout" >/dev/null 2>&1; then
         break
     fi
     kill -0 "$RUNTIME_PID" 2>/dev/null || {
@@ -258,7 +259,7 @@ cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
 
-grep -F 'cc=bbr-internal' "$OUT/runtime.stdout" >/dev/null
+grep -F "cc=$CC" "$OUT/runtime.stdout" >/dev/null
 grep -F 'cc_bindings=1' "$OUT/runtime.stderr" >/dev/null
 grep -F 'cc_bind_failures=0' "$OUT/runtime.stderr" >/dev/null
 grep -F 'cc_controller_errors=0' "$OUT/runtime.stderr" >/dev/null
@@ -352,13 +353,13 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
     "$ifb_drops" "$tun_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
-printf 'base_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
