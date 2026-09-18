@@ -7,6 +7,7 @@ CC=${TCP_SHIFT_LINUX_PACING_CC:-cubic}
 RTT_MS=${TCP_SHIFT_LINUX_PACING_RTT_MS:-10}
 RATE_MBIT=${TCP_SHIFT_LINUX_PACING_RATE_MBIT:-20}
 PAYLOAD_BYTES=${TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES:-8388608}
+LOSS_PCT=${TCP_SHIFT_LINUX_PACING_LOSS_PCT:-0}
 REQUIRE_ZERO_DROPS=${TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS:-0}
 OUT=${TCP_SHIFT_LINUX_PACING_OUT:-.build/linux-cubic-pacing/$CASE-$MODE}
 
@@ -31,6 +32,7 @@ esac
 case "$RTT_MS" in ''|*[!0-9]*) echo "RTT_MS must be an integer" >&2; exit 1;; esac
 case "$RATE_MBIT" in ''|*[!0-9]*) echo "RATE_MBIT must be an integer" >&2; exit 1;; esac
 case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&2; exit 1;; esac
+case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative decimal" >&2; exit 1;; esac
 case "$REQUIRE_ZERO_DROPS" in 0|1) ;; *) echo "REQUIRE_ZERO_DROPS must be 0 or 1" >&2; exit 1;; esac
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
     echo "RTT_MS must be a positive even integer" >&2
@@ -100,9 +102,21 @@ fi
 ip netns exec "$NS_CLIENT" tc qdisc replace dev "$VETH_CLIENT" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
+if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
+    LOSS_MODE=none
+else
+    LOSS_MODE=random
+fi
+
 if [ "$MODE" = netem ]; then
-    ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem \
-        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+    if [ "$LOSS_MODE" = none ]; then
+        ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem \
+            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+    else
+        ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem \
+            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
+            loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
+    fi
 else
     modprobe ifb >/dev/null 2>&1 || true
     ip link add "$IFB_CLIENT" type ifb
@@ -113,8 +127,14 @@ else
     ip netns exec "$NS_CLIENT" tc filter add dev "$VETH_CLIENT" parent ffff: \
         protocol ip prio 1 u32 match u32 0 0 \
         action mirred egress redirect dev "$IFB_CLIENT"
-    ip netns exec "$NS_CLIENT" tc qdisc replace dev "$IFB_CLIENT" root netem \
-        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+    if [ "$LOSS_MODE" = none ]; then
+        ip netns exec "$NS_CLIENT" tc qdisc replace dev "$IFB_CLIENT" root netem \
+            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+    else
+        ip netns exec "$NS_CLIENT" tc qdisc replace dev "$IFB_CLIENT" root netem \
+            delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
+            loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
+    fi
 fi
 
 ip netns exec "$NS_SERVER" tc -s qdisc show dev "$VETH_SERVER" > "$OUT/server-qdisc-before.txt"
@@ -271,20 +291,26 @@ if [ "$REQUIRE_ZERO_DROPS" -eq 1 ]; then
         echo "Linux $CC clean path qdisc dropped packets: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
         exit 1
     }
+elif [ "$LOSS_MODE" = random ]; then
+    [ "$DATA_QDISC_DROPS" -ge 1 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
+        echo "Linux $CC random-loss path did not isolate data loss: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
+        exit 1
+    }
 fi
 
 FINAL_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/server.txt" | tail -n 1)
 [ -n "$FINAL_RETRANS" ] || { echo "missing final retransmission count" >&2; exit 1; }
 
-python3 - "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" \
+python3 - "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" \
     "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" \
     "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
 import statistics
 import sys
 from pathlib import Path
 
-(case, mode, cc, rtt_ms, rate_mbit, bdp, queue_pkts, final_retrans,
- data_qdisc_drops, ack_qdisc_drops, client_path, samples_path) = sys.argv[1:]
+(case, mode, cc, rtt_ms, rate_mbit, loss_pct, loss_mode, bdp, queue_pkts,
+ final_retrans, data_qdisc_drops, ack_qdisc_drops, client_path,
+ samples_path) = sys.argv[1:]
 client = Path(client_path).read_text(encoding="utf-8").strip()
 goodput = float(client.split("goodput_mbps=")[1].split()[0])
 rows = []
@@ -301,7 +327,8 @@ rtts = [int(row["rtt_us"]) for row in rows if int(row["rtt_us"]) > 0]
 key = "linux_cubic_pacing_reference" if cc == "cubic" else "linux_bbr_pacing_reference"
 print(
     f"{key}=ok cc={cc} case={case} mode={mode} base_rtt_ms={rtt_ms} "
-    f"rate_mbit={rate_mbit} bdp_bytes={bdp} queue_pkts={queue_pkts} "
+    f"rate_mbit={rate_mbit} loss_pct={loss_pct} loss_mode={loss_mode} "
+    f"bdp_bytes={bdp} queue_pkts={queue_pkts} "
     f"goodput_mbps={goodput:.6f} samples={len(rows)} "
     f"pacing_rate_min_Bps={min(pacing)} pacing_rate_median_Bps={int(statistics.median(pacing))} "
     f"pacing_rate_max_Bps={max(pacing)} pacing_rate_final_Bps={pacing[-1]} "
@@ -313,8 +340,8 @@ print(
 PY
 
 uname -a > "$OUT/kernel.txt"
-printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
-    "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" \
-    > "$OUT/path.env"
+printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
+    "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" \
+    "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" > "$OUT/path.env"
 
 echo "Linux $CC pacing reference completed: case=$CASE mode=$MODE"
