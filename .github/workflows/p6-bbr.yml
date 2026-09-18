@@ -32,6 +32,7 @@ on:
       - 'scripts/p6-bbr-controller-contract.sh'
       - 'scripts/p6-delivery-snapshot-contract.sh'
       - 'scripts/p6-bbr-lwip-binding-contract.sh'
+      - 'scripts/p6-bbr-long-flow.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
       - 'scripts/validate-p4-cc.sh'
       - 'scripts/fetch-lwip.sh'
@@ -173,6 +174,7 @@ jobs:
       - name: Validate live BBR harness
         run: |
           sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p6-bbr-long-flow.sh
           sh -n scripts/p4-cc-recovery-smoke.sh
 
       - name: Build internal BBR bridge qualification target
@@ -180,6 +182,13 @@ jobs:
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target tcp-shift-p6-bbr --parallel
+
+      - name: Exercise internal BBR long-flow shared pacing
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-long-flow-ci" \
+            sh scripts/p6-bbr-long-flow.sh
 
       - name: Exercise internal BBR fast recovery
         run: |
@@ -213,6 +222,7 @@ jobs:
         with:
           name: tcp-shift-p6-bbr-runtime-recovery
           path: |
+            .build/p6-bbr-long-flow-ci
             .build/p6-bbr-fast-loss-ci
             .build/p6-bbr-rto-ci
             .build/upstream.env
