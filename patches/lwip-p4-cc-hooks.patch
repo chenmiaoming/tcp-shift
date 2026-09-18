@@ -118,7 +118,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
  
  #if TCP_CHECKSUM_ON_COPY
-@@ -1796,18 +1806,26 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1806,26 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
@@ -148,6 +148,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        }
        }
  
+-      pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
 +      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 +       * explicitly owns recovery cwnd (internal BBR) keeps its published
 +       * packet-conservation window instead. */
