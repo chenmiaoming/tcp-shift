@@ -11,7 +11,10 @@ on:
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_adapter.h'
       - 'src/lwip/cc_bbr_internal.c'
+      - 'src/lwip/cc_bbr_accept.c'
       - 'src/lwip/tcp_memory.c'
+      - 'src/bridge/bridge.c'
+      - 'src/p2_main.c'
       - 'src/lwip/tcp_memory.h'
       - 'src/lwipopts.h'
       - 'src/tests/bbr_model_test.c'
@@ -29,6 +32,7 @@ on:
       - 'scripts/p6-bbr-controller-contract.sh'
       - 'scripts/p6-delivery-snapshot-contract.sh'
       - 'scripts/p6-bbr-lwip-binding-contract.sh'
+      - 'scripts/p4-cc-recovery-smoke.sh'
       - 'scripts/validate-p4-cc.sh'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
@@ -144,3 +148,76 @@ jobs:
             .build/p6-delivery-snapshot-summary.txt
             .build/p6-bbr-lwip-binding-summary.txt
           if-no-files-found: warn
+
+
+  runtime-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install live recovery dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            python3
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+
+      - name: Validate live BBR harness
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p4-cc-recovery-smoke.sh
+
+      - name: Build internal BBR bridge qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build --target tcp-shift-p6-bbr --parallel
+
+      - name: Exercise internal BBR fast recovery
+        run: |
+          sudo env \
+            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P4_CC=bbr-internal \
+            TCP_SHIFT_P4_REQUIRE_PACING=1 \
+            TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
+            TCP_SHIFT_P4_OUT="$PWD/.build/p6-bbr-fast-loss-ci" \
+            TCP_SHIFT_P4_TUN_NAME=tsp6bbr0 \
+            TCP_SHIFT_P4_PUBLIC_PORT=18160 \
+            TCP_SHIFT_P4_BACKEND_PORT=19160 \
+            sh scripts/p4-cc-recovery-smoke.sh fast-loss
+
+      - name: Exercise internal BBR RTO recovery
+        run: |
+          sudo env \
+            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P4_CC=bbr-internal \
+            TCP_SHIFT_P4_REQUIRE_PACING=1 \
+            TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
+            TCP_SHIFT_P4_OUT="$PWD/.build/p6-bbr-rto-ci" \
+            TCP_SHIFT_P4_TUN_NAME=tsp6bbr1 \
+            TCP_SHIFT_P4_PUBLIC_PORT=18161 \
+            TCP_SHIFT_P4_BACKEND_PORT=19161 \
+            sh scripts/p4-cc-recovery-smoke.sh rto
+
+      - name: Upload live BBR recovery diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p6-bbr-runtime-recovery
+          path: |
+            .build/p6-bbr-fast-loss-ci
+            .build/p6-bbr-rto-ci
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
+            .build/lwip-p4-cc-hooks.applied.diff
+          if-no-files-found: warn
+          include-hidden-files: true

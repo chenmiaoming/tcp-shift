@@ -150,6 +150,13 @@ int tcp_shift_lwip_cc_internal_bbr_active(
 
 void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
                                        tcp_accept_fn accept);
+
+/* Qualification-only listener wrapper. It chains through the ordinary adapter
+ * bind, then replaces Reno with the internal BBR sidecar before handing the
+ * accepted PCB to bridge code. It is intentionally not used by production
+ * tcp-shift-p2 and does not add BBR to the public selector/CLI. */
+void tcp_shift_lwip_cc_accept_internal_bbr(struct tcp_pcb *pcb,
+                                           tcp_accept_fn accept);
 void tcp_shift_lwip_cc_accept(struct tcp_pcb *pcb, tcp_accept_fn accept);
 void tcp_shift_lwip_cc_accept_fixed_pacing(struct tcp_pcb *pcb,
                                            tcp_accept_fn accept);

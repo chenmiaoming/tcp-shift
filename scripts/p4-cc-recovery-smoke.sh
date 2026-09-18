@@ -7,6 +7,13 @@ MODE=${1:-}
 BINARY=${TCP_SHIFT_P4_BINARY:-"$BUILD/tcp-shift-p2"}
 PAYLOAD_BYTES=${TCP_SHIFT_P4_PAYLOAD_BYTES:-262144}
 CC=${TCP_SHIFT_P4_CC:-reno}
+REQUIRE_PACING=${TCP_SHIFT_P4_REQUIRE_PACING:-0}
+REQUIRE_RETRANSMIT=${TCP_SHIFT_P4_REQUIRE_RETRANSMIT:-0}
+
+case "$REQUIRE_PACING:$REQUIRE_RETRANSMIT" in
+    0:0|0:1|1:0|1:1) ;;
+    *) echo "TCP_SHIFT_P4_REQUIRE_PACING/RETRANSMIT must be 0 or 1" >&2; exit 2 ;;
+esac
 
 case "$MODE" in
     fast-loss)
@@ -290,6 +297,38 @@ timeout_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_timeout_events=\([0-9
     exit 1
 }
 
+if [ "$REQUIRE_RETRANSMIT" -eq 1 ]; then
+    delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
+    retransmit_events=$(printf '%s\n' "$delivery" |
+        sed -n 's/.* retransmit_events=\([0-9][0-9]*\).*/\1/p')
+    [ -n "$retransmit_events" ] && [ "$retransmit_events" -ge 1 ] || {
+        echo "required retransmission telemetry missing: retransmit_events=${retransmit_events:-missing}" >&2
+        exit 1
+    }
+fi
+
+if [ "$REQUIRE_PACING" -eq 1 ]; then
+    pacing=$(grep -m1 'tcp-shift-p2-pacing:' "$OUT/runtime.stderr")
+    pacing_deferrals=$(printf '%s\n' "$pacing" |
+        sed -n 's/.* deferrals=\([0-9][0-9]*\).*/\1/p')
+    pacing_resumes=$(printf '%s\n' "$pacing" |
+        sed -n 's/.* resume_events=\([0-9][0-9]*\).*/\1/p')
+    pacing_errors=$(printf '%s\n' "$pacing" |
+        sed -n 's/.* scheduler_errors=\([0-9][0-9]*\).*/\1/p')
+    pacing_tx=$(printf '%s\n' "$pacing" |
+        sed -n 's/.* tx_events=\([0-9][0-9]*\).*/\1/p')
+    pacing_rate=$(printf '%s\n' "$pacing" |
+        sed -n 's/.* last_rate_bytes_per_sec=\([0-9][0-9]*\).*/\1/p')
+    [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
+    [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
+    [ -n "$pacing_tx" ] && [ "$pacing_tx" -ge 1 ] &&
+    [ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
+    [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] || {
+        echo "required pacing telemetry invalid: deferrals=${pacing_deferrals:-missing} resumes=${pacing_resumes:-missing} tx=${pacing_tx:-missing} rate=${pacing_rate:-missing} errors=${pacing_errors:-missing}" >&2
+        exit 1
+    }
+fi
+
 case "$MODE" in
     fast-loss)
         [ "$loss_events" -ge 1 ] || {
@@ -309,7 +348,8 @@ case "$MODE" in
         ;;
 esac
 
-printf 'mode=%s cc=%s payload_bytes=%u loss_events=%s timeout_events=%s recovery=ok\n' \
+printf 'mode=%s cc=%s payload_bytes=%u loss_events=%s timeout_events=%s pacing_required=%s retransmit_required=%s recovery=ok\n' \
     "$MODE" "$CC" "$PAYLOAD_BYTES" "$loss_events" "$timeout_events" \
+    "$REQUIRE_PACING" "$REQUIRE_RETRANSMIT" \
     | tee "$OUT/summary.txt"
 echo "P4 integrated $MODE controller=$CC recovery qualification passed"
