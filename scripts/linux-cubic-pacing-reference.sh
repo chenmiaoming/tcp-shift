@@ -44,14 +44,12 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 
 if [ "$CC" = bbr ]; then
     modprobe tcp_bbr >/dev/null 2>&1 || true
-    sysctl net.ipv4.tcp_available_congestion_control > "$OUT.available-cc.tmp" 2>/dev/null || true
-    grep -w bbr "$OUT.available-cc.tmp" >/dev/null 2>&1 || {
-        cat "$OUT.available-cc.tmp" >&2 || true
-        rm -f "$OUT.available-cc.tmp"
+    available_cc=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)
+    printf '%s\n' "$available_cc" | grep -w bbr >/dev/null 2>&1 || {
+        printf 'available congestion controls: %s\n' "$available_cc" >&2
         echo "Linux tcp_bbr is unavailable on this kernel" >&2
         exit 1
     }
-    rm -f "$OUT.available-cc.tmp"
 fi
 
 HALF_RTT_MS=$((RTT_MS / 2))
