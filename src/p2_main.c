@@ -2,6 +2,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "bridge/bridge.h"
 #include "host/ifconfig.h"
@@ -49,6 +50,12 @@ static int parse_port(const char *text, uint16_t *port)
 
 static void usage(const char *program)
 {
+#ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    fprintf(stderr,
+            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
+            "<public-port> <backend-port> bbr-internal\n",
+            program);
+#else
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
             "<public-port> <backend-port> [cc]\n"
@@ -56,6 +63,7 @@ static void usage(const char *program)
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
             "18090 19090 cubic\n",
             program, program);
+#endif
 }
 
 static int tcp_shift_p2_pacer_schedule(void *arg,
@@ -245,10 +253,17 @@ int main(int argc, char **argv)
     bridge.listener = NULL;
     bridge.flows = NULL;
 
+#ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    if (argc != 8 || strcmp(argv[7], "bbr-internal") != 0) {
+        usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+#else
     if (argc != 7 && argc != 8) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
+#endif
     if (parse_ipv4(argv[2], &address) < 0 ||
         parse_ipv4(argv[3], &netmask) < 0 ||
         parse_ipv4(argv[4], &gateway) < 0 ||
@@ -257,6 +272,9 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+#ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    cc_name = "bbr-internal";
+#else
     cc_name = argc == 8 ? argv[7] : "reno";
     if (tcp_shift_lwip_cc_configure_controller(cc_name) < 0) {
         fprintf(stderr, "unsupported congestion controller: %s\n", cc_name);
@@ -267,6 +285,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "congestion controller registry unavailable\n");
         return EXIT_FAILURE;
     }
+#endif
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
         signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR) {

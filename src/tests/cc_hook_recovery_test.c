@@ -15,8 +15,10 @@
 struct fake_state {
     unsigned loss_calls;
     unsigned timeout_calls;
+    unsigned recovery_exit_calls;
     unsigned handle_loss;
     unsigned handle_timeout;
+    unsigned handle_recovery_exit;
 };
 
 static int fake_loss(void *arg,
@@ -29,6 +31,15 @@ static int fake_loss(void *arg,
     (void)lost_bytes;
     state->loss_calls++;
     return state->handle_loss != 0U;
+}
+
+static int fake_recovery_exit(void *arg, struct tcp_pcb *pcb)
+{
+    struct fake_state *state = arg;
+
+    (void)pcb;
+    state->recovery_exit_calls++;
+    return state->handle_recovery_exit != 0U;
 }
 
 static int fake_timeout(void *arg, struct tcp_pcb *pcb)
@@ -45,6 +56,7 @@ int main(void)
     static const struct tcp_shift_lwip_cc_hook_ops ops = {
         .on_loss = fake_loss,
         .on_timeout = fake_timeout,
+        .on_recovery_exit = fake_recovery_exit,
     };
     struct tcp_shift_lwip_cc_hook hook;
     struct tcp_pcb pcb;
@@ -71,14 +83,19 @@ int main(void)
     tcp_shift_lwip_cc_hook_recovery_mark_enter(&hook);
     CHECK(hook.recovery_enter_events == 1U);
 
-    tcp_shift_lwip_cc_hook_recovery_exit(&pcb);
+    hook.recovery_controller_owned = 1U;
+    state.handle_recovery_exit = 1U;
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb) == 1);
+    CHECK(state.recovery_exit_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
     CHECK(hook.recovery_exit_events == 1U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 1U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     /* Repeated exit is also idempotent. */
-    tcp_shift_lwip_cc_hook_recovery_exit(&pcb);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb) == 0);
+    CHECK(state.recovery_exit_calls == 1U);
     CHECK(hook.recovery_exit_events == 1U);
 
     /* An unhandled loss falls through to native lwIP and must not be reported
@@ -94,13 +111,18 @@ int main(void)
     state.handle_loss = 1U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 1);
     CHECK(hook.recovery_enter_events == 2U);
+    hook.recovery_controller_owned = 1U;
+    pcb.flags |= TF_INFR;
     state.handle_timeout = 1U;
     CHECK(tcp_shift_lwip_cc_hook_timeout(&pcb) == 1);
     CHECK(state.timeout_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
+    CHECK((pcb.flags & TF_INFR) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     printf("lwip_recovery_observation=ok enter=handled-fast-loss "
-           "exit=before-tf-infr-clear timeout=reset native_recovery=unchanged\n");
+           "exit=before-tf-infr-clear timeout=reset controller_owned=qualified "
+           "native_recovery=unchanged\n");
     return 0;
 }

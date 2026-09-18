@@ -35,8 +35,8 @@
 #if MEM_LIBC_MALLOC != 1 || MEMP_MEM_MALLOC != 1
 #error "memory accounting assumes libc-backed demand allocation"
 #endif
-#if LWIP_TCP_PCB_NUM_EXT_ARGS != 2
-#error "transport integration requires CC and TCP-memory PCB ext-arg slots"
+#if LWIP_TCP_PCB_NUM_EXT_ARGS != 3
+#error "transport integration requires CC, TCP-memory and internal-BBR PCB ext-arg slots"
 #endif
 #if LWIP_WND_SCALE != 1
 #error "tcp-shift requires upstream lwIP window-scaling capability"

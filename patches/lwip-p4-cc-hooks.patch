@@ -33,16 +33,26 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    tcp_shift_lwip_cc_hook_segment_acked(pcb, next, next->len);
      tcp_seg_free(next);
  
-@@ -1238,7 +1239,8 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1222,4 +1223,6 @@ tcp_receive(struct tcp_pcb *pcb)
+               if (pcb->dupacks > 3) {
+                 /* Inflate the congestion window */
+-                TCP_WND_INC(pcb->cwnd, pcb->mss);
++                if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++                  TCP_WND_INC(pcb->cwnd, pcb->mss);
++                }
+               }
+@@ -1238,7 +1241,9 @@ tcp_receive(struct tcp_pcb *pcb)
        /* Reset the "IN Fast Retransmit" flag, since we are no longer
           in fast retransmit. Also reset the congestion window to the
           slow start threshold. */
        if (pcb->flags & TF_INFR) {
-+        tcp_shift_lwip_cc_hook_recovery_exit(pcb);
++        if (!tcp_shift_lwip_cc_hook_recovery_exit(pcb)) {
++          pcb->cwnd = pcb->ssthresh;
++        }
          tcp_clear_flags(pcb, TF_INFR);
-         pcb->cwnd = pcb->ssthresh;
+-        pcb->cwnd = pcb->ssthresh;
          pcb->bytes_acked = 0;
-@@ -1249,22 +1251,24 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1249,22 +1254,24 @@ tcp_receive(struct tcp_pcb *pcb)
        /* Update the congestion control variables (cwnd and
           ssthresh). */
        if (pcb->state >= ESTABLISHED) {
@@ -108,7 +118,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
  
  #if TCP_CHECKSUM_ON_COPY
-@@ -1796,19 +1806,22 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1806,26 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
@@ -138,7 +148,12 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        }
        }
  
-+      /* Fast-recovery inflation remains native lwIP mechanics. */
-       pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
+-      pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
++      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
++       * explicitly owns recovery cwnd (internal BBR) keeps its published
++       * packet-conservation window instead. */
++      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++        pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
++      }
        tcp_set_flags(pcb, TF_INFR);
  

@@ -76,7 +76,9 @@ jobs:
         run: |
           .build/tcp-shift-tcp-memory-contract | tee .build/tcp-memory-contract.txt
           grep -F 'tcp_memory_contract=ok' .build/tcp-memory-contract.txt
-          grep -F 'pressure=ok high=ok autotune=2xcwnd accounting=queued_payload' \
+          grep -F 'pressure=ok high=ok autotune=2xcwnd' \
+            .build/tcp-memory-contract.txt
+          grep -F 'controller_hint=3xcwnd accounting=queued_payload' \
             .build/tcp-memory-contract.txt
 
       - name: Measure staged idle connection memory

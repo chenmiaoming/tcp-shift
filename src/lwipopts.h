@@ -51,11 +51,12 @@
 
 /*
  * Slot 0 is the tcp-shift CC/pacing hook ABI. Slot 1 is transport TCP-memory
- * state used by runtime tcp_wmem/tcp_mem policy. Both store only project-owned
- * opaque pointers; patched lwIP remains independent from src/cc and the memory
- * policy implementation.
+ * state used by runtime tcp_wmem/tcp_mem policy. Slot 2 is an internal-only
+ * BBR lifecycle sidecar so the full BBR state is allocated only for BBR flows
+ * instead of inflating every generic adapter/PCB. All slots store only
+ * project-owned opaque pointers; patched lwIP remains independent from src/cc.
  */
-#define LWIP_TCP_PCB_NUM_EXT_ARGS 2
+#define LWIP_TCP_PCB_NUM_EXT_ARGS 3
 #define LWIP_HOOK_FILENAME "lwip/cc_hooks.h"
 
 /*
