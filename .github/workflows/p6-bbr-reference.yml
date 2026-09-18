@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/p6-bbr-reference.yml'
       - 'scripts/p6-bbr-long-flow.sh'
+      - 'scripts/p6-bbr-multiflow.sh'
       - 'scripts/linux-cubic-pacing-reference.sh'
       - 'scripts/p6-bbr-reference-evaluate.py'
       - 'src/cc/**'
@@ -150,3 +151,64 @@ jobs:
           path: .build/p6-bbr-reference/${{ matrix.case }}
           if-no-files-found: warn
           include-hidden-files: true
+
+  internal-multiflow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install multi-flow dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Validate multi-flow harness
+        run: sh -n scripts/p6-bbr-multiflow.sh
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-multiflow -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-multiflow --target tcp-shift-p6-bbr --parallel
+
+      - name: Run four internal BBR flows on one bottleneck
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-bbr-multiflow/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_MULTI_OUT="$PWD/.build/p6-bbr-multiflow/edge-bdp" \
+            sh scripts/p6-bbr-multiflow.sh
+
+      - name: Publish multi-flow evidence
+        if: always()
+        run: |
+          root=.build/p6-bbr-multiflow/edge-bdp
+          if [ -f "$root/summary.txt" ]; then
+            cat "$root/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload multi-flow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-multiflow-edge-bdp
+          path: .build/p6-bbr-multiflow/edge-bdp
+          if-no-files-found: warn
+          include-hidden-files: true
+
