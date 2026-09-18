@@ -7,6 +7,7 @@ CC=${TCP_SHIFT_LINUX_PACING_CC:-cubic}
 RTT_MS=${TCP_SHIFT_LINUX_PACING_RTT_MS:-10}
 RATE_MBIT=${TCP_SHIFT_LINUX_PACING_RATE_MBIT:-20}
 PAYLOAD_BYTES=${TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES:-8388608}
+REQUIRE_ZERO_DROPS=${TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS:-0}
 OUT=${TCP_SHIFT_LINUX_PACING_OUT:-.build/linux-cubic-pacing/$CASE-$MODE}
 
 NS_CLIENT="tspc$$"
@@ -30,6 +31,7 @@ esac
 case "$RTT_MS" in ''|*[!0-9]*) echo "RTT_MS must be an integer" >&2; exit 1;; esac
 case "$RATE_MBIT" in ''|*[!0-9]*) echo "RATE_MBIT must be an integer" >&2; exit 1;; esac
 case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&2; exit 1;; esac
+case "$REQUIRE_ZERO_DROPS" in 0|1) ;; *) echo "REQUIRE_ZERO_DROPS must be 0 or 1" >&2; exit 1;; esac
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
     echo "RTT_MS must be a positive even integer" >&2
     exit 1
@@ -250,16 +252,39 @@ if [ "$MODE" = fq ]; then
     ip netns exec "$NS_CLIENT" tc -s qdisc show dev "$IFB_CLIENT" > "$OUT/ifb-qdisc-after.txt"
 fi
 
+if [ "$MODE" = fq ]; then
+    data_qdisc_file="$OUT/ifb-qdisc-after.txt"
+else
+    data_qdisc_file="$OUT/server-qdisc-after.txt"
+fi
+ack_qdisc_file="$OUT/client-qdisc-after.txt"
+DATA_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$data_qdisc_file" | head -n 1)
+ACK_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$ack_qdisc_file" | head -n 1)
+[ -n "$DATA_QDISC_DROPS" ] && [ -n "$ACK_QDISC_DROPS" ] || {
+    cat "$data_qdisc_file" >&2 || true
+    cat "$ack_qdisc_file" >&2 || true
+    echo "failed to parse Linux pacing qdisc drop counters" >&2
+    exit 1
+}
+if [ "$REQUIRE_ZERO_DROPS" -eq 1 ]; then
+    [ "$DATA_QDISC_DROPS" -eq 0 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
+        echo "Linux $CC clean path qdisc dropped packets: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
+        exit 1
+    }
+fi
+
 FINAL_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/server.txt" | tail -n 1)
 [ -n "$FINAL_RETRANS" ] || { echo "missing final retransmission count" >&2; exit 1; }
 
 python3 - "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" \
-    "$FINAL_RETRANS" "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
+    "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" \
+    "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
 import statistics
 import sys
 from pathlib import Path
 
-case, mode, cc, rtt_ms, rate_mbit, bdp, queue_pkts, final_retrans, client_path, samples_path = sys.argv[1:]
+(case, mode, cc, rtt_ms, rate_mbit, bdp, queue_pkts, final_retrans,
+ data_qdisc_drops, ack_qdisc_drops, client_path, samples_path) = sys.argv[1:]
 client = Path(client_path).read_text(encoding="utf-8").strip()
 goodput = float(client.split("goodput_mbps=")[1].split()[0])
 rows = []
@@ -281,7 +306,9 @@ print(
     f"pacing_rate_min_Bps={min(pacing)} pacing_rate_median_Bps={int(statistics.median(pacing))} "
     f"pacing_rate_max_Bps={max(pacing)} pacing_rate_final_Bps={pacing[-1]} "
     f"delivery_rate_median_Bps={int(statistics.median(delivery)) if delivery else 0} "
-    f"rtt_median_us={int(statistics.median(rtts)) if rtts else 0} total_retrans={final_retrans}"
+    f"rtt_median_us={int(statistics.median(rtts)) if rtts else 0} "
+    f"data_qdisc_drops={data_qdisc_drops} ack_qdisc_drops={ack_qdisc_drops} "
+    f"total_retrans={final_retrans}"
 )
 PY
 
