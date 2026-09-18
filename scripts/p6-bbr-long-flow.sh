@@ -52,8 +52,14 @@ case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&
 
 HALF_RTT_MS=$((RTT_MS / 2))
 BDP_BYTES=$((RATE_MBIT * RTT_MS * 125))
-QUEUE_PKTS=${TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS:-$(((BDP_BYTES + 1459) / 1460))}
-[ "$QUEUE_PKTS" -ge 16 ] || QUEUE_PKTS=16
+BDP_PKTS=$(((BDP_BYTES + 1459) / 1460))
+# This is the clean long-flow gate, not the loss gate. netem owns the entire
+# delayed/shaped path queue on IFB, so a one-BDP limit can turn BBR STARTUP's
+# deliberate high inflight gain into artificial drop-tail loss. Keep eight
+# BDPs of queue headroom here and require zero qdisc drops below; fast-loss and
+# RTO remain qualified separately with explicit fault injection.
+QUEUE_PKTS=${TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS:-$((BDP_PKTS * 8))}
+[ "$QUEUE_PKTS" -ge 64 ] || QUEUE_PKTS=64
 
 stop_pid()
 {
@@ -208,6 +214,16 @@ BACKEND_PID=
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
 
+ifb_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/ifb-qdisc-after.txt" | head -n 1)
+tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.txt" | head -n 1)
+[ -n "$ifb_drops" ] && [ "$ifb_drops" -eq 0 ] &&
+[ -n "$tun_drops" ] && [ "$tun_drops" -eq 0 ] || {
+    cat "$OUT/ifb-qdisc-after.txt" >&2 || true
+    cat "$OUT/tun-qdisc-after.txt" >&2 || true
+    echo "P6 BBR clean long-flow qdisc dropped packets: ifb=${ifb_drops:-missing} tun=${tun_drops:-missing}" >&2
+    exit 1
+}
+
 sleep 0.2
 kill -TERM "$RUNTIME_PID"
 if ! wait "$RUNTIME_PID"; then
@@ -291,11 +307,11 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+printf 'p6_bbr_long_flow=ok base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
     "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" \
-    "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
+    "$ifb_drops" "$tun_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
 printf 'base_rtt_ms=%s\nrate_mbit=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
     "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
