@@ -35,7 +35,7 @@ done
 "$OUT" | tee "$BUILD/p6-bbr-lwip-binding-summary.txt"
 grep -F 'bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 ' \
     "$BUILD/p6-bbr-lwip-binding-summary.txt" >/dev/null
-grep -F 'ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok sndbuf_hint=3xcwnd recovery=controller-owned' \
+grep -F 'ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok sndbuf_hint=3xcwnd passive_open_hint=deferred recovery=controller-owned' \
     "$BUILD/p6-bbr-lwip-binding-summary.txt" >/dev/null
 grep -F 'rto_post_loss_inflight=0 pacing_after_rto=preserved' \
     "$BUILD/p6-bbr-lwip-binding-summary.txt" >/dev/null
