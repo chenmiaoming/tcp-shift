@@ -137,9 +137,10 @@ err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
                                       u8_t apiflags);
 void tcp_shift_lwip_tcp_memory_sent(struct tcp_pcb *pcb, tcp_sent_fn sent);
 
-/* Apply a per-PCB controller hint. Calling this before the first tcp_write is
- * supported: the memory extension is created lazily and still starts from the
- * configured runtime initial sndbuf. */
+/* Apply a per-PCB controller hint. Calling this from passive open is supported
+ * even while handshake bookkeeping remains queued: the memory extension stores
+ * the ratio without allocating flow capacity, and the first data tcp_write
+ * initializes the flow from the configured runtime initial sndbuf. */
 int tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
     struct tcp_pcb *pcb,
     uint32_t expand_num,

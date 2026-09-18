@@ -94,6 +94,7 @@ int main(void)
     uint64_t initial_rate;
     uint64_t recovery_rate;
     uint32_t prior_cwnd;
+    tcpwnd_size_t handshake_sndbuf;
     uint32_t seq = UINT32_C(300000);
     uint16_t payload;
     unsigned char segment;
@@ -124,7 +125,16 @@ int main(void)
     CHECK(adapter.pacing_generation != 0U);
     CHECK(tcp_ext_arg_get(pcb, (u8_t)TCP_SHIFT_LWIP_BBR_EXT_ARG_ID) == NULL);
 
+    /* Passive open can still carry SYN-ACK queue bookkeeping when the
+     * controller is promoted. The 3xcwnd memory hint must be accepted without
+     * weakening tcp_memory_flow_init()'s empty data-queue invariant. */
+    handshake_sndbuf = pcb->snd_buf;
+    pcb->snd_queuelen = 1U;
+    pcb->unacked = (struct tcp_seg *)(void *)&segment;
     CHECK(tcp_shift_lwip_cc_apply_internal_bbr(&adapter, 3U) == 0);
+    CHECK(pcb->snd_buf == handshake_sndbuf);
+    pcb->unacked = NULL;
+    pcb->snd_queuelen = 0U;
     CHECK(tcp_shift_lwip_cc_internal_bbr_active(&adapter) != 0);
     CHECK(strcmp(adapter.controller.ops->name, "bbr-internal-lwip") == 0);
     CHECK(adapter.controller.state != &adapter.controller_state);
@@ -133,7 +143,6 @@ int main(void)
     CHECK(adapter.pacing_rate_bytes_per_sec != 0U);
     CHECK(stats.pacing_last_rate_bytes_per_sec ==
           adapter.pacing_rate_bytes_per_sec);
-    CHECK(pcb->snd_buf == TCP_SHIFT_TCP_WMEM_DEFAULT_INITIAL_BYTES);
     initial_rate = adapter.pacing_rate_bytes_per_sec;
 
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment, seq, payload);
@@ -209,7 +218,7 @@ int main(void)
 
     printf("bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 "
            "ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok "
-           "sndbuf_hint=3xcwnd recovery=controller-owned "
+           "sndbuf_hint=3xcwnd passive_open_hint=deferred recovery=controller-owned "
            "rto_post_loss_inflight=0 pacing_after_rto=preserved "
            "initial_rate=%llu\n",
            (unsigned long long)initial_rate);
