@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; P6a/P6b/P6c and the shared controller prerequisites are merged; P6d 10-round bandwidth-filter realignment is active**.
+Status: **active; the compact BBRv1-style model/lifecycle/recovery is qualified and internal lwIP runtime integration is complete in Draft PR #34; public `bbr` selection remains disabled pending broader reference and multi-flow qualification**.
 
 ## Congestion-control architecture
 
@@ -77,7 +77,7 @@ The controller work needed before `bbr` can become a peer is now qualified rathe
 
 PR #23 was squash-merged as `b0f44fbb7317cef93e90b1912896194f8c174947`. Its integrated CUBIC recovery gate transferred and echoed 262144 bytes, injected a data loss, required at least one controller loss event, required zero timeout fall-through, and retained zero controller errors. Reno remains the production default.
 
-## Increment P6d: BBRv1-style max-bandwidth horizon — active
+## Increment P6d: BBRv1-style max-bandwidth horizon — completed
 
 The transitional two-ProbeBW-cycle max-bandwidth window is being replaced with an exact ten packet-timed-round ring, matching the compact core's Linux BBRv1-style horizon (`CYCLE_LEN + 2`).
 
@@ -93,7 +93,31 @@ The deterministic contract covers:
 
 This straightforward exact ring increases pure-model state relative to the transitional two-slot filter. `bbr` is still not live per-flow state, so P6d prioritizes auditable semantics; when the controller is eventually registered, P3 memory qualification will decide whether a more compact equivalent representation is worthwhile.
 
-## Planned order from P6d
+## Runtime integration checkpoint — Draft PR #34
+
+The compact controller is now bound to a real lwIP runtime through an internal-only qualification target; it is still not registered as a public `bbr` selector.
+
+The runtime boundary keeps ownership split deliberately:
+
+- the generic adapter retains delivery sampling and the process-wide event-driven pacer;
+- BBR state is lazily allocated as a PCB sidecar rather than embedded in every generic adapter;
+- BBR publishes a `3×cwnd` sender-buffer expansion hint, while allocation, `tcp_wmem.max`, pressure and accounting remain transport-owned;
+- fast loss maps pinned-lwIP outstanding sequence space to post-loss inflight before packet-conservation entry;
+- controller-owned BBR recovery suppresses only native lwIP recovery cwnd rewrites; Reno/CUBIC retain their existing native recovery path;
+- recovery exit restores BBR's prior cwnd before the same ACK resumes normal delivery-sample processing;
+- the RTO hook runs after `tcp_rexmit_rto_prepare()`, so the transport-equivalent post-loss inflight observation is zero at that boundary, and an RTO supersedes any active controller-owned fast-recovery episode.
+
+The P6 runtime job now qualifies three real paths. A clean 4 MiB long flow over 40 ms / 10 Mbit/s with an eight-BDP lossless netem queue observed 9.159029 Mbit/s goodput, 2,281 controller policy updates, 2,280 valid delivery-rate samples, 4,658 pacer deferrals, 2,640 pacer resumes, zero qdisc drops, zero controller loss/RTO events, and exact payload integrity. Separate deterministic fault cases qualify fast loss (`loss_events=1`, no timeout) and RTO (`timeout_events=2`) while requiring retransmission and shared-pacer execution.
+
+The earlier hosted-runner P3 repeated-drain failure at 141 KiB did not reproduce as a stable regression: a later run measured 121 KiB with the original 128 KiB gate unchanged. Absolute drained PSS stayed approximately 430–431 KiB while the ready baseline moved materially, so the threshold was not loosened.
+
+At checkpoint `bfbb85140b9cb4d82f71e057ded3393031484345`, all 14 PR-triggered workflows are green. Public selector exposure remains intentionally deferred; the next qualification stage is external/reference BBR comparison and broader RTT/bandwidth/multi-flow coverage.
+
+## Original planned order from P6d
+
+Items 1–6 below are now implemented and qualified by the current compact-controller/runtime checkpoints. Item 7 is the next active qualification direction; public default changes remain out of scope.
+
+
 
 1. finish and merge the 10-round bandwidth-filter qualification with `bbr` still unavailable in the registry;
 2. add overflow-safe BDP/gain arithmetic and compact Startup pacing/cwnd policy in pure C;
