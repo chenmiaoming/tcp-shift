@@ -105,6 +105,7 @@ target_link_libraries(tcp_shift_lwip_tcp_memory PUBLIC tcp_shift_lwip)
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
     src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
 )
 target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)

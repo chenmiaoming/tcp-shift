@@ -31,16 +31,17 @@
  * current data segment. Returning zero leaves the segment on pcb->unsent; a
  * later runtime deadline simply calls native tcp_output() again.
  *
- * Recovery observation is deliberately state-only at this boundary. Native
- * lwIP still owns TF_INFR inflation/deflation for Reno/CUBIC. A handled fast
- * loss marks entry; tcp_in.c marks exit immediately before clearing TF_INFR.
- * Future BBR integration may consume these observations without changing the
- * established loss-based recovery mechanics.
+ * Recovery ownership is explicit at this boundary. Native lwIP continues to
+ * own TF_INFR inflation/deflation for Reno/CUBIC. An internal controller may
+ * claim recovery cwnd ownership after a handled fast loss; while that claim is
+ * active, patched lwIP suppresses only its native recovery cwnd inflation and
+ * delegates the exit transition before clearing TF_INFR.
  */
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
+    int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
                                     u16_t payload_bytes);
@@ -62,6 +63,7 @@ struct tcp_shift_lwip_cc_hook {
     u32_t recovery_exit_events;
     u8_t recovery_active;
     u8_t recovery_exit_pending;
+    u8_t recovery_controller_owned;
 };
 
 static inline struct tcp_shift_lwip_cc_hook *
@@ -90,6 +92,7 @@ tcp_shift_lwip_cc_hook_recovery_mark_exit(struct tcp_shift_lwip_cc_hook *hook)
     }
     hook->recovery_active = 0U;
     hook->recovery_exit_pending = 1U;
+    hook->recovery_controller_owned = 0U;
     hook->recovery_exit_events++;
 }
 
@@ -101,6 +104,7 @@ tcp_shift_lwip_cc_hook_recovery_reset(struct tcp_shift_lwip_cc_hook *hook)
     }
     hook->recovery_active = 0U;
     hook->recovery_exit_pending = 0U;
+    hook->recovery_controller_owned = 0U;
 }
 
 static inline unsigned
@@ -108,6 +112,18 @@ tcp_shift_lwip_cc_hook_recovery_is_active(
     const struct tcp_shift_lwip_cc_hook *hook)
 {
     return hook != NULL && hook->recovery_active != 0U ? 1U : 0U;
+}
+
+static inline unsigned
+tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
+{
+    const struct tcp_shift_lwip_cc_hook *hook =
+        tcp_shift_lwip_cc_hook_get(pcb);
+
+    return hook != NULL && hook->recovery_active != 0U &&
+                   hook->recovery_controller_owned != 0U
+               ? 1U
+               : 0U;
 }
 
 static inline unsigned
@@ -150,26 +166,44 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
     return handled;
 }
 
-static inline void
+static inline int
 tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb)
 {
-    tcp_shift_lwip_cc_hook_recovery_mark_exit(
-        tcp_shift_lwip_cc_hook_get(pcb));
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+    int handled = 0;
+
+    if (hook == NULL) {
+        return 0;
+    }
+    if (hook->recovery_active != 0U &&
+        hook->recovery_controller_owned != 0U &&
+        hook->ops != NULL && hook->ops->on_recovery_exit != NULL) {
+        handled = hook->ops->on_recovery_exit(hook->arg, pcb) != 0;
+    }
+    tcp_shift_lwip_cc_hook_recovery_mark_exit(hook);
+    return handled;
 }
 
 static inline int
 tcp_shift_lwip_cc_hook_timeout(struct tcp_pcb *pcb)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+    unsigned controller_owned;
     int handled;
 
     if (hook == NULL || hook->ops == NULL || hook->ops->on_timeout == NULL) {
         return 0;
     }
+    controller_owned = hook->recovery_controller_owned != 0U ? 1U : 0U;
     handled = hook->ops->on_timeout(hook->arg, pcb) != 0;
-    if (handled != 0) {
-        /* RTO starts a distinct recovery episode. Do not let a prior fast
-         * recovery leave stale enter/exit state for the next ACK. */
+
+    /* RTO supersedes an observed fast-recovery episode even if the controller
+     * callback fails and the transport falls back to native loss handling. */
+    if (handled != 0 && controller_owned != 0U) {
+        tcp_clear_flags(pcb, TF_INFR);
+    }
+    if (handled != 0 || hook->recovery_active != 0U ||
+        hook->recovery_controller_owned != 0U) {
         tcp_shift_lwip_cc_hook_recovery_reset(hook);
     }
     return handled;

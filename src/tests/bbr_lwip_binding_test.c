@@ -92,6 +92,8 @@ int main(void)
     struct timespec delay;
     uint64_t deadline;
     uint64_t initial_rate;
+    uint64_t recovery_rate;
+    uint32_t prior_cwnd;
     uint32_t seq = UINT32_C(300000);
     uint16_t payload;
     unsigned char segment;
@@ -152,6 +154,45 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment, payload);
     CHECK(stats.delivery_live_slots == 0U);
 
+    /* Fast loss is owned by BBR packet conservation. The lwIP hook reports
+     * raw outstanding sequence space, so the internal binding removes the one
+     * MSS loss before entering recovery. */
+    prior_cwnd = (uint32_t)pcb->cwnd;
+    pcb->lastack = seq + payload;
+    pcb->snd_nxt = pcb->lastack + (4U * payload);
+    CHECK(tcp_shift_lwip_cc_hook_loss(pcb, payload) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&adapter.hook) != 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) != 0U);
+    CHECK((uint32_t)pcb->cwnd == 3U * payload);
+    CHECK(stats.loss_events == 1U);
+    CHECK(adapter.pacing_rate_bytes_per_sec != 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(pcb) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&adapter.hook) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) == 0U);
+    CHECK((uint32_t)pcb->cwnd == prior_cwnd);
+    CHECK(adapter.hook.recovery_enter_events == 1U);
+    CHECK(adapter.hook.recovery_exit_events == 1U);
+
+    /* A later RTO can supersede controller-owned fast recovery. The pinned
+     * timeout hook runs after rto_prepare, so post-loss inflight is zero and
+     * BBR publishes one MSS while preserving its pacing rate. */
+    pcb->snd_nxt = pcb->lastack + (5U * payload);
+    CHECK(tcp_shift_lwip_cc_hook_loss(pcb, payload) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) != 0U);
+    recovery_rate = adapter.pacing_rate_bytes_per_sec;
+    tcp_set_flags(pcb, TF_INFR);
+    tcp_set_flags(pcb, TF_RTO);
+    pcb->unacked = NULL;
+    CHECK(tcp_shift_lwip_cc_hook_timeout(pcb) != 0);
+    CHECK((pcb->flags & TF_INFR) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&adapter.hook) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) == 0U);
+    CHECK((uint32_t)pcb->cwnd == payload);
+    CHECK(adapter.pacing_rate_bytes_per_sec == recovery_rate);
+    CHECK(stats.loss_events == 2U);
+    CHECK(stats.timeout_events == 1U);
+    CHECK(stats.controller_errors == 0U);
+
     deadline = now_ns();
     CHECK(deadline != 0U);
     deadline += NSEC_PER_SEC;
@@ -168,7 +209,8 @@ int main(void)
 
     printf("bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 "
            "ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok "
-           "sndbuf_hint=3xcwnd loss_timeout=native-fallback "
+           "sndbuf_hint=3xcwnd recovery=controller-owned "
+           "rto_post_loss_inflight=0 pacing_after_rto=preserved "
            "initial_rate=%llu\n",
            (unsigned long long)initial_rate);
     return 0;
