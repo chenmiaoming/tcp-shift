@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; the compact BBRv1-style model/lifecycle/runtime integration plus clean reference, multi-flow, and live app-limited qualification are complete in PR #34; public `bbr` selection remains disabled while sender-side loss recovery is qualified separately**.
+Status: **active; PR #34 completed the compact BBRv1-style runtime/reference qualification and Draft PR #35 now qualifies transport-owned NewReno-style sender recovery under multiple loss; public `bbr` selection remains disabled pending broader loss/burst/WAN qualification**.
 
 ## Congestion-control architecture
 
@@ -113,9 +113,13 @@ The earlier hosted-runner P3 repeated-drain failure at 141 KiB did not reproduce
 
 Reference qualification is also complete on the PR branch. The clean Linux BBR + `sch_fq` matrix covers low-, edge-, and high-BDP paths; tcp-shift internal BBR remained within roughly 1–2% of the Linux reference goodput in those lossless cases, with zero tcp-shift qdisc drops/loss/RTO. A four-flow 40 ms / 10 Mbit/s shared-bottleneck case measured 8.261989 Mbit/s aggregate tcp-shift goodput with Jain fairness 0.985843 versus 7.993226 Mbit/s and 0.998559 for Linux BBR; the shared tcp-shift pacer reached `heap_peak=4`. A live two-burst application-limited case observed two app-limited entries, two exits, 31 app-limited rate samples, and zero qdisc drops/loss/RTO.
 
-The moderate-loss diagnostic deliberately remains a reference rather than a parity gate. On the current 260 ms / 10 Mbit/s / 1% random-data-loss case, one successful run measured internal BBR at 1.166791 Mbit/s, same-stack CUBIC at 0.497755 Mbit/s, and Linux BBR at 5.871238 Mbit/s. Internal BBR therefore outperformed the same lwIP transport running CUBIC in that run while both remained well below the Linux transport/reference. The accompanying loss/retransmission/RTO telemetry localizes the next investigation below or around sender-side transport recovery rather than justifying BBR gain/state-machine tuning; random-loss goodput ratios are intentionally not treated as deterministic pass/fail thresholds.
+The moderate-loss diagnostic deliberately remains a reference rather than a parity gate. PR #34 established the original signal: on one 260 ms / 10 Mbit/s / 1% random-data-loss realization, internal BBR measured 1.166791 Mbit/s with 73 retransmission events and two RTOs, same-stack CUBIC measured 0.497755 Mbit/s, and Linux BBR measured 5.871238 Mbit/s. That result localized the next investigation below or around sender-side transport recovery rather than justifying BBR gain/state-machine tuning.
 
-At checkpoint `e30cad07a3c410299fa0ea74ad22ebcb06e2b3eb`, all 15 PR-triggered workflows are green. Public selector exposure remains intentionally deferred. The next development increment is a separate sender-side loss-recovery qualification/change set, starting with deterministic multiple-loss behavior and the pinned lwIP recovery/SACK capabilities rather than widening the BBR controller.
+Draft PR #35 now adds transport-owned RFC 6582/NewReno-style partial-ACK recovery without changing BBR gains or mode transitions. A deterministic 40 ms / 10 Mbit/s / 1 MiB case injects exactly two data losses inside one recovery flight. Reno, CUBIC, and internal BBR each recover with exactly two retransmission events, one congestion-loss episode, zero RTOs, zero qdisc drops, and exact payload integrity. Representative goodputs were 7.495445 Mbit/s for Reno, 7.278120 Mbit/s for CUBIC, and 7.474424 Mbit/s for internal BBR.
+
+The same follow-up materially improves the long-RTT random-loss diagnostic while preserving the no-parity-gate rule. In one #35 realization, internal BBR measured 3.240266 Mbit/s with 25 data qdisc drops, 25 retransmissions, six loss observations, and zero RTOs; same-stack CUBIC measured 0.609776 Mbit/s with 32 drops/retransmissions and zero RTOs; Linux BBR measured 5.634074 Mbit/s with 37 drops/retransmissions. The internal/Linux goodput ratio for that particular realization was 0.575120, but random-loss ratios remain diagnostic because each run sees a different loss pattern. The stronger correctness evidence is the deterministic two-loss gate and the disappearance of RTO fallback without BBR policy tuning.
+
+PR #34 was squash-merged as `7bbb175c4d0d69fa5858380b73710a9f8c41d204`. Public selector exposure remains intentionally deferred. After #35, the next loss qualification should stress burst/high-loss and representative WAN conditions before deciding whether transport recovery needs further mechanisms such as sender-side SACK; SACK is not being added preemptively.
 
 ## Original planned order from P6d
 
