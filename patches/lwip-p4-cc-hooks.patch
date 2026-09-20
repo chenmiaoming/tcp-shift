@@ -41,7 +41,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
-@@ -1231,78 +1234,134 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1231,78 +1234,136 @@ tcp_receive(struct tcp_pcb *pcb)
            }
          }
        }
@@ -183,12 +183,14 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +      if (pcb->state >= ESTABLISHED) {
 +        if (recovery_partial) {
 +          /* Native Reno/CUBIC recovery owns both the temporary recovery
-+             window and its ACK credit. Do not advance the generic controller
-+             policy state behind that transport-owned window. Segment ACK
-+             lifecycle accounting still advances, and the next ordinary ACK
-+             can sample the cumulative delivery. Internal BBR explicitly owns
-+             recovery cwnd, so it continues to consume every recovery ACK. */
-+          if (!recovery_native_window) {
++             window and its ACK credit. Consume delivery/rate metadata before
++             upstream frees ACKed segments, but do not advance generic
++             controller cwnd/CA policy behind that transport-owned window.
++             Internal BBR explicitly owns recovery cwnd and therefore consumes
++             the full policy ACK path. */
++          if (recovery_native_window) {
++            (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
++          } else {
 +            (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
 +          }
 +        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
