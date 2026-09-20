@@ -41,7 +41,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
-@@ -1231,70 +1234,129 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1231,78 +1234,137 @@ tcp_receive(struct tcp_pcb *pcb)
            }
          }
        }
@@ -109,6 +109,14 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 -         ->unsent list after a retransmission, so these segments may
 -         in fact have been sent once. */
 -      pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
+-
+-      /* If there's nothing left to acknowledge, stop the retransmit
+-         timer, otherwise reset it to start again */
+-      if (pcb->unacked == NULL) {
+-        pcb->rtime = -1;
+-      } else {
+-        pcb->rtime = 0;
+-      }
 +    } else if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
 +      /* We come here when the ACK acknowledges new data. */
 +      tcpwnd_size_t acked;
@@ -224,6 +232,14 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +         in fact have been sent once. */
 +      pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
 +
++      /* If there's nothing left to acknowledge, stop the retransmit
++         timer, otherwise reset it to start again */
++      if (pcb->unacked == NULL) {
++        pcb->rtime = -1;
++      } else {
++        pcb->rtime = 0;
++      }
++
 +      if (recovery_partial && pcb->unacked != NULL) {
 +        /* A partial ACK identifies the next hole without waiting for another
 +           three duplicate ACKs. tcp_rexmit() only requeues the first unacked
@@ -233,8 +249,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +        }
 +      }
  
-       /* If there's nothing left to acknowledge, stop the retransmit
-          timer, otherwise reset it to start again */
+       pcb->polltmr = 0;
+ 
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
