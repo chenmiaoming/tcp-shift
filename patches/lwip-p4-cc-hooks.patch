@@ -155,8 +155,11 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +      /* Record how much data this ACK acks */
 +      acked = (tcpwnd_size_t)(ackno - pcb->lastack);
 +
-+      /* Reset the fast retransmit variables. */
-+      pcb->dupacks = 0;
++      /* A partial ACK remains inside fast recovery. Keep the duplicate-ACK
++         baseline at three so every later duplicate ACK follows the existing
++         fast-recovery inflation path; a full ACK returns to the ordinary
++         zero baseline. */
++      pcb->dupacks = recovery_partial ? 3U : 0U;
 +      pcb->lastack = ackno;
 +
 +      if (recovery_partial && recovery_native_window) {
