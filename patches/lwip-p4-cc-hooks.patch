@@ -41,7 +41,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
-@@ -1231,78 +1234,140 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1231,78 +1234,134 @@ tcp_receive(struct tcp_pcb *pcb)
            }
          }
        }
@@ -120,8 +120,6 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    } else if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
 +      /* We come here when the ACK acknowledges new data. */
 +      tcpwnd_size_t acked;
-+      tcpwnd_size_t recovery_cwnd = 0;
-+      tcpwnd_size_t recovery_ssthresh = 0;
 +      u32_t recovery_end_seq = 0;
 +      u8_t recovery_partial = 0;
 +      u8_t recovery_native_window = 0;
@@ -178,24 +176,20 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +          pcb->cwnd = pcb->mss;
 +        }
 +        pcb->bytes_acked = 0;
-+        recovery_cwnd = pcb->cwnd;
-+        recovery_ssthresh = pcb->ssthresh;
 +      }
 +
 +      /* Update the congestion control variables (cwnd and
 +         ssthresh). */
 +      if (pcb->state >= ESTABLISHED) {
 +        if (recovery_partial) {
-+          /* Keep controller observations/rate sampling current. For
-+             Reno/CUBIC the transport still owns the recovery window, so
-+             restore the NewReno cwnd/ssthresh after the generic controller
-+             consumes this ACK. Internal BBR explicitly owns recovery cwnd and
-+             therefore keeps its published policy. */
-+          (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
-+          if (recovery_native_window) {
-+            pcb->cwnd = recovery_cwnd;
-+            pcb->ssthresh = recovery_ssthresh;
-+            pcb->bytes_acked = 0;
++          /* Native Reno/CUBIC recovery owns both the temporary recovery
++             window and its ACK credit. Do not advance the generic controller
++             policy state behind that transport-owned window. Segment ACK
++             lifecycle accounting still advances, and the next ordinary ACK
++             can sample the cumulative delivery. Internal BBR explicitly owns
++             recovery cwnd, so it continues to consume every recovery ACK. */
++          if (!recovery_native_window) {
++            (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
 +          }
 +        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
 +          if (pcb->cwnd < pcb->ssthresh) {
