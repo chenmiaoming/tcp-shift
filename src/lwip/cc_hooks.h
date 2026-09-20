@@ -39,6 +39,9 @@
  */
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
+    int (*on_ack_observe)(void *arg,
+                          struct tcp_pcb *pcb,
+                          tcpwnd_size_t acked_bytes);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
@@ -167,6 +170,19 @@ tcp_shift_lwip_cc_hook_ack(struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes)
         return 0;
     }
     return hook->ops->on_ack(hook->arg, pcb, acked_bytes) != 0;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_ack_observe(struct tcp_pcb *pcb,
+                                    tcpwnd_size_t acked_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_ack_observe == NULL) {
+        return 0;
+    }
+    return hook->ops->on_ack_observe(hook->arg, pcb, acked_bytes) != 0;
 }
 
 static inline int
