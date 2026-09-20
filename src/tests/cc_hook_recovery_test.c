@@ -70,18 +70,27 @@ int main(void)
     pcb.ext_args[TCP_SHIFT_LWIP_CC_EXT_ARG_ID] = &hook;
 
     state.handle_loss = 1U;
+    pcb.snd_nxt = 9000U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 1);
     CHECK(state.loss_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 1U);
     CHECK(hook.recovery_enter_events == 1U);
     CHECK(hook.recovery_exit_events == 0U);
+    CHECK(hook.recovery_end_seq == 9000U);
+    {
+        u32_t recovery_end = 0U;
+        CHECK(tcp_shift_lwip_cc_hook_recovery_end_seq(&pcb, &recovery_end) == 1);
+        CHECK(recovery_end == 9000U);
+    }
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     /* A duplicate entry signal while the same recovery episode is active must
      * not create a second episode. Pinned lwIP normally suppresses this via
      * TF_INFR, but keep the observation layer idempotent as well. */
-    tcp_shift_lwip_cc_hook_recovery_mark_enter(&hook);
+    pcb.snd_nxt = 12000U;
+    tcp_shift_lwip_cc_hook_recovery_mark_enter(&hook, &pcb);
     CHECK(hook.recovery_enter_events == 1U);
+    CHECK(hook.recovery_end_seq == 9000U);
 
     hook.recovery_controller_owned = 1U;
     state.handle_recovery_exit = 1U;
@@ -90,6 +99,7 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
     CHECK(hook.recovery_exit_events == 1U);
+    CHECK(hook.recovery_end_seq == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 1U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
@@ -109,8 +119,10 @@ int main(void)
     /* A handled timeout starts a distinct transport recovery episode; clear
      * any fast-recovery observation so no stale EXIT reaches a future BBR ACK. */
     state.handle_loss = 1U;
+    pcb.snd_nxt = 15000U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 1);
     CHECK(hook.recovery_enter_events == 2U);
+    CHECK(hook.recovery_end_seq == 15000U);
     hook.recovery_controller_owned = 1U;
     pcb.flags |= TF_INFR;
     state.handle_timeout = 1U;
@@ -118,6 +130,7 @@ int main(void)
     CHECK(state.timeout_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
+    CHECK(hook.recovery_end_seq == 0U);
     CHECK((pcb.flags & TF_INFR) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
