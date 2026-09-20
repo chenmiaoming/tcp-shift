@@ -41,21 +41,39 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
-@@ -1238,7 +1241,9 @@ tcp_receive(struct tcp_pcb *pcb)
-       /* Reset the "IN Fast Retransmit" flag, since we are no longer
-          in fast retransmit. Also reset the congestion window to the
-          slow start threshold. */
-       if (pcb->flags & TF_INFR) {
-+        if (!tcp_shift_lwip_cc_hook_recovery_exit(pcb)) {
-+          pcb->cwnd = pcb->ssthresh;
-+        }
-         tcp_clear_flags(pcb, TF_INFR);
+@@ -1231,70 +1234,129 @@ tcp_receive(struct tcp_pcb *pcb)
+           }
+         }
+       }
+-    } else if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
+-      /* We come here when the ACK acknowledges new data. */
+-      tcpwnd_size_t acked;
+-
+-      /* Reset the "IN Fast Retransmit" flag, since we are no longer
+-         in fast retransmit. Also reset the congestion window to the
+-         slow start threshold. */
+-      if (pcb->flags & TF_INFR) {
+-        tcp_clear_flags(pcb, TF_INFR);
 -        pcb->cwnd = pcb->ssthresh;
-         pcb->bytes_acked = 0;
-@@ -1249,22 +1254,24 @@ tcp_receive(struct tcp_pcb *pcb)
-       /* Update the congestion control variables (cwnd and
-          ssthresh). */
-       if (pcb->state >= ESTABLISHED) {
+-        pcb->bytes_acked = 0;
+-      }
+-
+-      /* Reset the number of retransmissions. */
+-      pcb->nrtx = 0;
+-
+-      /* Reset the retransmission time-out. */
+-      pcb->rto = (s16_t)((pcb->sa >> 3) + pcb->sv);
+-
+-      /* Record how much data this ACK acks */
+-      acked = (tcpwnd_size_t)(ackno - pcb->lastack);
+-
+-      /* Reset the fast retransmit variables. */
+-      pcb->dupacks = 0;
+-      pcb->lastack = ackno;
+-
+-      /* Update the congestion control variables (cwnd and
+-         ssthresh). */
+-      if (pcb->state >= ESTABLISHED) {
 -        if (pcb->cwnd < pcb->ssthresh) {
 -          tcpwnd_size_t increase;
 -          /* limit to 1 SMSS segment during period following RTO */
@@ -70,7 +88,105 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 -          if (pcb->bytes_acked >= pcb->cwnd) {
 -            pcb->bytes_acked = (tcpwnd_size_t)(pcb->bytes_acked - pcb->cwnd);
 -            TCP_WND_INC(pcb->cwnd, pcb->mss);
-+        if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
+-          }
+-          LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: congestion avoidance cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
+-        }
+-      }
+-      LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: ACK for %"U32_F", unacked->seqno %"U32_F":%"U32_F"\n",
+-                                    ackno,
+-                                    pcb->unacked != NULL ?
+-                                    lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0,
+-                                    pcb->unacked != NULL ?
+-                                    lwip_ntohl(pcb->unacked->tcphdr->seqno) + TCP_TCPLEN(pcb->unacked) : 0));
+-
+-      /* Remove segment from the unacknowledged list if the incoming
+-         ACK acknowledges them. */
+-      pcb->unacked = tcp_free_acked_segments(pcb, pcb->unacked, "unacked", pcb->unsent);
+-      /* We go through the ->unsent list to see if any of the segments
+-         on the list are acknowledged by the ACK. This may seem
+-         strange since an "unsent" segment shouldn't be acked. The
+-         rationale is that lwIP puts all outstanding segments on the
+-         ->unsent list after a retransmission, so these segments may
+-         in fact have been sent once. */
+-      pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
++    } else if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
++      /* We come here when the ACK acknowledges new data. */
++      tcpwnd_size_t acked;
++      tcpwnd_size_t recovery_cwnd = 0;
++      tcpwnd_size_t recovery_ssthresh = 0;
++      u32_t recovery_end_seq = 0;
++      u8_t recovery_partial = 0;
++      u8_t recovery_native_window = 0;
++
++      /* RFC 6582-style NewReno recovery keeps one recovery episode open
++         across partial ACKs. The project hook records snd_nxt at fast-recovery
++         entry; an ACK below that boundary covers new data but not the flight
++         that was outstanding when recovery began. */
++      if (pcb->flags & TF_INFR) {
++        if (tcp_shift_lwip_cc_hook_recovery_end_seq(
++                pcb, &recovery_end_seq) &&
++            TCP_SEQ_LT(ackno, recovery_end_seq)) {
++          recovery_partial = 1U;
++          recovery_native_window =
++              tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) ? 0U : 1U;
++        } else {
++          if (!tcp_shift_lwip_cc_hook_recovery_exit(pcb)) {
++            pcb->cwnd = pcb->ssthresh;
++          }
++          tcp_clear_flags(pcb, TF_INFR);
++          pcb->bytes_acked = 0;
++        }
++      }
++
++      /* Reset the number of retransmissions. */
++      pcb->nrtx = 0;
++
++      /* Reset the retransmission time-out. */
++      pcb->rto = (s16_t)((pcb->sa >> 3) + pcb->sv);
++
++      /* Record how much data this ACK acks */
++      acked = (tcpwnd_size_t)(ackno - pcb->lastack);
++
++      /* Reset the fast retransmit variables. */
++      pcb->dupacks = 0;
++      pcb->lastack = ackno;
++
++      if (recovery_partial && recovery_native_window) {
++        /* RFC 6582 section 3: deflate by newly acknowledged data and add one
++           SMSS back when the partial ACK covers at least one full segment.
++           Keep at least one SMSS so the retransmission can make progress. */
++        if (acked < pcb->cwnd) {
++          pcb->cwnd = (tcpwnd_size_t)(pcb->cwnd - acked);
++        } else {
++          pcb->cwnd = 0;
++        }
++        if (acked >= pcb->mss) {
++          TCP_WND_INC(pcb->cwnd, pcb->mss);
++        }
++        if (pcb->cwnd < pcb->mss) {
++          pcb->cwnd = pcb->mss;
++        }
++        pcb->bytes_acked = 0;
++        recovery_cwnd = pcb->cwnd;
++        recovery_ssthresh = pcb->ssthresh;
++      }
++
++      /* Update the congestion control variables (cwnd and
++         ssthresh). */
++      if (pcb->state >= ESTABLISHED) {
++        if (recovery_partial) {
++          /* Keep controller observations/rate sampling current. For
++             Reno/CUBIC the transport still owns the recovery window, so
++             restore the NewReno cwnd/ssthresh after the generic controller
++             consumes this ACK. Internal BBR explicitly owns recovery cwnd and
++             therefore keeps its published policy. */
++          (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
++          if (recovery_native_window) {
++            pcb->cwnd = recovery_cwnd;
++            pcb->ssthresh = recovery_ssthresh;
++            pcb->bytes_acked = 0;
++          }
++        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
 +          if (pcb->cwnd < pcb->ssthresh) {
 +            tcpwnd_size_t increase;
 +            /* limit to 1 SMSS segment during period following RTO */
@@ -87,11 +203,38 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +              TCP_WND_INC(pcb->cwnd, pcb->mss);
 +            }
 +            LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: congestion avoidance cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
-           }
--          LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_receive: congestion avoidance cwnd %"TCPWNDSIZE_F"\n", pcb->cwnd));
-         }
-       }
-       LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: ACK for %"U32_F", unacked->seqno %"U32_F":%"U32_F"\n",
++          }
++        }
++      }
++      LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_receive: ACK for %"U32_F", unacked->seqno %"U32_F":%"U32_F"\n",
++                                    ackno,
++                                    pcb->unacked != NULL ?
++                                    lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0,
++                                    pcb->unacked != NULL ?
++                                    lwip_ntohl(pcb->unacked->tcphdr->seqno) + TCP_TCPLEN(pcb->unacked) : 0));
++
++      /* Remove segment from the unacknowledged list if the incoming
++         ACK acknowledges them. */
++      pcb->unacked = tcp_free_acked_segments(pcb, pcb->unacked, "unacked", pcb->unsent);
++      /* We go through the ->unsent list to see if any of the segments
++         on the list are acknowledged by the ACK. This may seem
++         strange since an "unsent" segment shouldn't be acked. The
++         rationale is that lwIP puts all outstanding segments on the
++         ->unsent list after a retransmission, so these segments may
++         in fact have been sent once. */
++      pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
++
++      if (recovery_partial && pcb->unacked != NULL) {
++        /* A partial ACK identifies the next hole without waiting for another
++           three duplicate ACKs. tcp_rexmit() only requeues the first unacked
++           segment; tcp_input() will drive ordinary tcp_output() afterwards. */
++        if (tcp_rexmit(pcb) == ERR_OK) {
++          pcb->rtime = 0;
++        }
++      }
+ 
+       /* If there's nothing left to acknowledge, stop the retransmit
+          timer, otherwise reset it to start again */
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
