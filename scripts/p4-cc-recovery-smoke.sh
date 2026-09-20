@@ -22,6 +22,12 @@ case "$MODE" in
         PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18140}
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19140}
         ;;
+    multi-loss)
+        DEFAULT_OUT="$BUILD/p4-multi-loss-ci"
+        TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4multi0}
+        PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18143}
+        BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19143}
+        ;;
     rto)
         DEFAULT_OUT="$BUILD/p4-rto-ci"
         TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4rto0}
@@ -29,7 +35,7 @@ case "$MODE" in
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19141}
         ;;
     *)
-        echo "usage: $0 <fast-loss|rto>" >&2
+        echo "usage: $0 <fast-loss|multi-loss|rto>" >&2
         exit 2
         ;;
 esac
@@ -190,6 +196,17 @@ case "$MODE" in
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
             -m statistic --mode nth --every 10000 --packet 10 -j DROP
         ;;
+    multi-loss)
+        # Drop two data packets in the same early flight. Separate nth matchers
+        # each fire once in this transfer; the first DROP short-circuits the
+        # chain for that packet, so the second matcher lands a few packets later.
+        iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet 10 -j DROP
+        iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet 12 -j DROP
+        ;;
     rto)
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 -j DROP
@@ -247,7 +264,7 @@ if ! wait "$CLIENT_PID"; then
 fi
 CLIENT_PID=
 
-if [ "$MODE" = fast-loss ]; then
+if [ "$MODE" = fast-loss ] || [ "$MODE" = multi-loss ]; then
     iptables -nvxL "$CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
@@ -273,12 +290,18 @@ cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
 
-awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" && $1 > 0 {found=1} END {exit found ? 0 : 1}' \
-    "$OUT/iptables-fault.txt" || {
-        cat "$OUT/iptables-fault.txt" >&2 || true
-        echo "P4 $MODE fault rule dropped no packet" >&2
-        exit 1
-    }
+fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+    "$OUT/iptables-fault.txt")
+[ "$fault_drops" -ge 1 ] || {
+    cat "$OUT/iptables-fault.txt" >&2 || true
+    echo "P4 $MODE fault rule dropped no packet" >&2
+    exit 1
+}
+if [ "$MODE" = multi-loss ] && [ "$fault_drops" -ne 2 ]; then
+    cat "$OUT/iptables-fault.txt" >&2 || true
+    echo "P4 multi-loss expected exactly two dropped data packets: drops=$fault_drops" >&2
+    exit 1
+fi
 
 grep -F "backend-bytes=$PAYLOAD_BYTES " "$OUT/backend.stdout" >/dev/null
 grep -F ' echo=ok' "$OUT/backend.stdout" >/dev/null
@@ -340,6 +363,16 @@ case "$MODE" in
             exit 1
         }
         ;;
+    multi-loss)
+        [ "$loss_events" -ge 1 ] || {
+            echo "multi-loss path produced no controller loss event" >&2
+            exit 1
+        }
+        [ "$timeout_events" -eq 0 ] || {
+            echo "multi-loss path fell through to RTO: timeout_events=$timeout_events" >&2
+            exit 1
+        }
+        ;;
     rto)
         [ "$timeout_events" -ge 1 ] || {
             echo "RTO path produced no controller timeout event" >&2
@@ -348,8 +381,8 @@ case "$MODE" in
         ;;
 esac
 
-printf 'mode=%s cc=%s payload_bytes=%u loss_events=%s timeout_events=%s pacing_required=%s retransmit_required=%s recovery=ok\n' \
-    "$MODE" "$CC" "$PAYLOAD_BYTES" "$loss_events" "$timeout_events" \
+printf 'mode=%s cc=%s payload_bytes=%u fault_drops=%s loss_events=%s timeout_events=%s pacing_required=%s retransmit_required=%s recovery=ok\n' \
+    "$MODE" "$CC" "$PAYLOAD_BYTES" "$fault_drops" "$loss_events" "$timeout_events" \
     "$REQUIRE_PACING" "$REQUIRE_RETRANSMIT" \
     | tee "$OUT/summary.txt"
 echo "P4 integrated $MODE controller=$CC recovery qualification passed"
