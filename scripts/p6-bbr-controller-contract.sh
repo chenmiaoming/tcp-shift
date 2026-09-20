@@ -68,6 +68,7 @@ typedef uint32_t tcpwnd_size_t;
 #define TF_INFR 0x01U
 struct tcp_pcb {
     void *ext_args[2];
+    u32_t snd_nxt;
     u8_t flags;
 };
 #define tcp_clear_flags(pcb, flag_bits) \
