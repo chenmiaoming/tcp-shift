@@ -140,6 +140,7 @@ jobs:
         run: |
           sudo env \
             TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P4_PAYLOAD_BYTES=93440 \
             TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
             sh scripts/p4-cc-recovery-smoke.sh multi-loss
 
