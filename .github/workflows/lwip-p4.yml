@@ -143,6 +143,18 @@ jobs:
             TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
             sh scripts/p4-cc-recovery-smoke.sh multi-loss
 
+      - name: Exercise integrated CUBIC multiple-loss recovery path
+        run: |
+          sudo env \
+            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P4_CC=cubic \
+            TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
+            TCP_SHIFT_P4_OUT="$PWD/.build/p4-multi-loss-cubic-ci" \
+            TCP_SHIFT_P4_TUN_NAME=tsp4cubm0 \
+            TCP_SHIFT_P4_PUBLIC_PORT=18144 \
+            TCP_SHIFT_P4_BACKEND_PORT=19144 \
+            sh scripts/p4-cc-recovery-smoke.sh multi-loss
+
       - name: Exercise integrated Reno RTO path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
@@ -157,6 +169,7 @@ jobs:
             .build/p4-fast-loss-ci
             .build/p4-fast-loss-cubic-ci
             .build/p4-multi-loss-ci
+            .build/p4-multi-loss-cubic-ci
             .build/p4-rto-ci
             .build/p4-live-selector-summary.txt
             .build/p4-invalid-selector.stdout
