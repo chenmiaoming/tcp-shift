@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified; sender-side multiple-loss fast-recovery follow-up is active in Draft PR #35**.
+Status: **runner-qualified; sender-side multiple-loss fast-recovery follow-up is qualified in PR #35**.
 
 ## Goal
 
@@ -101,7 +101,7 @@ mode=rto payload_bytes=262144 recovery=ok
 
 Neither test calls generic loss/RTO functions directly.
 
-## Sender-side multiple-loss recovery follow-up — Draft PR #35
+## Sender-side multiple-loss recovery follow-up — PR #35
 
 The pinned sender's classic Reno recovery retransmits only the first unacknowledged segment after three duplicate ACKs and clears `TF_INFR` on the next ACK of new data. With multiple losses in one transmitted window, that ACK can be only a partial ACK; exiting recovery at that point can require another fast-retransmit episode or an RTO. The pinned `LWIP_TCP_SACK_OUT` option defaults to 0 and implements receiver-side SACK advertisement rather than a sender SACK scoreboard, so #35 does not attempt to solve this by enabling SACK output.
 
@@ -125,6 +125,8 @@ bbr    goodput=7.474424 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=
 All three therefore repair the second hole inside one recovery episode without an RTO or a second congestion-loss signal. Single-loss and explicit-RTO gates remain separate and still pass.
 
 A 260 ms / 10 Mbit/s / 1% random-loss diagnostic also improved materially without changing BBR gains or state-machine policy. One #35 run measured internal BBR at 3.240266 Mbit/s with 25 qdisc data drops, 25 retransmissions, 6 loss observations and zero RTOs; same-stack CUBIC measured 0.609776 Mbit/s with 32 drops/retransmissions and zero RTOs; the Linux BBR reference measured 5.634074 Mbit/s with 37 drops/retransmissions. Because each random-loss run sees a different realization, these goodput ratios remain diagnostic rather than pass/fail parity thresholds.
+
+At pre-closeout checkpoint `5f67bec364d2e5ce0e05dbc96574ec29dfc40cbc`, all 15 PR-triggered workflows are green, including P3 memory, P4 integrated recovery, P6 BBR runtime/model/reference, upstream provenance, CUBIC/Linux benchmarks, and CC parity. No recovery or memory gate was relaxed.
 
 ## Memory/CPU requalification
 
