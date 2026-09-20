@@ -136,6 +136,13 @@ jobs:
             TCP_SHIFT_P4_BACKEND_PORT=19142 \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
+      - name: Exercise integrated Reno multiple-loss recovery path
+        run: |
+          sudo env \
+            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
+            sh scripts/p4-cc-recovery-smoke.sh multi-loss
+
       - name: Exercise integrated Reno RTO path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
@@ -149,6 +156,7 @@ jobs:
           path: |
             .build/p4-fast-loss-ci
             .build/p4-fast-loss-cubic-ci
+            .build/p4-multi-loss-ci
             .build/p4-rto-ci
             .build/p4-live-selector-summary.txt
             .build/p4-invalid-selector.stdout
