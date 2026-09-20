@@ -9,6 +9,8 @@ PAYLOAD_BYTES=${TCP_SHIFT_P4_PAYLOAD_BYTES:-262144}
 CC=${TCP_SHIFT_P4_CC:-reno}
 REQUIRE_PACING=${TCP_SHIFT_P4_REQUIRE_PACING:-0}
 REQUIRE_RETRANSMIT=${TCP_SHIFT_P4_REQUIRE_RETRANSMIT:-0}
+MULTI_LOSS_FIRST_PACKET=${TCP_SHIFT_P4_MULTI_LOSS_FIRST_PACKET:-80}
+MULTI_LOSS_SECOND_PACKET=${TCP_SHIFT_P4_MULTI_LOSS_SECOND_PACKET:-84}
 
 case "$REQUIRE_PACING:$REQUIRE_RETRANSMIT" in
     0:0|0:1|1:0|1:1) ;;
@@ -197,15 +199,18 @@ case "$MODE" in
             -m statistic --mode nth --every 10000 --packet 10 -j DROP
         ;;
     multi-loss)
-        # Drop two data packets in the same early flight. Separate nth matchers
-        # each fire once in this transfer; the first DROP short-circuits the
-        # chain for that packet, so the second matcher lands a few packets later.
+        # Drop two data packets after the initial small flight has expanded.
+        # Keep several successfully delivered packets between the holes so the
+        # first loss can always collect three dupacks; the second hole still
+        # remains below the recover boundary captured by fast retransmit.
+        # Separate nth matchers each fire once in this transfer; the first DROP
+        # short-circuits the chain for that packet.
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-            -m statistic --mode nth --every 10000 --packet 10 -j DROP
+            -m statistic --mode nth --every 10000 --packet "$MULTI_LOSS_FIRST_PACKET" -j DROP
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-            -m statistic --mode nth --every 10000 --packet 12 -j DROP
+            -m statistic --mode nth --every 10000 --packet "$MULTI_LOSS_SECOND_PACKET" -j DROP
         ;;
     rto)
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
