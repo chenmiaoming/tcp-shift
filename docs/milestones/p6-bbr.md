@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; PR #34 completed the compact BBRv1-style runtime/reference qualification and Draft PR #35 now qualifies transport-owned NewReno-style sender recovery under multiple loss; public `bbr` selection remains disabled pending broader loss/burst/WAN qualification**.
+Status: **active; PR #34 completed the compact BBRv1-style runtime/reference qualification and PR #35 now qualifies transport-owned NewReno-style sender recovery under multiple loss; public `bbr` selection remains disabled pending broader loss/burst/WAN qualification**.
 
 ## Congestion-control architecture
 
@@ -115,9 +115,11 @@ Reference qualification is also complete on the PR branch. The clean Linux BBR +
 
 The moderate-loss diagnostic deliberately remains a reference rather than a parity gate. PR #34 established the original signal: on one 260 ms / 10 Mbit/s / 1% random-data-loss realization, internal BBR measured 1.166791 Mbit/s with 73 retransmission events and two RTOs, same-stack CUBIC measured 0.497755 Mbit/s, and Linux BBR measured 5.871238 Mbit/s. That result localized the next investigation below or around sender-side transport recovery rather than justifying BBR gain/state-machine tuning.
 
-Draft PR #35 now adds transport-owned RFC 6582/NewReno-style partial-ACK recovery without changing BBR gains or mode transitions. A deterministic 40 ms / 10 Mbit/s / 1 MiB case injects exactly two data losses inside one recovery flight. Reno, CUBIC, and internal BBR each recover with exactly two retransmission events, one congestion-loss episode, zero RTOs, zero qdisc drops, and exact payload integrity. Representative goodputs were 7.495445 Mbit/s for Reno, 7.278120 Mbit/s for CUBIC, and 7.474424 Mbit/s for internal BBR.
+PR #35 now adds transport-owned RFC 6582/NewReno-style partial-ACK recovery without changing BBR gains or mode transitions. A deterministic 40 ms / 10 Mbit/s / 1 MiB case injects exactly two data losses inside one recovery flight. Reno, CUBIC, and internal BBR each recover with exactly two retransmission events, one congestion-loss episode, zero RTOs, zero qdisc drops, and exact payload integrity. Representative goodputs were 7.495445 Mbit/s for Reno, 7.278120 Mbit/s for CUBIC, and 7.474424 Mbit/s for internal BBR.
 
 The same follow-up materially improves the long-RTT random-loss diagnostic while preserving the no-parity-gate rule. In one #35 realization, internal BBR measured 3.240266 Mbit/s with 25 data qdisc drops, 25 retransmissions, six loss observations, and zero RTOs; same-stack CUBIC measured 0.609776 Mbit/s with 32 drops/retransmissions and zero RTOs; Linux BBR measured 5.634074 Mbit/s with 37 drops/retransmissions. The internal/Linux goodput ratio for that particular realization was 0.575120, but random-loss ratios remain diagnostic because each run sees a different loss pattern. The stronger correctness evidence is the deterministic two-loss gate and the disappearance of RTO fallback without BBR policy tuning.
+
+At pre-closeout checkpoint `5f67bec364d2e5ce0e05dbc96574ec29dfc40cbc`, all 15 PR-triggered workflows are green with the NewReno transport recovery path enabled; P3 and zero-drop clean/reference gates remain unchanged.
 
 PR #34 was squash-merged as `7bbb175c4d0d69fa5858380b73710a9f8c41d204`. Public selector exposure remains intentionally deferred. After #35, the next loss qualification should stress burst/high-loss and representative WAN conditions before deciding whether transport recovery needs further mechanisms such as sender-side SACK; SACK is not being added preemptively.
 
