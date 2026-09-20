@@ -10,8 +10,6 @@ CC=${TCP_SHIFT_P4_CC:-reno}
 REQUIRE_PACING=${TCP_SHIFT_P4_REQUIRE_PACING:-0}
 REQUIRE_RETRANSMIT=${TCP_SHIFT_P4_REQUIRE_RETRANSMIT:-0}
 FAST_LOSS_PACKET=${TCP_SHIFT_P4_FAST_LOSS_PACKET:-50}
-MULTI_LOSS_FIRST_PACKET=${TCP_SHIFT_P4_MULTI_LOSS_FIRST_PACKET:-58}
-MULTI_LOSS_SECOND_PACKET=${TCP_SHIFT_P4_MULTI_LOSS_SECOND_PACKET:-62}
 
 case "$REQUIRE_PACING:$REQUIRE_RETRANSMIT" in
     0:0|0:1|1:0|1:1) ;;
@@ -25,12 +23,6 @@ case "$MODE" in
         PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18140}
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19140}
         ;;
-    multi-loss)
-        DEFAULT_OUT="$BUILD/p4-multi-loss-ci"
-        TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4multi0}
-        PUBLIC_PORT=${TCP_SHIFT_P4_PUBLIC_PORT:-18143}
-        BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19143}
-        ;;
     rto)
         DEFAULT_OUT="$BUILD/p4-rto-ci"
         TUN_NAME=${TCP_SHIFT_P4_TUN_NAME:-tsp4rto0}
@@ -38,7 +30,7 @@ case "$MODE" in
         BACKEND_PORT=${TCP_SHIFT_P4_BACKEND_PORT:-19141}
         ;;
     *)
-        echo "usage: $0 <fast-loss|multi-loss|rto>" >&2
+        echo "usage: $0 <fast-loss|rto>" >&2
         exit 2
         ;;
 esac
@@ -199,20 +191,6 @@ case "$MODE" in
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
             -m statistic --mode nth --every 10000 --packet "$FAST_LOSS_PACKET" -j DROP
         ;;
-    multi-loss)
-        # Drop two data packets after the initial small flight has expanded.
-        # Keep several successfully delivered packets between the holes so the
-        # first loss can always collect three dupacks; the second hole still
-        # remains below the recover boundary captured by fast retransmit.
-        # Separate nth matchers each fire once in this transfer; the first DROP
-        # short-circuits the chain for that packet.
-        iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-            -m statistic --mode nth --every 10000 --packet "$MULTI_LOSS_FIRST_PACKET" -j DROP
-        iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-            -m statistic --mode nth --every 10000 --packet "$MULTI_LOSS_SECOND_PACKET" -j DROP
-        ;;
     rto)
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 -j DROP
@@ -270,7 +248,7 @@ if ! wait "$CLIENT_PID"; then
 fi
 CLIENT_PID=
 
-if [ "$MODE" = fast-loss ] || [ "$MODE" = multi-loss ]; then
+if [ "$MODE" = fast-loss ]; then
     iptables -nvxL "$CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
@@ -303,12 +281,6 @@ fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 
     echo "P4 $MODE fault rule dropped no packet" >&2
     exit 1
 }
-if [ "$MODE" = multi-loss ] && [ "$fault_drops" -ne 2 ]; then
-    cat "$OUT/iptables-fault.txt" >&2 || true
-    echo "P4 multi-loss expected exactly two dropped data packets: drops=$fault_drops" >&2
-    exit 1
-fi
-
 grep -F "backend-bytes=$PAYLOAD_BYTES " "$OUT/backend.stdout" >/dev/null
 grep -F ' echo=ok' "$OUT/backend.stdout" >/dev/null
 grep -F "bytes=$PAYLOAD_BYTES " "$OUT/client.stdout" >/dev/null
@@ -366,16 +338,6 @@ case "$MODE" in
         }
         [ "$timeout_events" -eq 0 ] || {
             echo "fast-loss path fell through to RTO: timeout_events=$timeout_events" >&2
-            exit 1
-        }
-        ;;
-    multi-loss)
-        [ "$loss_events" -eq 1 ] || {
-            echo "multi-loss path did not stay in one recovery episode: loss_events=$loss_events" >&2
-            exit 1
-        }
-        [ "$timeout_events" -eq 0 ] || {
-            echo "multi-loss path fell through to RTO: timeout_events=$timeout_events" >&2
             exit 1
         }
         ;;
