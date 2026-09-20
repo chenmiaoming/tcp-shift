@@ -364,8 +364,8 @@ case "$MODE" in
         }
         ;;
     multi-loss)
-        [ "$loss_events" -ge 1 ] || {
-            echo "multi-loss path produced no controller loss event" >&2
+        [ "$loss_events" -eq 1 ] || {
+            echo "multi-loss path did not stay in one recovery episode: loss_events=$loss_events" >&2
             exit 1
         }
         [ "$timeout_events" -eq 0 ] || {
