@@ -34,7 +34,7 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch`.
 
-The controlled patch remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. Draft PR #35 additionally extends the sender ACK/recovery path in `tcp_in.c` with bounded NewReno-style partial-ACK handling.
+The controlled patch remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 additionally extends the sender ACK/recovery path in `tcp_in.c` with bounded NewReno-style partial-ACK handling.
 
 Unbound PCBs retain native pinned-lwIP behavior. For bound tcp-shift PCBs, the patched lwIP transport still owns duplicate-ACK processing, retransmission execution, `TF_INFR`, recovery-window mechanics, RTT/RTO calculation, queues, sequence space, packet construction, and `tcp_output()`. The congestion controller receives observations and may own only its published recovery cwnd when explicitly declared (internal BBR); sender recovery itself is not moved into `src/cc/`.
 
