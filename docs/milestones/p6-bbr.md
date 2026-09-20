@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; the compact BBRv1-style model/lifecycle/recovery is qualified and internal lwIP runtime integration is complete in Draft PR #34; public `bbr` selection remains disabled pending broader reference and multi-flow qualification**.
+Status: **active; the compact BBRv1-style model/lifecycle/runtime integration plus clean reference, multi-flow, and live app-limited qualification are complete in PR #34; public `bbr` selection remains disabled while sender-side loss recovery is qualified separately**.
 
 ## Congestion-control architecture
 
@@ -111,11 +111,15 @@ The P6 runtime job now qualifies three real paths. A clean 4 MiB long flow over 
 
 The earlier hosted-runner P3 repeated-drain failure at 141 KiB did not reproduce as a stable regression: a later run measured 121 KiB with the original 128 KiB gate unchanged. Absolute drained PSS stayed approximately 430–431 KiB while the ready baseline moved materially, so the threshold was not loosened.
 
-At checkpoint `bfbb85140b9cb4d82f71e057ded3393031484345`, all 14 PR-triggered workflows are green. Public selector exposure remains intentionally deferred; the next qualification stage is external/reference BBR comparison and broader RTT/bandwidth/multi-flow coverage.
+Reference qualification is also complete on the PR branch. The clean Linux BBR + `sch_fq` matrix covers low-, edge-, and high-BDP paths; tcp-shift internal BBR remained within roughly 1–2% of the Linux reference goodput in those lossless cases, with zero tcp-shift qdisc drops/loss/RTO. A four-flow 40 ms / 10 Mbit/s shared-bottleneck case measured 8.261989 Mbit/s aggregate tcp-shift goodput with Jain fairness 0.985843 versus 7.993226 Mbit/s and 0.998559 for Linux BBR; the shared tcp-shift pacer reached `heap_peak=4`. A live two-burst application-limited case observed two app-limited entries, two exits, 31 app-limited rate samples, and zero qdisc drops/loss/RTO.
+
+The moderate-loss diagnostic deliberately remains a reference rather than a parity gate. On the current 260 ms / 10 Mbit/s / 1% random-data-loss case, one successful run measured internal BBR at 1.166791 Mbit/s, same-stack CUBIC at 0.497755 Mbit/s, and Linux BBR at 5.871238 Mbit/s. Internal BBR therefore outperformed the same lwIP transport running CUBIC in that run while both remained well below the Linux transport/reference. The accompanying loss/retransmission/RTO telemetry localizes the next investigation below or around sender-side transport recovery rather than justifying BBR gain/state-machine tuning; random-loss goodput ratios are intentionally not treated as deterministic pass/fail thresholds.
+
+At checkpoint `e30cad07a3c410299fa0ea74ad22ebcb06e2b3eb`, all 15 PR-triggered workflows are green. Public selector exposure remains intentionally deferred. The next development increment is a separate sender-side loss-recovery qualification/change set, starting with deterministic multiple-loss behavior and the pinned lwIP recovery/SACK capabilities rather than widening the BBR controller.
 
 ## Original planned order from P6d
 
-Items 1–6 below are now implemented and qualified by the current compact-controller/runtime checkpoints. Item 7 is the next active qualification direction; public default changes remain out of scope.
+Items 1–7 below are now substantially qualified by the compact-controller/runtime and Linux-reference checkpoints. The remaining active work is transport recovery under repeated/multiple loss; public default changes remain out of scope.
 
 
 
@@ -125,7 +129,7 @@ Items 1–6 below are now implemented and qualified by the current compact-contr
 4. implement classic 8-phase BBRv1-style `PROBE_BW` and ProbeRTT;
 5. wrap the completed compact state machine as its own `tcp_shift_cc_ops` controller and add `bbr` to the registry only through qualification paths;
 6. run live BBR through the existing event-driven process-wide pacer; do not add per-flow timers, polling, or recovery ownership;
-7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases;
+7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases; clean/reference, multi-flow, app-limited, and moderate random-loss diagnostics are now present, while deterministic multiple-loss transport recovery remains separate follow-up work;
 8. add selected v3-informed fixes to compact `bbr` only for demonstrated failures;
 9. design `bbrv3` as a separate future ops/state implementation if full draft semantics are still desired;
 10. rerun P3 memory/CPU plus all P0-P6 gates before changing any production default.
