@@ -13,6 +13,7 @@
     } while (0)
 
 struct fake_state {
+    unsigned ack_observe_calls;
     unsigned loss_calls;
     unsigned timeout_calls;
     unsigned recovery_exit_calls;
@@ -20,6 +21,18 @@ struct fake_state {
     unsigned handle_timeout;
     unsigned handle_recovery_exit;
 };
+
+static int fake_ack_observe(void *arg,
+                            struct tcp_pcb *pcb,
+                            tcpwnd_size_t acked_bytes)
+{
+    struct fake_state *state = arg;
+
+    (void)pcb;
+    (void)acked_bytes;
+    state->ack_observe_calls++;
+    return 1;
+}
 
 static int fake_loss(void *arg,
                      struct tcp_pcb *pcb,
@@ -54,6 +67,7 @@ static int fake_timeout(void *arg, struct tcp_pcb *pcb)
 int main(void)
 {
     static const struct tcp_shift_lwip_cc_hook_ops ops = {
+        .on_ack_observe = fake_ack_observe,
         .on_loss = fake_loss,
         .on_timeout = fake_timeout,
         .on_recovery_exit = fake_recovery_exit,
@@ -68,6 +82,9 @@ int main(void)
     hook.ops = &ops;
     hook.arg = &state;
     pcb.ext_args[TCP_SHIFT_LWIP_CC_EXT_ARG_ID] = &hook;
+
+    CHECK(tcp_shift_lwip_cc_hook_ack_observe(&pcb, 1460U) == 1);
+    CHECK(state.ack_observe_calls == 1U);
 
     state.handle_loss = 1U;
     pcb.snd_nxt = 9000U;
@@ -136,6 +153,7 @@ int main(void)
 
     printf("lwip_recovery_observation=ok enter=handled-fast-loss "
            "exit=before-tf-infr-clear timeout=reset controller_owned=qualified "
-           "transport_recovery=newreno-partial-ack transport_owned=1\n");
+           "transport_recovery=newreno-partial-ack transport_owned=1 "
+           "ack_observation=separate-policy\n");
     return 0;
 }
