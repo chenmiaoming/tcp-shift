@@ -203,18 +203,14 @@ jobs:
             TCP_SHIFT_P4_BACKEND_PORT=19160 \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
-      - name: Exercise internal BBR multiple-loss recovery
+      - name: Exercise internal BBR high-BDP multiple-loss recovery
         run: |
           sudo env \
-            TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
-            TCP_SHIFT_P4_CC=bbr-internal \
-            TCP_SHIFT_P4_REQUIRE_PACING=1 \
-            TCP_SHIFT_P4_REQUIRE_RETRANSMIT=1 \
-            TCP_SHIFT_P4_OUT="$PWD/.build/p6-bbr-multi-loss-ci" \
-            TCP_SHIFT_P4_TUN_NAME=tsp6bbr2 \
-            TCP_SHIFT_P4_PUBLIC_PORT=18162 \
-            TCP_SHIFT_P4_BACKEND_PORT=19162 \
-            sh scripts/p4-cc-recovery-smoke.sh multi-loss
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-multi-loss-ci" \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
+            sh scripts/p6-bbr-long-flow.sh
 
       - name: Exercise internal BBR RTO recovery
         run: |
