@@ -136,6 +136,6 @@ int main(void)
 
     printf("lwip_recovery_observation=ok enter=handled-fast-loss "
            "exit=before-tf-infr-clear timeout=reset controller_owned=qualified "
-           "native_recovery=unchanged\n");
+           "transport_recovery=newreno-partial-ack transport_owned=1\n");
     return 0;
 }
