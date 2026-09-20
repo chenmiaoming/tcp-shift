@@ -118,7 +118,7 @@ grep -F 'lwip_recovery_observation=ok enter=handled-fast-loss ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
 grep -F 'exit=before-tf-infr-clear timeout=reset controller_owned=qualified ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
-grep -F 'native_recovery=unchanged' \
+grep -F 'transport_recovery=newreno-partial-ack transport_owned=1' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
 
 printf '%s\n' \
