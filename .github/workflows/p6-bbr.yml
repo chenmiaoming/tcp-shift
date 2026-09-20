@@ -203,7 +203,7 @@ jobs:
             TCP_SHIFT_P4_BACKEND_PORT=19160 \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
-      - name: Exercise internal BBR high-BDP multiple-loss recovery
+      - name: Exercise internal BBR RTT-bearing multiple-loss recovery
         run: |
           sudo env \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
