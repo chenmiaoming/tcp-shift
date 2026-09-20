@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; P6a/P6b/P6c and the shared controller prerequisites are merged; P6d 10-round bandwidth-filter realignment is active**.
+Status: **active; the compact BBRv1-style model/lifecycle/runtime integration plus clean reference, multi-flow, and live app-limited qualification are complete in PR #34; public `bbr` selection remains disabled while sender-side loss recovery is qualified separately**.
 
 ## Congestion-control architecture
 
@@ -77,7 +77,7 @@ The controller work needed before `bbr` can become a peer is now qualified rathe
 
 PR #23 was squash-merged as `b0f44fbb7317cef93e90b1912896194f8c174947`. Its integrated CUBIC recovery gate transferred and echoed 262144 bytes, injected a data loss, required at least one controller loss event, required zero timeout fall-through, and retained zero controller errors. Reno remains the production default.
 
-## Increment P6d: BBRv1-style max-bandwidth horizon — active
+## Increment P6d: BBRv1-style max-bandwidth horizon — completed
 
 The transitional two-ProbeBW-cycle max-bandwidth window is being replaced with an exact ten packet-timed-round ring, matching the compact core's Linux BBRv1-style horizon (`CYCLE_LEN + 2`).
 
@@ -93,7 +93,35 @@ The deterministic contract covers:
 
 This straightforward exact ring increases pure-model state relative to the transitional two-slot filter. `bbr` is still not live per-flow state, so P6d prioritizes auditable semantics; when the controller is eventually registered, P3 memory qualification will decide whether a more compact equivalent representation is worthwhile.
 
-## Planned order from P6d
+## Runtime integration checkpoint — Draft PR #34
+
+The compact controller is now bound to a real lwIP runtime through an internal-only qualification target; it is still not registered as a public `bbr` selector.
+
+The runtime boundary keeps ownership split deliberately:
+
+- the generic adapter retains delivery sampling and the process-wide event-driven pacer;
+- BBR state is lazily allocated as a PCB sidecar rather than embedded in every generic adapter;
+- BBR publishes a `3×cwnd` sender-buffer expansion hint, while allocation, `tcp_wmem.max`, pressure and accounting remain transport-owned;
+- fast loss maps pinned-lwIP outstanding sequence space to post-loss inflight before packet-conservation entry;
+- controller-owned BBR recovery suppresses only native lwIP recovery cwnd rewrites; Reno/CUBIC retain their existing native recovery path;
+- recovery exit restores BBR's prior cwnd before the same ACK resumes normal delivery-sample processing;
+- the RTO hook runs after `tcp_rexmit_rto_prepare()`, so the transport-equivalent post-loss inflight observation is zero at that boundary, and an RTO supersedes any active controller-owned fast-recovery episode.
+
+The P6 runtime job now qualifies three real paths. A clean 4 MiB long flow over 40 ms / 10 Mbit/s with an eight-BDP lossless netem queue observed 9.159029 Mbit/s goodput, 2,281 controller policy updates, 2,280 valid delivery-rate samples, 4,658 pacer deferrals, 2,640 pacer resumes, zero qdisc drops, zero controller loss/RTO events, and exact payload integrity. Separate deterministic fault cases qualify fast loss (`loss_events=1`, no timeout) and RTO (`timeout_events=2`) while requiring retransmission and shared-pacer execution.
+
+The earlier hosted-runner P3 repeated-drain failure at 141 KiB did not reproduce as a stable regression: a later run measured 121 KiB with the original 128 KiB gate unchanged. Absolute drained PSS stayed approximately 430–431 KiB while the ready baseline moved materially, so the threshold was not loosened.
+
+Reference qualification is also complete on the PR branch. The clean Linux BBR + `sch_fq` matrix covers low-, edge-, and high-BDP paths; tcp-shift internal BBR remained within roughly 1–2% of the Linux reference goodput in those lossless cases, with zero tcp-shift qdisc drops/loss/RTO. A four-flow 40 ms / 10 Mbit/s shared-bottleneck case measured 8.261989 Mbit/s aggregate tcp-shift goodput with Jain fairness 0.985843 versus 7.993226 Mbit/s and 0.998559 for Linux BBR; the shared tcp-shift pacer reached `heap_peak=4`. A live two-burst application-limited case observed two app-limited entries, two exits, 31 app-limited rate samples, and zero qdisc drops/loss/RTO.
+
+The moderate-loss diagnostic deliberately remains a reference rather than a parity gate. On the current 260 ms / 10 Mbit/s / 1% random-data-loss case, one successful run measured internal BBR at 1.166791 Mbit/s, same-stack CUBIC at 0.497755 Mbit/s, and Linux BBR at 5.871238 Mbit/s. Internal BBR therefore outperformed the same lwIP transport running CUBIC in that run while both remained well below the Linux transport/reference. The accompanying loss/retransmission/RTO telemetry localizes the next investigation below or around sender-side transport recovery rather than justifying BBR gain/state-machine tuning; random-loss goodput ratios are intentionally not treated as deterministic pass/fail thresholds.
+
+At checkpoint `e30cad07a3c410299fa0ea74ad22ebcb06e2b3eb`, all 15 PR-triggered workflows are green. Public selector exposure remains intentionally deferred. The next development increment is a separate sender-side loss-recovery qualification/change set, starting with deterministic multiple-loss behavior and the pinned lwIP recovery/SACK capabilities rather than widening the BBR controller.
+
+## Original planned order from P6d
+
+Items 1–7 below are now substantially qualified by the compact-controller/runtime and Linux-reference checkpoints. The remaining active work is transport recovery under repeated/multiple loss; public default changes remain out of scope.
+
+
 
 1. finish and merge the 10-round bandwidth-filter qualification with `bbr` still unavailable in the registry;
 2. add overflow-safe BDP/gain arithmetic and compact Startup pacing/cwnd policy in pure C;
@@ -101,7 +129,7 @@ This straightforward exact ring increases pure-model state relative to the trans
 4. implement classic 8-phase BBRv1-style `PROBE_BW` and ProbeRTT;
 5. wrap the completed compact state machine as its own `tcp_shift_cc_ops` controller and add `bbr` to the registry only through qualification paths;
 6. run live BBR through the existing event-driven process-wide pacer; do not add per-flow timers, polling, or recovery ownership;
-7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases;
+7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases; clean/reference, multi-flow, app-limited, and moderate random-loss diagnostics are now present, while deterministic multiple-loss transport recovery remains separate follow-up work;
 8. add selected v3-informed fixes to compact `bbr` only for demonstrated failures;
 9. design `bbrv3` as a separate future ops/state implementation if full draft semantics are still desired;
 10. rerun P3 memory/CPU plus all P0-P6 gates before changing any production default.

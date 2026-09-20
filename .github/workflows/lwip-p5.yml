@@ -11,6 +11,7 @@ on:
       - 'src/bridge/**'
       - 'src/lwip/**'
       - 'src/lwipopts.h'
+      - 'src/config_contract.c'
       - 'src/p2_main.c'
       - 'scripts/fetch-lwip.sh'
       - 'scripts/p2-bridge-smoke.sh'
@@ -66,7 +67,7 @@ jobs:
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build --target tcp-shift-p2 --parallel
+          cmake --build .build --target tcp-shift-p2 tcp-shift-config-contract --parallel
 
       - name: Grant TUN administration capability for natural paths
         run: |

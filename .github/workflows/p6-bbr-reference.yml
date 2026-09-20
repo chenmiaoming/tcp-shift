@@ -1,0 +1,445 @@
+name: P6 BBR Linux reference
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p6-bbr-reference.yml'
+      - 'scripts/p6-bbr-long-flow.sh'
+      - 'scripts/p6-bbr-multiflow.sh'
+      - 'scripts/p6-bbr-app-limited.sh'
+      - 'scripts/linux-cubic-pacing-reference.sh'
+      - 'scripts/linux-bbr-multiflow-reference.sh'
+      - 'scripts/p6-bbr-reference-evaluate.py'
+      - 'scripts/p6-bbr-multiflow-evaluate.py'
+      - 'scripts/p6-bbr-loss-reference-evaluate.py'
+      - 'scripts/p6-bbr-loss-same-stack-evaluate.py'
+      - 'src/cc/**'
+      - 'src/lwip/**'
+      - 'src/runtime/**'
+      - 'src/bridge/**'
+      - 'src/p2_main.c'
+      - 'src/lwipopts.h'
+      - 'CMakeLists.txt'
+      - 'scripts/fetch-lwip.sh'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.lwip-baseline'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  single-flow-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: low-bdp
+            rtt_ms: 10
+            rate_mbit: 20
+            payload_bytes: 8388608
+            queue_pkts: 144
+          - case: edge-bdp
+            rtt_ms: 40
+            rate_mbit: 10
+            payload_bytes: 8388608
+            queue_pkts: 280
+          - case: high-bdp
+            rtt_ms: 100
+            rate_mbit: 50
+            payload_bytes: 33554432
+            queue_pkts: 3432
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install BBR reference dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate BBR reference harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-bbr-reference-evaluate.py
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-reference -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-reference --target tcp-shift-p6-bbr --parallel
+
+      - name: Run tcp-shift internal BBR clean flow
+        run: |
+          out="$PWD/.build/p6-bbr-reference/${{ matrix.case }}/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-reference/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run Linux tcp_bbr reference
+        run: |
+          out="$PWD/.build/p6-bbr-reference/${{ matrix.case }}/linux-bbr"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=bbr \
+            TCP_SHIFT_LINUX_PACING_CASE="${{ matrix.case }}" \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS="${{ matrix.rtt_ms }}" \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT="${{ matrix.rate_mbit }}" \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES="${{ matrix.payload_bytes }}" \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS="${{ matrix.queue_pkts }}" \
+            TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS=1 \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare tcp-shift BBR with Linux reference
+        run: |
+          root="$PWD/.build/p6-bbr-reference/${{ matrix.case }}"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-bbr-reference-evaluate.py \
+            "${{ matrix.case }}" \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-bbr/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish BBR reference evidence
+        if: always()
+        run: |
+          root=".build/p6-bbr-reference/${{ matrix.case }}"
+          {
+            echo "## P6 BBR reference: ${{ matrix.case }}"
+            echo
+            echo "RTT=${{ matrix.rtt_ms }}ms rate=${{ matrix.rate_mbit }}Mbit payload=${{ matrix.payload_bytes }} bytes queue=${{ matrix.queue_pkts }} packets"
+            echo "Linux reference uses tcp_bbr with sch_fq on the sender and receiver-side IFB/netem shaping."
+            for file in "$root/tcp-shift/summary.txt" "$root/cubic/summary.txt" \
+              "$root/same-stack-comparison.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload BBR reference diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-reference-${{ matrix.case }}
+          path: .build/p6-bbr-reference/${{ matrix.case }}
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  multiflow-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install multi-flow dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Validate multi-flow harnesses
+        run: |
+          sh -n scripts/p6-bbr-multiflow.sh
+          sh -n scripts/linux-bbr-multiflow-reference.sh
+          python3 -m py_compile scripts/p6-bbr-multiflow-evaluate.py
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-multiflow -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-multiflow --target tcp-shift-p6-bbr --parallel
+
+      - name: Run four internal BBR flows on one bottleneck
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-bbr-multiflow/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_MULTI_OUT="$PWD/.build/p6-bbr-multiflow/edge-bdp" \
+            sh scripts/p6-bbr-multiflow.sh
+
+      - name: Run four Linux BBR flows on the same path model
+        run: |
+          sudo env \
+            TCP_SHIFT_LINUX_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_LINUX_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_LINUX_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_BBR_MULTI_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_LINUX_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_LINUX_BBR_MULTI_OUT="$PWD/.build/linux-bbr-multiflow/edge-bdp" \
+            sh scripts/linux-bbr-multiflow-reference.sh
+
+      - name: Compare multi-flow behavior
+        run: |
+          sudo chown -R "$USER:$USER" \
+            "$PWD/.build/p6-bbr-multiflow/edge-bdp" \
+            "$PWD/.build/linux-bbr-multiflow/edge-bdp"
+          python3 scripts/p6-bbr-multiflow-evaluate.py \
+            "$PWD/.build/p6-bbr-multiflow/edge-bdp/summary.txt" \
+            "$PWD/.build/linux-bbr-multiflow/edge-bdp/summary.txt" \
+            | tee "$PWD/.build/p6-bbr-multiflow/edge-bdp/comparison.txt"
+
+      - name: Publish multi-flow evidence
+        if: always()
+        run: |
+          {
+            echo "## P6 BBR multi-flow reference"
+            for file in \
+              .build/p6-bbr-multiflow/edge-bdp/summary.txt \
+              .build/linux-bbr-multiflow/edge-bdp/summary.txt \
+              .build/p6-bbr-multiflow/edge-bdp/comparison.txt; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload multi-flow diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-multiflow-edge-bdp
+          path: |
+            .build/p6-bbr-multiflow/edge-bdp
+            .build/linux-bbr-multiflow/edge-bdp
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  app-limited-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install app-limited dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Validate app-limited harness
+        run: sh -n scripts/p6-bbr-app-limited.sh
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-app -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-app --target tcp-shift-p6-bbr --parallel
+
+      - name: Exercise live app-limited transition
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_APP_BINARY="$PWD/.build-p6-bbr-app/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_APP_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_APP_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_APP_BURST_BYTES=524288 \
+            TCP_SHIFT_P6_BBR_APP_IDLE_MS=1000 \
+            TCP_SHIFT_P6_BBR_APP_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_APP_OUT="$PWD/.build/p6-bbr-app-limited/edge-bdp" \
+            sh scripts/p6-bbr-app-limited.sh
+
+      - name: Publish app-limited evidence
+        if: always()
+        run: |
+          root=.build/p6-bbr-app-limited/edge-bdp
+          if [ -f "$root/summary.txt" ]; then
+            cat "$root/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload app-limited diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-app-limited-edge-bdp
+          path: .build/p6-bbr-app-limited/edge-bdp
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  moderate-loss-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install loss-reference dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate random-loss harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-bbr-loss-reference-evaluate.py
+          python3 -m py_compile scripts/p6-bbr-loss-same-stack-evaluate.py
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-loss -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-loss --target tcp-shift-p6-bbr tcp-shift-p2 --parallel
+
+      - name: Run tcp-shift BBR with moderate random loss
+        run: |
+          out="$PWD/.build/p6-bbr-loss/moderate-260ms/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-loss/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_LOSS_PCT=1 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run tcp-shift CUBIC on the same random-loss path
+        run: |
+          out="$PWD/.build/p6-bbr-loss/moderate-260ms/cubic"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-loss/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_LOSS_PCT=1 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Compare same-stack loss behavior
+        run: |
+          root="$PWD/.build/p6-bbr-loss/moderate-260ms"
+          sudo chown "$USER:$USER" "$root"
+          sudo chown -R "$USER:$USER" "$root/tcp-shift" "$root/cubic"
+          python3 scripts/p6-bbr-loss-same-stack-evaluate.py \
+            "$root/tcp-shift/summary.txt" \
+            "$root/cubic/summary.txt" \
+            | tee "$root/same-stack-comparison.txt"
+
+      - name: Run Linux BBR with moderate random loss
+        run: |
+          out="$PWD/.build/p6-bbr-loss/moderate-260ms/linux-bbr"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=bbr \
+            TCP_SHIFT_LINUX_PACING_CASE=moderate-260ms \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_LOSS_PCT=1 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare moderate-loss behavior
+        run: |
+          root="$PWD/.build/p6-bbr-loss/moderate-260ms"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-bbr-loss-reference-evaluate.py \
+            moderate-260ms \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-bbr/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish moderate-loss evidence
+        if: always()
+        run: |
+          root=.build/p6-bbr-loss/moderate-260ms
+          {
+            echo "## P6 BBR moderate random loss"
+            echo
+            echo "RTT=260ms rate=10Mbit random data loss=1% payload=4MiB queue=1784 packets"
+            for file in "$root/tcp-shift/summary.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload moderate-loss diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-loss-moderate-260ms
+          path: .build/p6-bbr-loss/moderate-260ms
+          if-no-files-found: warn
+          include-hidden-files: true
+

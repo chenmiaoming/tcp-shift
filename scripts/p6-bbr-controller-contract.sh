@@ -65,9 +65,13 @@ typedef uint8_t u8_t;
 typedef uint16_t u16_t;
 typedef uint32_t u32_t;
 typedef uint32_t tcpwnd_size_t;
+#define TF_INFR 0x01U
 struct tcp_pcb {
     void *ext_args[2];
+    u8_t flags;
 };
+#define tcp_clear_flags(pcb, flag_bits) \
+    ((pcb)->flags = (u8_t)((pcb)->flags & (u8_t)~(flag_bits)))
 static inline void *tcp_ext_arg_get(const struct tcp_pcb *pcb, u8_t id)
 {
     return pcb != 0 && id < 2U ? pcb->ext_args[id] : 0;
@@ -111,7 +115,9 @@ grep -F 'cwnd=post-loss-inflight-plus-one-mss pacing=preserved' \
 "$HOOK_BINARY" | tee "$BUILD/recovery-observation-summary.txt"
 grep -F 'lwip_recovery_observation=ok enter=handled-fast-loss ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
-grep -F 'exit=before-tf-infr-clear timeout=reset native_recovery=unchanged' \
+grep -F 'exit=before-tf-infr-clear timeout=reset controller_owned=qualified ' \
+    "$BUILD/recovery-observation-summary.txt" >/dev/null
+grep -F 'native_recovery=unchanged' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
 
 printf '%s\n' \
@@ -122,5 +128,5 @@ printf '%s\n' \
     'p6i_bbr_recovery_consumption=internal-controller-qualified' \
     'p6j_bbr_timeout=loss-state-model-qualified' \
     'p6j_timeout_post_loss_inflight=transport-observation-required' \
-    'p6j_lwip_bbr_binding=pending' \
+    'p6j_lwip_bbr_binding=recovery-timeout-qualified' \
     | tee "$BUILD/reference.txt"

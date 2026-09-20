@@ -105,6 +105,7 @@ target_link_libraries(tcp_shift_lwip_tcp_memory PUBLIC tcp_shift_lwip)
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
     src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
 )
 target_include_directories(tcp_shift_lwip_cc_adapter PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp_shift_lwip_cc_adapter PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -112,6 +113,18 @@ target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC
     tcp_shift_cc
     tcp_shift_lwip
     tcp_shift_pacer
+)
+
+add_library(tcp_shift_lwip_cc_bbr_qualification STATIC
+    src/lwip/cc_bbr_accept.c
+)
+target_include_directories(tcp_shift_lwip_cc_bbr_qualification PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_lwip_cc_bbr_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp_shift_lwip_cc_bbr_qualification PUBLIC
+    tcp_shift_lwip_cc_adapter
+    tcp_shift_lwip
 )
 
 add_library(tcp_shift_lwip_cc_pacing_qualification STATIC
@@ -141,6 +154,23 @@ target_link_libraries(tcp_shift_bridge PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter
+    tcp_shift_lwip_tcp_memory
+)
+
+add_library(tcp_shift_bridge_bbr_internal STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_bbr_internal PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp_shift_bridge_bbr_internal PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_compile_definitions(tcp_shift_bridge_bbr_internal PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_internal_bbr
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
+)
+target_link_libraries(tcp_shift_bridge_bbr_internal PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_bbr_qualification
     tcp_shift_lwip_tcp_memory
 )
 
@@ -212,6 +242,21 @@ target_link_libraries(tcp-shift-p2 PRIVATE
     tcp_shift_bridge
 )
 target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
+
+add_executable(tcp-shift-p6-bbr src/p2_main.c src/platform.c)
+target_include_directories(tcp-shift-p6-bbr PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p6-bbr PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_compile_definitions(tcp-shift-p6-bbr PRIVATE
+    TCP_SHIFT_INTERNAL_BBR_QUALIFICATION=1
+)
+target_link_libraries(tcp-shift-p6-bbr PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_bbr_internal
+)
+target_link_options(tcp-shift-p6-bbr PRIVATE -Wl,--gc-sections)
 
 add_executable(tcp-shift-p5c-paced src/p2_main.c src/platform.c)
 target_include_directories(tcp-shift-p5c-paced PRIVATE ${LWIP_INCLUDE_DIRS})

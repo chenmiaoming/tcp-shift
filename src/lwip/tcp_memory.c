@@ -11,6 +11,8 @@
 struct tcp_shift_lwip_tcp_memory_ext {
     struct tcp_shift_tcp_memory_flow flow;
     tcp_sent_fn app_sent;
+    uint32_t pending_expand_num;
+    uint32_t pending_expand_den;
 };
 
 static struct tcp_shift_tcp_memory_manager tcp_shift_process_tcp_memory;
@@ -345,8 +347,24 @@ int tcp_shift_tcp_memory_flow_init(
     memset(flow, 0, sizeof(*flow));
     flow->manager = manager;
     flow->capacity_bytes = manager->config.wmem.initial_bytes;
+    flow->sndbuf_expand_num = TCP_SHIFT_TCP_SNDBUF_EXPAND_NUM;
+    flow->sndbuf_expand_den = TCP_SHIFT_TCP_SNDBUF_EXPAND_DEN;
     pcb->snd_buf = (tcpwnd_size_t)flow->capacity_bytes;
     manager->stats.flow_inits++;
+    return 0;
+}
+
+int tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+    struct tcp_shift_tcp_memory_flow *flow,
+    uint32_t expand_num,
+    uint32_t expand_den)
+{
+    if (flow == NULL || flow->manager == NULL ||
+        expand_num == 0U || expand_den == 0U) {
+        return -1;
+    }
+    flow->sndbuf_expand_num = expand_num;
+    flow->sndbuf_expand_den = expand_den;
     return 0;
 }
 
@@ -489,6 +507,8 @@ void tcp_shift_tcp_memory_flow_release(
     manager->stats.charged_bytes -= amount;
     flow->queued_bytes = 0U;
     flow->capacity_bytes = 0U;
+    flow->sndbuf_expand_num = 0U;
+    flow->sndbuf_expand_den = 0U;
     flow->manager = NULL;
     manager->stats.flow_releases++;
     tcp_shift_tcp_memory_update_pressure(manager);
@@ -585,31 +605,61 @@ tcp_shift_lwip_tcp_memory_get(struct tcp_pcb *pcb)
 }
 
 static struct tcp_shift_lwip_tcp_memory_ext *
-tcp_shift_lwip_tcp_memory_ensure(struct tcp_pcb *pcb)
+tcp_shift_lwip_tcp_memory_alloc_ext(struct tcp_pcb *pcb)
 {
     struct tcp_shift_lwip_tcp_memory_ext *ext;
 
-    ext = tcp_shift_lwip_tcp_memory_get(pcb);
-    if (ext != NULL) {
-        return ext;
-    }
-    if (tcp_shift_process_tcp_memory_init() < 0) {
-        return NULL;
-    }
-
     ext = calloc(1U, sizeof(*ext));
     if (ext == NULL) {
-        return NULL;
-    }
-    if (tcp_shift_tcp_memory_flow_init(&tcp_shift_process_tcp_memory,
-                                       &ext->flow, pcb) < 0) {
-        free(ext);
         return NULL;
     }
     tcp_ext_arg_set_callbacks(
         pcb, (u8_t)TCP_SHIFT_LWIP_TCP_MEMORY_EXT_ARG_ID,
         &tcp_shift_lwip_tcp_memory_callbacks);
     tcp_ext_arg_set(pcb, (u8_t)TCP_SHIFT_LWIP_TCP_MEMORY_EXT_ARG_ID, ext);
+    return ext;
+}
+
+static struct tcp_shift_lwip_tcp_memory_ext *
+tcp_shift_lwip_tcp_memory_ensure(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_tcp_memory_ext *ext;
+    uint32_t expand_num;
+    uint32_t expand_den;
+
+    ext = tcp_shift_lwip_tcp_memory_get(pcb);
+    if (ext != NULL && ext->flow.manager != NULL) {
+        return ext;
+    }
+    if (tcp_shift_process_tcp_memory_init() < 0) {
+        return NULL;
+    }
+
+    if (ext == NULL) {
+        ext = tcp_shift_lwip_tcp_memory_alloc_ext(pcb);
+        if (ext == NULL) {
+            return NULL;
+        }
+    }
+
+    /* A controller may publish its sender-buffer hint from the passive-open
+     * callback while lwIP still accounts the SYN-ACK in its send queue. Keep
+     * that hint in the memory-owned extension, but preserve flow_init()'s
+     * empty-data-queue invariant until the first bridge data write. */
+    expand_num = ext->pending_expand_num;
+    expand_den = ext->pending_expand_den;
+    if (tcp_shift_tcp_memory_flow_init(&tcp_shift_process_tcp_memory,
+                                       &ext->flow, pcb) < 0) {
+        return NULL;
+    }
+    if (expand_num != 0U &&
+        tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+            &ext->flow, expand_num, expand_den) < 0) {
+        tcp_shift_tcp_memory_flow_release(&ext->flow);
+        return NULL;
+    }
+    ext->pending_expand_num = 0U;
+    ext->pending_expand_den = 0U;
     return ext;
 }
 
@@ -646,8 +696,8 @@ err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
     }
     if (tcp_shift_tcp_memory_flow_maybe_grow(
             &ext->flow, pcb,
-            TCP_SHIFT_TCP_SNDBUF_EXPAND_NUM,
-            TCP_SHIFT_TCP_SNDBUF_EXPAND_DEN) < 0) {
+            ext->flow.sndbuf_expand_num,
+            ext->flow.sndbuf_expand_den) < 0) {
         return ERR_MEM;
     }
     if (tcp_shift_tcp_memory_flow_can_write(&ext->flow, pcb, len) == 0) {
@@ -688,6 +738,36 @@ void tcp_shift_lwip_tcp_memory_sent(struct tcp_pcb *pcb, tcp_sent_fn sent)
     }
     ext->app_sent = sent;
     tcp_sent(pcb, tcp_shift_lwip_tcp_memory_sent_dispatch);
+}
+
+int tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
+    struct tcp_pcb *pcb,
+    uint32_t expand_num,
+    uint32_t expand_den)
+{
+    struct tcp_shift_lwip_tcp_memory_ext *ext;
+
+    if (pcb == NULL || expand_num == 0U || expand_den == 0U) {
+        return -1;
+    }
+    ext = tcp_shift_lwip_tcp_memory_get(pcb);
+    if (ext != NULL && ext->flow.manager != NULL) {
+        return tcp_shift_tcp_memory_flow_set_sndbuf_expand(
+            &ext->flow, expand_num, expand_den);
+    }
+    if (ext == NULL) {
+        ext = tcp_shift_lwip_tcp_memory_alloc_ext(pcb);
+        if (ext == NULL) {
+            return -1;
+        }
+    }
+
+    /* Do not force flow initialization from a passive-open callback. The
+     * handshake may still occupy lwIP's queue bookkeeping at that instant.
+     * The first data write consumes this pending ratio after the queue is clean. */
+    ext->pending_expand_num = expand_num;
+    ext->pending_expand_den = expand_den;
+    return 0;
 }
 
 const struct tcp_shift_tcp_memory_config *
