@@ -13,7 +13,6 @@
     } while (0)
 
 struct fake_state {
-    unsigned ack_observe_calls;
     unsigned loss_calls;
     unsigned timeout_calls;
     unsigned recovery_exit_calls;
@@ -21,18 +20,6 @@ struct fake_state {
     unsigned handle_timeout;
     unsigned handle_recovery_exit;
 };
-
-static int fake_ack_observe(void *arg,
-                            struct tcp_pcb *pcb,
-                            tcpwnd_size_t acked_bytes)
-{
-    struct fake_state *state = arg;
-
-    (void)pcb;
-    (void)acked_bytes;
-    state->ack_observe_calls++;
-    return 1;
-}
 
 static int fake_loss(void *arg,
                      struct tcp_pcb *pcb,
@@ -67,7 +54,6 @@ static int fake_timeout(void *arg, struct tcp_pcb *pcb)
 int main(void)
 {
     static const struct tcp_shift_lwip_cc_hook_ops ops = {
-        .on_ack_observe = fake_ack_observe,
         .on_loss = fake_loss,
         .on_timeout = fake_timeout,
         .on_recovery_exit = fake_recovery_exit,
@@ -83,31 +69,19 @@ int main(void)
     hook.arg = &state;
     pcb.ext_args[TCP_SHIFT_LWIP_CC_EXT_ARG_ID] = &hook;
 
-    CHECK(tcp_shift_lwip_cc_hook_ack_observe(&pcb, 1460U) == 1);
-    CHECK(state.ack_observe_calls == 1U);
-
     state.handle_loss = 1U;
-    pcb.snd_nxt = 9000U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 1);
     CHECK(state.loss_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 1U);
     CHECK(hook.recovery_enter_events == 1U);
     CHECK(hook.recovery_exit_events == 0U);
-    CHECK(hook.recovery_end_seq == 9000U);
-    {
-        u32_t recovery_end = 0U;
-        CHECK(tcp_shift_lwip_cc_hook_recovery_end_seq(&pcb, &recovery_end) == 1);
-        CHECK(recovery_end == 9000U);
-    }
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     /* A duplicate entry signal while the same recovery episode is active must
      * not create a second episode. Pinned lwIP normally suppresses this via
      * TF_INFR, but keep the observation layer idempotent as well. */
-    pcb.snd_nxt = 12000U;
-    tcp_shift_lwip_cc_hook_recovery_mark_enter(&hook, &pcb);
+    tcp_shift_lwip_cc_hook_recovery_mark_enter(&hook);
     CHECK(hook.recovery_enter_events == 1U);
-    CHECK(hook.recovery_end_seq == 9000U);
 
     hook.recovery_controller_owned = 1U;
     state.handle_recovery_exit = 1U;
@@ -116,7 +90,6 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
     CHECK(hook.recovery_exit_events == 1U);
-    CHECK(hook.recovery_end_seq == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 1U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
@@ -136,10 +109,8 @@ int main(void)
     /* A handled timeout starts a distinct transport recovery episode; clear
      * any fast-recovery observation so no stale EXIT reaches a future BBR ACK. */
     state.handle_loss = 1U;
-    pcb.snd_nxt = 15000U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 1);
     CHECK(hook.recovery_enter_events == 2U);
-    CHECK(hook.recovery_end_seq == 15000U);
     hook.recovery_controller_owned = 1U;
     pcb.flags |= TF_INFR;
     state.handle_timeout = 1U;
@@ -147,13 +118,11 @@ int main(void)
     CHECK(state.timeout_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
-    CHECK(hook.recovery_end_seq == 0U);
     CHECK((pcb.flags & TF_INFR) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     printf("lwip_recovery_observation=ok enter=handled-fast-loss "
            "exit=before-tf-infr-clear timeout=reset controller_owned=qualified "
-           "transport_recovery=newreno-partial-ack transport_owned=1 "
-           "ack_observation=separate-policy\n");
+           "native_recovery=unchanged\n");
     return 0;
 }

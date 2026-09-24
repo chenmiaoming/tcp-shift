@@ -68,7 +68,6 @@ typedef uint32_t tcpwnd_size_t;
 #define TF_INFR 0x01U
 struct tcp_pcb {
     void *ext_args[2];
-    u32_t snd_nxt;
     u8_t flags;
 };
 #define tcp_clear_flags(pcb, flag_bits) \
@@ -118,7 +117,7 @@ grep -F 'lwip_recovery_observation=ok enter=handled-fast-loss ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
 grep -F 'exit=before-tf-infr-clear timeout=reset controller_owned=qualified ' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
-grep -F 'transport_recovery=newreno-partial-ack transport_owned=1' \
+grep -F 'native_recovery=unchanged' \
     "$BUILD/recovery-observation-summary.txt" >/dev/null
 
 printf '%s\n' \

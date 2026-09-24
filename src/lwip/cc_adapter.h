@@ -141,8 +141,7 @@ int tcp_shift_lwip_cc_apply_configured_controller(
 /* Internal-only BBR binding used by P6 qualification. This does not add BBR to
  * the public registry or CLI. The full BBR state lives in a lazily allocated
  * PCB sidecar and the existing adapter still owns delivery sampling and pacing.
- * Retransmission and sender recovery remain transport-owned; internal BBR may
- * own only the recovery cwnd through the explicit hook contract. */
+ * Loss/RTO ownership remains a later integration step. */
 int tcp_shift_lwip_cc_apply_internal_bbr(
     struct tcp_shift_lwip_cc_adapter *adapter,
     uint32_t cycle_seed);
