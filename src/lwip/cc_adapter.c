@@ -717,6 +717,7 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
     if (slot == NULL) {
         if (adapter->stats != NULL) {
             adapter->stats->delivery_metadata_misses++;
+            adapter->stats->delivery_metadata_missing_slots++;
         }
         return;
     }
@@ -728,6 +729,7 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
         slot->acked_payload_bytes != slot->payload_bytes) {
         if (adapter->stats != NULL) {
             adapter->stats->delivery_metadata_misses++;
+            adapter->stats->delivery_metadata_incomplete_ack_slots++;
         }
     }
     tcp_shift_delivery_release_slot(adapter, slot);
