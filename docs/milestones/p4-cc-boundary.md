@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified; sender-side multiple-loss fast-recovery follow-up is qualified in PR #35**.
+Status: **runner-qualified; sender-side multiple-loss recovery is merged in PR #35 and deterministic long-RTT burst qualification is covered by PR #36**.
 
 ## Goal
 
@@ -129,6 +129,26 @@ All three therefore repair the second hole inside one recovery episode without a
 A 260 ms / 10 Mbit/s / 1% random-loss diagnostic also improved materially without changing BBR gains or state-machine policy. On clean code checkpoint `36e820e60d79aab872124a1290b46aa959578ab7`, one realization measured internal BBR at 2.616504 Mbit/s with 33 qdisc data drops/retransmissions, 11 loss observations and zero RTOs; same-stack CUBIC measured 1.014745 Mbit/s with 18 drops/retransmissions, 16 loss observations and zero RTOs; the Linux BBR reference measured 5.085388 Mbit/s with 29 drops/retransmissions. Both tcp-shift flows retained exact delivery accounting. Because each random-loss run sees a different realization, these goodput ratios remain diagnostic rather than pass/fail parity thresholds.
 
 The same clean code checkpoint passed P4 integrated recovery, the complete P6 Linux-reference workflow, and every other PR workflow except one P3 hosted-runner sample. That P3 sample retained an approximately 427–432 KiB drained floor and only 5 KiB first-to-last drain growth, but a low 299 KiB ready baseline made the relative warm-floor delta 133 KiB against the unchanged 128 KiB gate. The gate is not relaxed; closeout reruns P3 on the documentation checkpoint.
+
+## Deterministic long-RTT burst qualification — PR #36
+
+PR #36 changes qualification only and leaves the #35 NewReno transport semantics unchanged. The long-flow harness can inject 2–16 consecutive one-shot data drops by chaining independent iptables nth matchers at one packet index; each dropped packet short-circuits the chain, so the following matcher lands on the immediately following data packet. The harness verifies the exact injected drop count, zero unrelated qdisc drops, exact payload hash and delivery-ledger accounting, one loss episode, enough retransmissions to cover the burst, and zero RTO fallback.
+
+On the 260 ms / 10 Mbit/s / 1 MiB WAN-like path, both a three-packet representative burst and a six-packet stress burst recover inside one NewReno episode:
+
+```text
+3-packet burst
+reno   goodput=1.455117 Mbit/s  fault_drops=3  retransmit_events=3  loss_events=1  timeout_events=0
+cubic  goodput=1.643490 Mbit/s  fault_drops=3  retransmit_events=3  loss_events=1  timeout_events=0
+bbr    goodput=2.372795 Mbit/s  fault_drops=3  retransmit_events=3  loss_events=1  timeout_events=0
+
+6-packet burst
+reno   goodput=1.277751 Mbit/s  fault_drops=6  retransmit_events=6  loss_events=1  timeout_events=0
+cubic  goodput=1.422573 Mbit/s  fault_drops=6  retransmit_events=6  loss_events=1  timeout_events=0
+bbr    goodput=1.946821 Mbit/s  fault_drops=6  retransmit_events=6  loss_events=1  timeout_events=0
+```
+
+Goodput is diagnostic rather than a parity threshold. The correctness result is that transport-owned NewReno repairs consecutive bursts up to the current six-packet stress case without RTO amplification and without delivery-accounting loss across Reno, CUBIC, or internal BBR. This removes the immediate correctness justification for adding a sender SACK scoreboard. Frequent/high-loss behavior remains a separate performance qualification and may still justify a later transport mechanism if reproducible evidence requires it.
 
 ## Memory/CPU requalification
 
