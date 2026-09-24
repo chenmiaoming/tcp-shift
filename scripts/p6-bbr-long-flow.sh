@@ -15,6 +15,7 @@ FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
 FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
 FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
+RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -54,6 +55,10 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 case "$FAULT_MODE" in
     none|multi-loss|burst-loss|repeated-burst) ;;
     *) echo "FAULT_MODE must be none, multi-loss, burst-loss or repeated-burst" >&2; exit 1;;
+esac
+case "$RECOVERY_EXPECTATION" in
+    strict|diagnostic) ;;
+    *) echo "RECOVERY_EXPECTATION must be strict or diagnostic" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -458,10 +463,17 @@ case "$LOSS_MODE" in
         }
         ;;
     deterministic-repeated-burst)
-        [ "$loss_events" -eq "$FAULT_BURST_REPEATS" ] && [ "$timeout_events" -eq 0 ] || {
-            echo "repeated bursts did not produce one clean recovery episode per burst: expected=$FAULT_BURST_REPEATS loss=$loss_events timeout=$timeout_events" >&2
-            exit 1
-        }
+        if [ "$RECOVERY_EXPECTATION" = strict ]; then
+            [ "$loss_events" -eq "$FAULT_BURST_REPEATS" ] && [ "$timeout_events" -eq 0 ] || {
+                echo "repeated bursts did not produce one clean recovery episode per burst: expected=$FAULT_BURST_REPEATS loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        else
+            [ $((loss_events + timeout_events)) -ge 1 ] || {
+                echo "diagnostic repeated bursts produced no recovery observation" >&2
+                exit 1
+            }
+        fi
         ;;
 esac
 
@@ -553,13 +565,13 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
     "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
-printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
