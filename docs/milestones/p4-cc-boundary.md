@@ -111,22 +111,24 @@ The follow-up keeps recovery transport-owned and adds the RFC 6582/NewReno mecha
 - an ACK below that boundary is a partial ACK and does not clear `TF_INFR`;
 - after acknowledged segments are freed, native `tcp_rexmit()` requeues the next first-unacknowledged segment immediately instead of waiting for another three duplicate ACKs;
 - Reno/CUBIC retain transport-owned partial-window deflation, while internal BBR retains its already-qualified controller-owned recovery cwnd;
+- every partial ACK still traverses the adapter's observation-only ACK path before upstream frees acknowledged segments, so delivery/rate/SRTT accounting remains current without advancing Reno/CUBIC controller cwnd/CA policy behind the native recovery window;
+- the production transport-pacing selector and the internal-BBR wrapper both explicitly forward that observation-only hook; the live selector contract proves the observation updates delivery/SRTT while leaving controller ACK/policy counters and cwnd unchanged;
 - partial ACKs keep the duplicate-ACK baseline at three so later duplicate ACKs continue the existing fast-recovery inflation rule;
 - a full ACK exits recovery normally; an RTO supersedes and clears the recovery episode.
 
 The deterministic qualification uses a real 40 ms / 10 Mbit/s path, a 1 MiB transfer, two one-shot data drops, and an eight-BDP queue. Representative successful results on the #35 branch are:
 
 ```text
-reno   goodput=7.495445 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
-cubic  goodput=7.278120 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
-bbr    goodput=7.474424 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+reno   goodput=7.495346 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+cubic  goodput=7.277130 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+bbr    goodput=7.475838 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
 ```
 
 All three therefore repair the second hole inside one recovery episode without an RTO or a second congestion-loss signal. Single-loss and explicit-RTO gates remain separate and still pass.
 
-A 260 ms / 10 Mbit/s / 1% random-loss diagnostic also improved materially without changing BBR gains or state-machine policy. One #35 run measured internal BBR at 3.240266 Mbit/s with 25 qdisc data drops, 25 retransmissions, 6 loss observations and zero RTOs; same-stack CUBIC measured 0.609776 Mbit/s with 32 drops/retransmissions and zero RTOs; the Linux BBR reference measured 5.634074 Mbit/s with 37 drops/retransmissions. Because each random-loss run sees a different realization, these goodput ratios remain diagnostic rather than pass/fail parity thresholds.
+A 260 ms / 10 Mbit/s / 1% random-loss diagnostic also improved materially without changing BBR gains or state-machine policy. On clean code checkpoint `36e820e60d79aab872124a1290b46aa959578ab7`, one realization measured internal BBR at 2.616504 Mbit/s with 33 qdisc data drops/retransmissions, 11 loss observations and zero RTOs; same-stack CUBIC measured 1.014745 Mbit/s with 18 drops/retransmissions, 16 loss observations and zero RTOs; the Linux BBR reference measured 5.085388 Mbit/s with 29 drops/retransmissions. Both tcp-shift flows retained exact delivery accounting. Because each random-loss run sees a different realization, these goodput ratios remain diagnostic rather than pass/fail parity thresholds.
 
-At pre-closeout checkpoint `5f67bec364d2e5ce0e05dbc96574ec29dfc40cbc`, all 15 PR-triggered workflows are green, including P3 memory, P4 integrated recovery, P6 BBR runtime/model/reference, upstream provenance, CUBIC/Linux benchmarks, and CC parity. No recovery or memory gate was relaxed.
+The same clean code checkpoint passed P4 integrated recovery, the complete P6 Linux-reference workflow, and every other PR workflow except one P3 hosted-runner sample. That P3 sample retained an approximately 427–432 KiB drained floor and only 5 KiB first-to-last drain growth, but a low 299 KiB ready baseline made the relative warm-floor delta 133 KiB against the unchanged 128 KiB gate. The gate is not relaxed; closeout reruns P3 on the documentation checkpoint.
 
 ## Memory/CPU requalification
 
