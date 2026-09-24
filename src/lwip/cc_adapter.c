@@ -732,6 +732,10 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
             adapter->stats->delivery_metadata_incomplete_ack_slots++;
             adapter->stats->delivery_last_incomplete_ack_seq = pcb->lastack;
             adapter->stats->delivery_last_incomplete_seq_start = slot->seq_start;
+            adapter->stats->delivery_last_incomplete_prepared_ack_seq =
+                adapter->stats->delivery_last_prepared_ack_seq;
+            adapter->stats->delivery_last_incomplete_tcp_state =
+                (uint8_t)pcb->state;
             adapter->stats->delivery_last_incomplete_acked_payload =
                 slot->acked_payload_bytes;
             adapter->stats->delivery_last_incomplete_payload =
