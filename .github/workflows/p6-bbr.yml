@@ -212,6 +212,21 @@ jobs:
             TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
             sh scripts/p6-bbr-long-flow.sh
 
+      - name: Exercise internal BBR WAN burst recovery
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-burst-loss-ci" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=burst-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp6bbrb0 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18163 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19163 \
+            sh scripts/p6-bbr-long-flow.sh
+
       - name: Exercise internal BBR RTO recovery
         run: |
           sudo env \
@@ -234,6 +249,7 @@ jobs:
             .build/p6-bbr-long-flow-ci
             .build/p6-bbr-fast-loss-ci
             .build/p6-bbr-multi-loss-ci
+            .build/p6-bbr-burst-loss-ci
             .build/p6-bbr-rto-ci
             .build/upstream.env
             .build/lwip-critical.sha256
