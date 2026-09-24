@@ -123,11 +123,13 @@ The same follow-up materially improves the long-RTT random-loss diagnostic while
 
 That clean code checkpoint passed P4 integrated recovery, the complete P6 Linux-reference workflow, and every other PR workflow except one P3 hosted-runner sample. The P3 sample retained an approximately 427–432 KiB drained floor and only 5 KiB first-to-last drain growth, but a low 299 KiB ready baseline made the relative warm-floor delta 133 KiB against the unchanged 128 KiB gate. The gate remains unchanged and is rerun at closeout.
 
-PR #34 was squash-merged as `7bbb175c4d0d69fa5858380b73710a9f8c41d204`. Public selector exposure remains intentionally deferred. After #35, the next loss qualification should stress burst/high-loss and representative WAN conditions before deciding whether transport recovery needs further mechanisms such as sender-side SACK; SACK is not being added preemptively.
+PR #34 was squash-merged as `7bbb175c4d0d69fa5858380b73710a9f8c41d204`, and PR #35 was squash-merged as `25e23c4de98d9fb862343cd6a62cf10bbd84ad33`. Public selector exposure remains intentionally deferred.
+
+PR #36 adds qualification only. On a 260 ms / 10 Mbit/s / 1 MiB path, deterministic consecutive three-packet and six-packet bursts recover for Reno, CUBIC, and internal BBR with exact injected-drop/retransmission counts, one loss episode, zero RTOs, zero unrelated qdisc drops, exact payload integrity, and exact delivery-ledger accounting. Three-packet goodputs were 1.455117 / 1.643490 / 2.372795 Mbit/s for Reno/CUBIC/BBR; six-packet goodputs were 1.277751 / 1.422573 / 1.946821 Mbit/s. Goodput remains diagnostic. The correctness evidence says NewReno is sufficient for the currently tested short/medium consecutive bursts; it does not prove sender SACK has no value under frequent or high aggregate loss.
 
 ## Original planned order from P6d
 
-Items 1–7 below are now substantially qualified by the compact-controller/runtime, Linux-reference, and deterministic multiple-loss checkpoints. The remaining active qualification is burst/high-loss and representative WAN behavior before deciding whether NewReno is sufficient; public default changes remain out of scope.
+Items 1–7 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, and deterministic WAN-burst checkpoints. The remaining active loss qualification is frequent/high aggregate loss before deciding whether a more advanced sender recovery mechanism is warranted; public default changes remain out of scope.
 
 
 
@@ -137,7 +139,7 @@ Items 1–7 below are now substantially qualified by the compact-controller/runt
 4. implement classic 8-phase BBRv1-style `PROBE_BW` and ProbeRTT;
 5. wrap the completed compact state machine as its own `tcp_shift_cc_ops` controller and add `bbr` to the registry only through qualification paths;
 6. run live BBR through the existing event-driven process-wide pacer; do not add per-flow timers, polling, or recovery ownership;
-7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases; clean/reference, multi-flow, app-limited, moderate random-loss, and deterministic multiple-loss recovery are now present, with burst/high-loss and representative WAN qualification remaining;
+7. compare Reno, CUBIC, tcp-shift `bbr`, and external/reference BBR behavior across RTT, bandwidth, random loss, recovery, multi-flow, app-limited, and high-BDP cases; clean/reference, multi-flow, app-limited, moderate random-loss, deterministic multiple-loss, and 260 ms three-/six-packet burst recovery are now present, with frequent/high aggregate loss remaining;
 8. add selected v3-informed fixes to compact `bbr` only for demonstrated failures;
 9. design `bbrv3` as a separate future ops/state implementation if full draft semantics are still desired;
 10. rerun P3 memory/CPU plus all P0-P6 gates before changing any production default.
