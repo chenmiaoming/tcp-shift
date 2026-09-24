@@ -41,6 +41,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_payload_bytes;
     uint64_t delivery_metadata_alloc_failures;
     uint64_t delivery_metadata_misses;
+    uint64_t delivery_metadata_missing_slots;
+    uint64_t delivery_metadata_incomplete_ack_slots;
     uint64_t delivery_metadata_abandoned_slots;
     uint64_t delivery_clock_errors;
     uint64_t delivery_timestamp_regressions;
