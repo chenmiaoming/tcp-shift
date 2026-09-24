@@ -89,13 +89,19 @@ int main(void)
     struct timespec delay;
     uint64_t startup_pacing_rate;
     uint64_t paced_deadline;
+    uint64_t ack_events_before;
+    uint64_t policy_updates_before;
+    uint64_t observations_before;
+    uint64_t delivered_before;
     uint32_t seq = UINT32_C(200000);
     uint32_t large_segments;
     uint32_t large_cwnd;
     uint32_t large_ssthresh;
     uint32_t large_snd_wnd;
+    uint32_t cwnd_before;
     uint16_t payload;
     unsigned char segment;
+    unsigned char observed_segment;
 
     CHECK(strcmp(tcp_shift_lwip_cc_configured_controller_name(), "reno") == 0);
     CHECK(tcp_shift_lwip_cc_configure_controller("not-built") < 0);
@@ -179,6 +185,33 @@ int main(void)
     CHECK(adapter.controller_state.cubic.hystart_pacing_active == 1U);
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment, payload);
     CHECK(stats.delivery_live_slots == 0U);
+
+    /* Recovery partial ACKs on production Reno/CUBIC must still traverse the
+     * delivery/rate observation path even when native NewReno owns cwnd policy.
+     * The selector pacing wrapper must forward observation-only ACKs without
+     * advancing controller ACK/policy state. */
+    seq += payload;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &observed_segment, seq, payload);
+    CHECK(stats.delivery_live_slots == 1U);
+    delay.tv_sec = 0;
+    delay.tv_nsec = 1000000L;
+    CHECK(nanosleep(&delay, NULL) == 0);
+    pcb->snd_nxt = seq + payload;
+    pcb->lastack = seq + payload;
+    ack_events_before = stats.ack_events;
+    policy_updates_before = stats.policy_updates;
+    observations_before = stats.ack_observation_events;
+    delivered_before = stats.delivery_payload_bytes;
+    cwnd_before = (uint32_t)pcb->cwnd;
+    CHECK(tcp_shift_lwip_cc_hook_ack_observe(pcb, payload) != 0);
+    CHECK(stats.ack_observation_events == observations_before + 1U);
+    CHECK(stats.delivery_payload_bytes == delivered_before + payload);
+    CHECK(stats.ack_events == ack_events_before);
+    CHECK(stats.policy_updates == policy_updates_before);
+    CHECK((uint32_t)pcb->cwnd == cwnd_before);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &observed_segment, payload);
+    CHECK(stats.delivery_live_slots == 0U);
+    CHECK(stats.delivery_metadata_misses == 0U);
 
     /* Prove this is not merely a published number: force the next virtual
      * deadline into the future and require the normal production hook to hand

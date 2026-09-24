@@ -39,6 +39,9 @@
  */
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
+    int (*on_ack_observe)(void *arg,
+                          struct tcp_pcb *pcb,
+                          tcpwnd_size_t acked_bytes);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
@@ -61,6 +64,7 @@ struct tcp_shift_lwip_cc_hook {
     void *arg;
     u32_t recovery_enter_events;
     u32_t recovery_exit_events;
+    u32_t recovery_end_seq;
     u8_t recovery_active;
     u8_t recovery_exit_pending;
     u8_t recovery_controller_owned;
@@ -74,11 +78,13 @@ tcp_shift_lwip_cc_hook_get(const struct tcp_pcb *pcb)
 }
 
 static inline void
-tcp_shift_lwip_cc_hook_recovery_mark_enter(struct tcp_shift_lwip_cc_hook *hook)
+tcp_shift_lwip_cc_hook_recovery_mark_enter(struct tcp_shift_lwip_cc_hook *hook,
+                                             const struct tcp_pcb *pcb)
 {
-    if (hook == NULL || hook->recovery_active != 0U) {
+    if (hook == NULL || pcb == NULL || hook->recovery_active != 0U) {
         return;
     }
+    hook->recovery_end_seq = pcb->snd_nxt;
     hook->recovery_active = 1U;
     hook->recovery_exit_pending = 0U;
     hook->recovery_enter_events++;
@@ -93,6 +99,7 @@ tcp_shift_lwip_cc_hook_recovery_mark_exit(struct tcp_shift_lwip_cc_hook *hook)
     hook->recovery_active = 0U;
     hook->recovery_exit_pending = 1U;
     hook->recovery_controller_owned = 0U;
+    hook->recovery_end_seq = 0U;
     hook->recovery_exit_events++;
 }
 
@@ -105,6 +112,7 @@ tcp_shift_lwip_cc_hook_recovery_reset(struct tcp_shift_lwip_cc_hook *hook)
     hook->recovery_active = 0U;
     hook->recovery_exit_pending = 0U;
     hook->recovery_controller_owned = 0U;
+    hook->recovery_end_seq = 0U;
 }
 
 static inline unsigned
@@ -112,6 +120,20 @@ tcp_shift_lwip_cc_hook_recovery_is_active(
     const struct tcp_shift_lwip_cc_hook *hook)
 {
     return hook != NULL && hook->recovery_active != 0U ? 1U : 0U;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_recovery_end_seq(const struct tcp_pcb *pcb,
+                                         u32_t *end_seq)
+{
+    const struct tcp_shift_lwip_cc_hook *hook =
+        tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || end_seq == NULL || hook->recovery_active == 0U) {
+        return 0;
+    }
+    *end_seq = hook->recovery_end_seq;
+    return 1;
 }
 
 static inline unsigned
@@ -151,6 +173,19 @@ tcp_shift_lwip_cc_hook_ack(struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes)
 }
 
 static inline int
+tcp_shift_lwip_cc_hook_ack_observe(struct tcp_pcb *pcb,
+                                    tcpwnd_size_t acked_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_ack_observe == NULL) {
+        return 0;
+    }
+    return hook->ops->on_ack_observe(hook->arg, pcb, acked_bytes) != 0;
+}
+
+static inline int
 tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
@@ -161,7 +196,7 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
     }
     handled = hook->ops->on_loss(hook->arg, pcb, lost_bytes) != 0;
     if (handled != 0) {
-        tcp_shift_lwip_cc_hook_recovery_mark_enter(hook);
+        tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
 }

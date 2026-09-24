@@ -203,6 +203,15 @@ jobs:
             TCP_SHIFT_P4_BACKEND_PORT=19160 \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
+      - name: Exercise internal BBR RTT-bearing multiple-loss recovery
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-multi-loss-ci" \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
+            sh scripts/p6-bbr-long-flow.sh
+
       - name: Exercise internal BBR RTO recovery
         run: |
           sudo env \
@@ -224,6 +233,7 @@ jobs:
           path: |
             .build/p6-bbr-long-flow-ci
             .build/p6-bbr-fast-loss-ci
+            .build/p6-bbr-multi-loss-ci
             .build/p6-bbr-rto-ci
             .build/upstream.env
             .build/lwip-critical.sha256

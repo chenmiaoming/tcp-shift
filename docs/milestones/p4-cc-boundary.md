@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified**.
+Status: **runner-qualified; sender-side multiple-loss fast-recovery follow-up is qualified in PR #35**.
 
 ## Goal
 
@@ -34,13 +34,9 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch`.
 
-The patch changes exactly three congestion-policy sites:
+The controlled patch remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 additionally extends the sender ACK/recovery path in `tcp_in.c` with bounded NewReno-style partial-ACK handling.
 
-1. ACK cwnd growth in `tcp_in.c`;
-2. fast-retransmit loss cwnd/ssthresh policy in `tcp_out.c`;
-3. RTO cwnd/ssthresh policy in `tcp.c`.
-
-Unbound PCBs retain native lwIP policy. lwIP continues to own duplicate-ACK processing, retransmission execution, fast-recovery inflation/deflation and flags, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and `tcp_output()`.
+Unbound PCBs retain native pinned-lwIP behavior. For bound tcp-shift PCBs, the patched lwIP transport still owns duplicate-ACK processing, retransmission execution, `TF_INFR`, recovery-window mechanics, RTT/RTO calculation, queues, sequence space, packet construction, and `tcp_output()`. The congestion controller receives observations and may own only its published recovery cwnd when explicitly declared (internal BBR); sender recovery itself is not moved into `src/cc/`.
 
 One PCB ext-arg slot stores a project hook. `src/lwip/cc_adapter.c` translates lwIP state/events into generic observations and applies returned cwnd/ssthresh policy. The adapter may depend on lwIP; `src/cc/` may not.
 
@@ -104,6 +100,35 @@ mode=rto payload_bytes=262144 recovery=ok
 ```
 
 Neither test calls generic loss/RTO functions directly.
+
+## Sender-side multiple-loss recovery follow-up — PR #35
+
+The pinned sender's classic Reno recovery retransmits only the first unacknowledged segment after three duplicate ACKs and clears `TF_INFR` on the next ACK of new data. With multiple losses in one transmitted window, that ACK can be only a partial ACK; exiting recovery at that point can require another fast-retransmit episode or an RTO. The pinned `LWIP_TCP_SACK_OUT` option defaults to 0 and implements receiver-side SACK advertisement rather than a sender SACK scoreboard, so #35 does not attempt to solve this by enabling SACK output.
+
+The follow-up keeps recovery transport-owned and adds the RFC 6582/NewReno mechanism needed for the non-SACK sender:
+
+- first fast-retransmit entry records the current `snd_nxt` as the recovery-end boundary in the existing project hook sidecar;
+- an ACK below that boundary is a partial ACK and does not clear `TF_INFR`;
+- after acknowledged segments are freed, native `tcp_rexmit()` requeues the next first-unacknowledged segment immediately instead of waiting for another three duplicate ACKs;
+- Reno/CUBIC retain transport-owned partial-window deflation, while internal BBR retains its already-qualified controller-owned recovery cwnd;
+- every partial ACK still traverses the adapter's observation-only ACK path before upstream frees acknowledged segments, so delivery/rate/SRTT accounting remains current without advancing Reno/CUBIC controller cwnd/CA policy behind the native recovery window;
+- the production transport-pacing selector and the internal-BBR wrapper both explicitly forward that observation-only hook; the live selector contract proves the observation updates delivery/SRTT while leaving controller ACK/policy counters and cwnd unchanged;
+- partial ACKs keep the duplicate-ACK baseline at three so later duplicate ACKs continue the existing fast-recovery inflation rule;
+- a full ACK exits recovery normally; an RTO supersedes and clears the recovery episode.
+
+The deterministic qualification uses a real 40 ms / 10 Mbit/s path, a 1 MiB transfer, two one-shot data drops, and an eight-BDP queue. Representative successful results on the #35 branch are:
+
+```text
+reno   goodput=7.495346 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+cubic  goodput=7.277130 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+bbr    goodput=7.475838 Mbit/s  fault_drops=2  retransmit_events=2  loss_events=1  timeout_events=0
+```
+
+All three therefore repair the second hole inside one recovery episode without an RTO or a second congestion-loss signal. Single-loss and explicit-RTO gates remain separate and still pass.
+
+A 260 ms / 10 Mbit/s / 1% random-loss diagnostic also improved materially without changing BBR gains or state-machine policy. On clean code checkpoint `36e820e60d79aab872124a1290b46aa959578ab7`, one realization measured internal BBR at 2.616504 Mbit/s with 33 qdisc data drops/retransmissions, 11 loss observations and zero RTOs; same-stack CUBIC measured 1.014745 Mbit/s with 18 drops/retransmissions, 16 loss observations and zero RTOs; the Linux BBR reference measured 5.085388 Mbit/s with 29 drops/retransmissions. Both tcp-shift flows retained exact delivery accounting. Because each random-loss run sees a different realization, these goodput ratios remain diagnostic rather than pass/fail parity thresholds.
+
+The same clean code checkpoint passed P4 integrated recovery, the complete P6 Linux-reference workflow, and every other PR workflow except one P3 hosted-runner sample. That P3 sample retained an approximately 427–432 KiB drained floor and only 5 KiB first-to-last drain growth, but a low 299 KiB ready baseline made the relative warm-floor delta 133 KiB against the unchanged 128 KiB gate. The gate is not relaxed; closeout reruns P3 on the documentation checkpoint.
 
 ## Memory/CPU requalification
 

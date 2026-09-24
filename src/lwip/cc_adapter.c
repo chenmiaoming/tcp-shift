@@ -924,6 +924,56 @@ static void tcp_shift_lwip_cc_disable_on_error(
     adapter->bound = 0U;
 }
 
+static int tcp_shift_lwip_cc_prepare_ack(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    tcpwnd_size_t acked_bytes,
+    struct tcp_shift_cc_ack *ack)
+{
+    uint64_t ack_time_ns;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        acked_bytes == 0U || ack == NULL) {
+        return 0;
+    }
+
+    memset(ack, 0, sizeof(*ack));
+    tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack->rate);
+    ack_time_ns = adapter->delivery_last_clock_read_ns;
+    ack->acked_bytes = acked_bytes;
+    ack->ack_time_ns = ack_time_ns;
+
+    if ((ack->rate.flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
+        ack->rate.rtt_ns != 0U) {
+        if (tcp_shift_cc_srtt_update(&adapter->srtt, ack->rate.rtt_ns) != 0) {
+            tcp_shift_lwip_cc_disable_on_error(adapter);
+            return 0;
+        }
+        if (adapter->stats != NULL) {
+            adapter->stats->srtt_updates++;
+        }
+    }
+    ack->smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
+    if (adapter->stats != NULL) {
+        if (ack_time_ns != 0U) {
+            adapter->stats->ack_observation_events++;
+        }
+        adapter->stats->ack_last_time_ns = ack_time_ns;
+        adapter->stats->ack_last_smoothed_rtt_ns = ack->smoothed_rtt_ns;
+    }
+    return 1;
+}
+
+static int tcp_shift_lwip_cc_on_ack_observe(void *arg,
+                                            struct tcp_pcb *pcb,
+                                            tcpwnd_size_t acked_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_cc_ack ack;
+
+    return tcp_shift_lwip_cc_prepare_ack(adapter, pcb, acked_bytes, &ack);
+}
+
 static int tcp_shift_lwip_cc_on_ack(void *arg,
                                     struct tcp_pcb *pcb,
                                     tcpwnd_size_t acked_bytes)
@@ -932,39 +982,12 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     struct tcp_shift_cc_transport transport;
     struct tcp_shift_cc_ack ack;
     struct tcp_shift_cc_policy policy;
-    uint64_t ack_time_ns;
 
-    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
-        acked_bytes == 0U) {
+    if (!tcp_shift_lwip_cc_prepare_ack(adapter, pcb, acked_bytes, &ack)) {
         return 0;
     }
 
-    memset(&ack, 0, sizeof(ack));
-    tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack.rate);
-    ack_time_ns = adapter->delivery_last_clock_read_ns;
     tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
-    ack.acked_bytes = acked_bytes;
-    ack.ack_time_ns = ack_time_ns;
-
-    if ((ack.rate.flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
-        ack.rate.rtt_ns != 0U) {
-        if (tcp_shift_cc_srtt_update(&adapter->srtt, ack.rate.rtt_ns) != 0) {
-            tcp_shift_lwip_cc_disable_on_error(adapter);
-            return 0;
-        }
-        if (adapter->stats != NULL) {
-            adapter->stats->srtt_updates++;
-        }
-    }
-    ack.smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
-    if (adapter->stats != NULL) {
-        if (ack_time_ns != 0U) {
-            adapter->stats->ack_observation_events++;
-        }
-        adapter->stats->ack_last_time_ns = ack_time_ns;
-        adapter->stats->ack_last_smoothed_rtt_ns = ack.smoothed_rtt_ns;
-    }
-
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
                             &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
@@ -1035,6 +1058,7 @@ static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
 
 static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack = tcp_shift_lwip_cc_on_ack,
+    .on_ack_observe = tcp_shift_lwip_cc_on_ack_observe,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
     .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,

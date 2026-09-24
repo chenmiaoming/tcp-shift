@@ -184,6 +184,22 @@ static int tcp_shift_lwip_bbr_hook_ack(void *arg,
     return binding->base_hook_ops->on_ack(arg, pcb, acked_bytes);
 }
 
+static int tcp_shift_lwip_bbr_hook_ack_observe(
+    void *arg,
+    struct tcp_pcb *pcb,
+    tcpwnd_size_t acked_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_lwip_bbr_binding *binding =
+        tcp_shift_lwip_bbr_binding_from_adapter(adapter, pcb);
+
+    if (binding == NULL || binding->base_hook_ops == NULL ||
+        binding->base_hook_ops->on_ack_observe == NULL) {
+        return 0;
+    }
+    return binding->base_hook_ops->on_ack_observe(arg, pcb, acked_bytes);
+}
+
 static int tcp_shift_lwip_bbr_hook_loss(void *arg,
                                          struct tcp_pcb *pcb,
                                          tcpwnd_size_t lost_bytes)
@@ -294,6 +310,7 @@ static void tcp_shift_lwip_bbr_hook_segment_acked(void *arg,
 
 static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_bbr_hook_ops = {
     .on_ack = tcp_shift_lwip_bbr_hook_ack,
+    .on_ack_observe = tcp_shift_lwip_bbr_hook_ack_observe,
     .on_loss = tcp_shift_lwip_bbr_hook_loss,
     .on_timeout = tcp_shift_lwip_bbr_hook_timeout,
     .on_recovery_exit = tcp_shift_lwip_bbr_hook_recovery_exit,

@@ -19,6 +19,7 @@ on:
       - 'scripts/p4-live-selector-contract.sh'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p4-cc-recovery-smoke.sh'
+      - 'scripts/p6-bbr-long-flow.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
       - '.lwip-baseline'
       - 'docs/milestones/p4-cc-boundary.md'
@@ -102,6 +103,7 @@ jobs:
           sh -n scripts/fetch-lwip.sh
           sh -n scripts/p4-live-selector-contract.sh
           sh -n scripts/p4-cc-recovery-smoke.sh
+          sh -n scripts/p6-bbr-long-flow.sh
 
       - name: Build pinned bridge runtime with CC adapter
         run: |
@@ -136,6 +138,32 @@ jobs:
             TCP_SHIFT_P4_BACKEND_PORT=19142 \
             sh scripts/p4-cc-recovery-smoke.sh fast-loss
 
+      - name: Exercise integrated Reno multiple-loss recovery path
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=reno \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p4-multi-loss-ci" \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp4multi0 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18143 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19143 \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Exercise integrated CUBIC multiple-loss recovery path
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p4-multi-loss-cubic-ci" \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp4cubm0 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18144 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19144 \
+            sh scripts/p6-bbr-long-flow.sh
+
       - name: Exercise integrated Reno RTO path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
@@ -149,6 +177,8 @@ jobs:
           path: |
             .build/p4-fast-loss-ci
             .build/p4-fast-loss-cubic-ci
+            .build/p4-multi-loss-ci
+            .build/p4-multi-loss-cubic-ci
             .build/p4-rto-ci
             .build/p4-live-selector-summary.txt
             .build/p4-invalid-selector.stdout

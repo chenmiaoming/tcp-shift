@@ -9,6 +9,7 @@ PAYLOAD_BYTES=${TCP_SHIFT_P4_PAYLOAD_BYTES:-262144}
 CC=${TCP_SHIFT_P4_CC:-reno}
 REQUIRE_PACING=${TCP_SHIFT_P4_REQUIRE_PACING:-0}
 REQUIRE_RETRANSMIT=${TCP_SHIFT_P4_REQUIRE_RETRANSMIT:-0}
+FAST_LOSS_PACKET=${TCP_SHIFT_P4_FAST_LOSS_PACKET:-50}
 
 case "$REQUIRE_PACING:$REQUIRE_RETRANSMIT" in
     0:0|0:1|1:0|1:1) ;;
@@ -188,7 +189,7 @@ case "$MODE" in
     fast-loss)
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-            -m statistic --mode nth --every 10000 --packet 10 -j DROP
+            -m statistic --mode nth --every 10000 --packet "$FAST_LOSS_PACKET" -j DROP
         ;;
     rto)
         iptables -A "$CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
@@ -273,13 +274,13 @@ cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
 
-awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" && $1 > 0 {found=1} END {exit found ? 0 : 1}' \
-    "$OUT/iptables-fault.txt" || {
-        cat "$OUT/iptables-fault.txt" >&2 || true
-        echo "P4 $MODE fault rule dropped no packet" >&2
-        exit 1
-    }
-
+fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+    "$OUT/iptables-fault.txt")
+[ "$fault_drops" -ge 1 ] || {
+    cat "$OUT/iptables-fault.txt" >&2 || true
+    echo "P4 $MODE fault rule dropped no packet" >&2
+    exit 1
+}
 grep -F "backend-bytes=$PAYLOAD_BYTES " "$OUT/backend.stdout" >/dev/null
 grep -F ' echo=ok' "$OUT/backend.stdout" >/dev/null
 grep -F "bytes=$PAYLOAD_BYTES " "$OUT/client.stdout" >/dev/null
@@ -348,8 +349,8 @@ case "$MODE" in
         ;;
 esac
 
-printf 'mode=%s cc=%s payload_bytes=%u loss_events=%s timeout_events=%s pacing_required=%s retransmit_required=%s recovery=ok\n' \
-    "$MODE" "$CC" "$PAYLOAD_BYTES" "$loss_events" "$timeout_events" \
+printf 'mode=%s cc=%s payload_bytes=%u fault_drops=%s loss_events=%s timeout_events=%s pacing_required=%s retransmit_required=%s recovery=ok\n' \
+    "$MODE" "$CC" "$PAYLOAD_BYTES" "$fault_drops" "$loss_events" "$timeout_events" \
     "$REQUIRE_PACING" "$REQUIRE_RETRANSMIT" \
     | tee "$OUT/summary.txt"
 echo "P4 integrated $MODE controller=$CC recovery qualification passed"
