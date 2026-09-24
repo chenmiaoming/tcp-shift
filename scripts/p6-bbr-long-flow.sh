@@ -12,6 +12,7 @@ LOSS_PCT=${TCP_SHIFT_P6_BBR_LONG_LOSS_PCT:-0}
 FAULT_MODE=${TCP_SHIFT_P6_BBR_LONG_FAULT_MODE:-none}
 FAULT_FIRST_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET:-80}
 FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
+FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -49,8 +50,8 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss) ;;
-    *) echo "FAULT_MODE must be none or multi-loss" >&2; exit 1;;
+    none|multi-loss|burst-loss) ;;
+    *) echo "FAULT_MODE must be none, multi-loss or burst-loss" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -66,8 +67,15 @@ case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&
 case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative decimal" >&2; exit 1;; esac
 case "$FAULT_FIRST_PACKET" in ''|*[!0-9]*) echo "FAULT_FIRST_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_SECOND_PACKET" in ''|*[!0-9]*) echo "FAULT_SECOND_PACKET must be an integer" >&2; exit 1;; esac
-[ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
-    echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
+case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
+if [ "$FAULT_MODE" = multi-loss ]; then
+    [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
+        echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
+        exit 1
+    }
+fi
+[ "$FAULT_BURST_PACKETS" -ge 2 ] && [ "$FAULT_BURST_PACKETS" -le 16 ] || {
+    echo "FAULT_BURST_PACKETS must be between 2 and 16" >&2
     exit 1
 }
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
