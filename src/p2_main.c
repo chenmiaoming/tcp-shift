@@ -126,7 +126,8 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "tcp-shift-p2-delivery: first_tx_events=%llu "
             "retransmit_events=%llu acked_segment_events=%llu "
             "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
-            "metadata_misses=%llu metadata_abandoned_slots=%llu "
+            "metadata_misses=%llu metadata_missing_slots=%llu "
+            "metadata_incomplete_ack_slots=%llu metadata_abandoned_slots=%llu "
             "clock_errors=%llu timestamp_regressions=%llu "
             "last_tx_ns=%llu last_ack_ns=%llu metadata_bytes_per_slot=%u "
             "live_slots=%u peak_live_slots=%u peak_slots_per_flow=%u "
@@ -137,6 +138,8 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)stats->delivery_payload_bytes,
             (unsigned long long)stats->delivery_metadata_alloc_failures,
             (unsigned long long)stats->delivery_metadata_misses,
+            (unsigned long long)stats->delivery_metadata_missing_slots,
+            (unsigned long long)stats->delivery_metadata_incomplete_ack_slots,
             (unsigned long long)stats->delivery_metadata_abandoned_slots,
             (unsigned long long)stats->delivery_clock_errors,
             (unsigned long long)stats->delivery_timestamp_regressions,
