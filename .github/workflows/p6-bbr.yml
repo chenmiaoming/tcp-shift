@@ -244,20 +244,31 @@ jobs:
 
       - name: Qualify repeated internal BBR WAN burst recovery episodes
         run: |
-          sudo env \
-            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
-            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-repeated-burst-ci" \
-            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
-            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
-            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
-            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
-            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
-            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS=4 \
-            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=700 \
-            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp6bbrr0 \
-            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18165 \
-            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19165 \
-            sh scripts/p6-bbr-long-flow.sh
+          set +e
+          failed=0
+          for repeats in 2 3 4; do
+            port=$((18164 + repeats))
+            sudo env \
+              TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p6-bbr" \
+              TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p6-bbr-repeated-burst-$repeats-ci" \
+              TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+              TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+              TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS="$repeats" \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=700 \
+              TCP_SHIFT_P6_BBR_LONG_TUN_NAME="tsp6bbr$repeats" \
+              TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT="$port" \
+              TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT="$((port + 1000))" \
+              sh scripts/p6-bbr-long-flow.sh
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "repeated BBR case failed: repeats=$repeats rc=$rc" >&2
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Exercise internal BBR RTO recovery
         run: |
@@ -283,7 +294,9 @@ jobs:
             .build/p6-bbr-multi-loss-ci
             .build/p6-bbr-burst-loss-ci
             .build/p6-bbr-burst6-loss-ci
-            .build/p6-bbr-repeated-burst-ci
+            .build/p6-bbr-repeated-burst-2-ci
+            .build/p6-bbr-repeated-burst-3-ci
+            .build/p6-bbr-repeated-burst-4-ci
             .build/p6-bbr-rto-ci
             .build/upstream.env
             .build/lwip-critical.sha256
