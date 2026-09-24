@@ -342,6 +342,19 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-burst)
+        [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+            echo "P6 BBR deterministic burst path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
+            exit 1
+        }
+        fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+            "$OUT/iptables-fault.txt")
+        [ "$fault_drops" -eq "$FAULT_BURST_PACKETS" ] || {
+            cat "$OUT/iptables-fault.txt" >&2 || true
+            echo "P6 BBR deterministic burst expected exactly $FAULT_BURST_PACKETS drops: drops=$fault_drops" >&2
+            exit 1
+        }
+        ;;
 esac
 
 sleep 0.2
@@ -393,6 +406,12 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-burst)
+        [ "$loss_events" -eq 1 ] && [ "$timeout_events" -eq 0 ] || {
+            echo "deterministic burst did not stay in one recovery episode: loss=$loss_events timeout=$timeout_events" >&2
+            exit 1
+        }
+        ;;
 esac
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
@@ -425,6 +444,12 @@ case "$LOSS_MODE" in
     deterministic-multi)
         [ "$retransmit_events" -ge 2 ] || {
             echo "deterministic BBR multi-loss expected at least two retransmissions: $retransmit_events" >&2
+            exit 1
+        }
+        ;;
+    deterministic-burst)
+        [ "$retransmit_events" -ge "$FAULT_BURST_PACKETS" ] || {
+            echo "deterministic burst expected at least $FAULT_BURST_PACKETS retransmissions: $retransmit_events" >&2
             exit 1
         }
         ;;
