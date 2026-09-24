@@ -43,6 +43,7 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_metadata_misses;
     uint64_t delivery_metadata_missing_slots;
     uint64_t delivery_metadata_incomplete_ack_slots;
+    uint64_t delivery_ack_prepare_events;
     uint64_t delivery_metadata_abandoned_slots;
     uint64_t delivery_clock_errors;
     uint64_t delivery_timestamp_regressions;
@@ -80,6 +81,11 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t rate_last_prior_inflight_bytes;
     uint32_t rate_last_flags;
     uint32_t delivery_metadata_bytes_per_slot;
+    uint32_t delivery_last_prepared_ack_seq;
+    uint32_t delivery_last_incomplete_ack_seq;
+    uint32_t delivery_last_incomplete_seq_start;
+    uint16_t delivery_last_incomplete_acked_payload;
+    uint16_t delivery_last_incomplete_payload;
     uint32_t delivery_live_slots;
     uint32_t delivery_peak_live_slots;
     uint32_t delivery_peak_slots_per_flow;
