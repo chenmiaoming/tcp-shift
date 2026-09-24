@@ -326,6 +326,11 @@ fi
 ack_qdisc_file="$OUT/client-qdisc-after.txt"
 DATA_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$data_qdisc_file" | head -n 1)
 ACK_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$ack_qdisc_file" | head -n 1)
+FAULT_DROPS=0
+if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    ip netns exec "$NS_CLIENT" iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
+    FAULT_DROPS=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' "$OUT/iptables-fault.txt")
+fi
 [ -n "$DATA_QDISC_DROPS" ] && [ -n "$ACK_QDISC_DROPS" ] || {
     cat "$data_qdisc_file" >&2 || true
     cat "$ack_qdisc_file" >&2 || true
@@ -337,6 +342,17 @@ if [ "$REQUIRE_ZERO_DROPS" -eq 1 ]; then
         echo "Linux $CC clean path qdisc dropped packets: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
         exit 1
     }
+elif [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    [ "$DATA_QDISC_DROPS" -eq 0 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
+        echo "Linux $CC repeated-burst path had qdisc drops: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
+        exit 1
+    }
+    expected_fault_drops=$((FAULT_BURST_PACKETS * FAULT_BURST_REPEATS))
+    [ "$FAULT_DROPS" -eq "$expected_fault_drops" ] || {
+        cat "$OUT/iptables-fault.txt" >&2 || true
+        echo "Linux $CC repeated bursts expected exactly $expected_fault_drops drops: drops=$FAULT_DROPS" >&2
+        exit 1
+    }
 elif [ "$LOSS_MODE" = random ]; then
     [ "$DATA_QDISC_DROPS" -ge 1 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
         echo "Linux $CC random-loss path did not isolate data loss: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
@@ -346,17 +362,25 @@ fi
 
 FINAL_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/server.txt" | tail -n 1)
 [ -n "$FINAL_RETRANS" ] || { echo "missing final retransmission count" >&2; exit 1; }
+if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    [ "$FINAL_RETRANS" -ge "$FAULT_DROPS" ] || {
+        echo "Linux $CC repeated-burst retransmissions below explicit drops: retrans=$FINAL_RETRANS drops=$FAULT_DROPS" >&2
+        exit 1
+    }
+fi
 
 python3 - "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" \
-    "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" \
+    "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" "$FAULT_DROPS" \
+    "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" \
     "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
 import statistics
 import sys
 from pathlib import Path
 
 (case, mode, cc, rtt_ms, rate_mbit, loss_pct, loss_mode, bdp, queue_pkts,
- final_retrans, data_qdisc_drops, ack_qdisc_drops, client_path,
- samples_path) = sys.argv[1:]
+ final_retrans, data_qdisc_drops, ack_qdisc_drops, fault_drops,
+ fault_burst_packets, fault_burst_repeats, fault_burst_gap_packets,
+ client_path, samples_path) = sys.argv[1:]
 client = Path(client_path).read_text(encoding="utf-8").strip()
 goodput = float(client.split("goodput_mbps=")[1].split()[0])
 rows = []
@@ -374,6 +398,8 @@ key = "linux_cubic_pacing_reference" if cc == "cubic" else "linux_bbr_pacing_ref
 print(
     f"{key}=ok cc={cc} case={case} mode={mode} base_rtt_ms={rtt_ms} "
     f"rate_mbit={rate_mbit} loss_pct={loss_pct} loss_mode={loss_mode} "
+    f"fault_burst_packets={fault_burst_packets} fault_burst_repeats={fault_burst_repeats} "
+    f"fault_burst_gap_packets={fault_burst_gap_packets} fault_drops={fault_drops} "
     f"bdp_bytes={bdp} queue_pkts={queue_pkts} "
     f"goodput_mbps={goodput:.6f} samples={len(rows)} "
     f"pacing_rate_min_Bps={min(pacing)} pacing_rate_median_Bps={int(statistics.median(pacing))} "
@@ -386,8 +412,9 @@ print(
 PY
 
 uname -a > "$OUT/kernel.txt"
-printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
+printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_drops=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
     "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" \
+    "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_DROPS" \
     "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" > "$OUT/path.env"
 
 echo "Linux $CC pacing reference completed: case=$CASE mode=$MODE"
