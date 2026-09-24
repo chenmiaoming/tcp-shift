@@ -944,8 +944,26 @@ static int tcp_shift_lwip_cc_prepare_ack(
 {
     uint64_t ack_time_ns;
 
-    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
-        acked_bytes == 0U || ack == NULL) {
+    if (adapter != NULL && adapter->stats != NULL) {
+        adapter->stats->delivery_ack_prepare_attempts++;
+        adapter->stats->delivery_last_prepare_attempt_ack_seq =
+            pcb != NULL ? pcb->lastack : 0U;
+        adapter->stats->delivery_last_prepare_attempt_bytes =
+            (uint32_t)acked_bytes;
+    }
+    if (adapter == NULL || adapter->pcb != pcb || ack == NULL) {
+        return 0;
+    }
+    if (adapter->bound == 0U) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_ack_prepare_reject_unbound++;
+        }
+        return 0;
+    }
+    if (acked_bytes == 0U) {
+        if (adapter->stats != NULL) {
+            adapter->stats->delivery_ack_prepare_reject_zero_bytes++;
+        }
         return 0;
     }
 
