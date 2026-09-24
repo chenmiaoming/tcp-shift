@@ -208,6 +208,10 @@ if [ "$FAULT_MODE" = multi-loss ]; then
     LOSS_MODE=deterministic-multi
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = burst-loss ]; then
+    LOSS_MODE=deterministic-burst
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -221,21 +225,32 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
     FAULT_JUMP_INSTALLED=1
-    # At 40 ms / 10 Mbit/s the BBR qualification path has enough inflight
-    # for two holes to coexist while still producing the duplicate ACKs needed
-    # for the initial fast retransmit. Keep several successful packets between
-    # the two one-shot faults so the second hole is exposed by a partial ACK.
-    iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-        -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
-    iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-        -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
+    if [ "$LOSS_MODE" = deterministic-multi ]; then
+        # Keep several successful packets between two one-shot losses so the
+        # second hole is exposed by a partial ACK inside one recovery flight.
+        iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
+        iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
+    else
+        # Independent nth matchers all use the same index. A packet dropped by
+        # one rule never reaches the next rule, so each following matcher hits
+        # the immediately following data packet and forms one consecutive burst.
+        burst_i=0
+        while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
+            burst_i=$((burst_i + 1))
+        done
+    fi
     iptables -A "$FAULT_CHAIN" -j RETURN
 fi
 
@@ -277,7 +292,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
