@@ -84,6 +84,8 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t delivery_last_prepared_ack_seq;
     uint32_t delivery_last_incomplete_ack_seq;
     uint32_t delivery_last_incomplete_seq_start;
+    uint32_t delivery_last_incomplete_prepared_ack_seq;
+    uint8_t delivery_last_incomplete_tcp_state;
     uint16_t delivery_last_incomplete_acked_payload;
     uint16_t delivery_last_incomplete_payload;
     uint32_t delivery_live_slots;
