@@ -36,5 +36,5 @@ CC=${CC:-cc}
     -o "$OUT"
 
 "$OUT" | tee "$BUILD/p4-live-selector-summary.txt"
-grep -F 'cc_live_selector=ok selected=cubic ack_observations=1 srtt_updates=1 ' \
+grep -F 'cc_live_selector=ok selected=cubic ack_observations=2 srtt_updates=2 ' \
     "$BUILD/p4-live-selector-summary.txt" >/dev/null
