@@ -13,6 +13,8 @@ FAULT_MODE=${TCP_SHIFT_P6_BBR_LONG_FAULT_MODE:-none}
 FAULT_FIRST_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET:-80}
 FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
 FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
+FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
+FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -50,8 +52,8 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss|burst-loss) ;;
-    *) echo "FAULT_MODE must be none, multi-loss or burst-loss" >&2; exit 1;;
+    none|multi-loss|burst-loss|repeated-burst) ;;
+    *) echo "FAULT_MODE must be none, multi-loss, burst-loss or repeated-burst" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -68,6 +70,8 @@ case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative dec
 case "$FAULT_FIRST_PACKET" in ''|*[!0-9]*) echo "FAULT_FIRST_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_SECOND_PACKET" in ''|*[!0-9]*) echo "FAULT_SECOND_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_REPEATS" in ''|*[!0-9]*) echo "FAULT_BURST_REPEATS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_GAP_PACKETS must be an integer" >&2; exit 1;; esac
 if [ "$FAULT_MODE" = multi-loss ]; then
     [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
         echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
@@ -76,6 +80,14 @@ if [ "$FAULT_MODE" = multi-loss ]; then
 fi
 [ "$FAULT_BURST_PACKETS" -ge 2 ] && [ "$FAULT_BURST_PACKETS" -le 16 ] || {
     echo "FAULT_BURST_PACKETS must be between 2 and 16" >&2
+    exit 1
+}
+[ "$FAULT_BURST_REPEATS" -ge 1 ] && [ "$FAULT_BURST_REPEATS" -le 16 ] || {
+    echo "FAULT_BURST_REPEATS must be between 1 and 16" >&2
+    exit 1
+}
+[ "$FAULT_BURST_GAP_PACKETS" -ge "$FAULT_BURST_PACKETS" ] || {
+    echo "FAULT_BURST_GAP_PACKETS must be at least FAULT_BURST_PACKETS" >&2
     exit 1
 }
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
@@ -212,6 +224,10 @@ elif [ "$FAULT_MODE" = burst-loss ]; then
     LOSS_MODE=deterministic-burst
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = repeated-burst ]; then
+    LOSS_MODE=deterministic-repeated-burst
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -225,7 +241,7 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
@@ -240,15 +256,30 @@ if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burs
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
             -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
     else
-        # Independent nth matchers all use the same index. A packet dropped by
-        # one rule never reaches the next rule, so each following matcher hits
-        # the immediately following data packet and forms one consecutive burst.
-        burst_i=0
-        while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
-            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-                -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
-            burst_i=$((burst_i + 1))
+        # Independent nth matchers in one group all use the same index. A packet
+        # dropped by one rule never reaches the next rule, so the following
+        # matcher hits the immediately following data packet and forms a
+        # consecutive burst. repeated-burst adds later groups at fixed matcher
+        # gaps; the large gap is chosen so the prior recovery can fully exit.
+        repeat_i=0
+        repeat_limit=1
+        if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+            repeat_limit=$FAULT_BURST_REPEATS
+        fi
+        while [ "$repeat_i" -lt "$repeat_limit" ]; do
+            burst_packet=$((FAULT_FIRST_PACKET + repeat_i * FAULT_BURST_GAP_PACKETS))
+            [ "$burst_packet" -lt 10000 ] || {
+                echo "deterministic burst matcher index must stay below 10000: $burst_packet" >&2
+                exit 1
+            }
+            burst_i=0
+            while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
+                iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                    -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                    -m statistic --mode nth --every 10000 --packet "$burst_packet" -j DROP
+                burst_i=$((burst_i + 1))
+            done
+            repeat_i=$((repeat_i + 1))
         done
     fi
     iptables -A "$FAULT_CHAIN" -j RETURN
@@ -292,7 +323,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
