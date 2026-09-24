@@ -730,6 +730,12 @@ static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
         if (adapter->stats != NULL) {
             adapter->stats->delivery_metadata_misses++;
             adapter->stats->delivery_metadata_incomplete_ack_slots++;
+            adapter->stats->delivery_last_incomplete_ack_seq = pcb->lastack;
+            adapter->stats->delivery_last_incomplete_seq_start = slot->seq_start;
+            adapter->stats->delivery_last_incomplete_acked_payload =
+                slot->acked_payload_bytes;
+            adapter->stats->delivery_last_incomplete_payload =
+                slot->payload_bytes;
         }
     }
     tcp_shift_delivery_release_slot(adapter, slot);
@@ -940,6 +946,10 @@ static int tcp_shift_lwip_cc_prepare_ack(
     }
 
     memset(ack, 0, sizeof(*ack));
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_ack_prepare_events++;
+        adapter->stats->delivery_last_prepared_ack_seq = pcb->lastack;
+    }
     tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack->rate);
     ack_time_ns = adapter->delivery_last_clock_read_ns;
     ack->acked_bytes = acked_bytes;
