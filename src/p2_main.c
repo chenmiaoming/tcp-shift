@@ -134,6 +134,7 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "live_slots=%u peak_live_slots=%u peak_slots_per_flow=%u "
             "peak_capacity_slots_per_flow=%u last_prepared_ack_seq=%u "
             "last_incomplete_ack_seq=%u last_incomplete_seq_start=%u "
+            "last_incomplete_prepared_ack_seq=%u last_incomplete_tcp_state=%u "
             "last_incomplete_acked_payload=%u last_incomplete_payload=%u\n",
             (unsigned long long)stats->delivery_first_tx_events,
             (unsigned long long)stats->delivery_retransmit_events,
@@ -157,6 +158,8 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->delivery_last_prepared_ack_seq,
             stats->delivery_last_incomplete_ack_seq,
             stats->delivery_last_incomplete_seq_start,
+            stats->delivery_last_incomplete_prepared_ack_seq,
+            (unsigned)stats->delivery_last_incomplete_tcp_state,
             stats->delivery_last_incomplete_acked_payload,
             stats->delivery_last_incomplete_payload);
 }
