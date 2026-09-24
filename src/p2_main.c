@@ -127,12 +127,15 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "retransmit_events=%llu acked_segment_events=%llu "
             "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
             "metadata_misses=%llu metadata_missing_slots=%llu "
-            "metadata_incomplete_ack_slots=%llu ack_prepare_events=%llu "
-            "metadata_abandoned_slots=%llu "
+            "metadata_incomplete_ack_slots=%llu ack_prepare_attempts=%llu "
+            "ack_prepare_events=%llu ack_prepare_reject_unbound=%llu "
+            "ack_prepare_reject_zero_bytes=%llu metadata_abandoned_slots=%llu "
             "clock_errors=%llu timestamp_regressions=%llu "
             "last_tx_ns=%llu last_ack_ns=%llu metadata_bytes_per_slot=%u "
             "live_slots=%u peak_live_slots=%u peak_slots_per_flow=%u "
-            "peak_capacity_slots_per_flow=%u last_prepared_ack_seq=%u "
+            "peak_capacity_slots_per_flow=%u "
+            "last_prepare_attempt_ack_seq=%u last_prepare_attempt_bytes=%u "
+            "last_prepared_ack_seq=%u "
             "last_incomplete_ack_seq=%u last_incomplete_seq_start=%u "
             "last_incomplete_prepared_ack_seq=%u last_incomplete_tcp_state=%u "
             "last_incomplete_acked_payload=%u last_incomplete_payload=%u\n",
@@ -144,7 +147,10 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)stats->delivery_metadata_misses,
             (unsigned long long)stats->delivery_metadata_missing_slots,
             (unsigned long long)stats->delivery_metadata_incomplete_ack_slots,
+            (unsigned long long)stats->delivery_ack_prepare_attempts,
             (unsigned long long)stats->delivery_ack_prepare_events,
+            (unsigned long long)stats->delivery_ack_prepare_reject_unbound,
+            (unsigned long long)stats->delivery_ack_prepare_reject_zero_bytes,
             (unsigned long long)stats->delivery_metadata_abandoned_slots,
             (unsigned long long)stats->delivery_clock_errors,
             (unsigned long long)stats->delivery_timestamp_regressions,
@@ -155,6 +161,8 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->delivery_peak_live_slots,
             stats->delivery_peak_slots_per_flow,
             stats->delivery_peak_capacity_slots_per_flow,
+            stats->delivery_last_prepare_attempt_ack_seq,
+            stats->delivery_last_prepare_attempt_bytes,
             stats->delivery_last_prepared_ack_seq,
             stats->delivery_last_incomplete_ack_seq,
             stats->delivery_last_incomplete_seq_start,
