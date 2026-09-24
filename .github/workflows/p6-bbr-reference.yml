@@ -443,9 +443,9 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
 
-  repeated-burst-linux-reference:
+  repeated-burst-reference:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
 
     steps:
       - name: Checkout tcp-shift
@@ -455,22 +455,63 @@ jobs:
         run: |
           sudo apt-get update
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
             ethtool \
+            git \
             iproute2 \
             iptables \
             kmod \
             python3
+          sudo modprobe tun || true
           sudo modprobe ifb || true
           sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
           sysctl net.ipv4.tcp_available_congestion_control
 
-      - name: Validate Linux repeated-burst harness
-        run: sh -n scripts/linux-cubic-pacing-reference.sh
+      - name: Validate repeated-burst harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-bbr-repeated-burst-evaluate.py
+
+      - name: Build internal BBR qualification target
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-repeated -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-p6-bbr-repeated --target tcp-shift-p6-bbr --parallel
+
+      - name: Run tcp-shift BBR repeated-burst matrix
+        run: |
+          for repeats in 2 3 4; do
+            out="$PWD/.build/p6-bbr-repeated-burst/tcp-shift/$repeats"
+            port=$((18200 + repeats))
+            expectation=strict
+            if [ "$repeats" -ge 3 ]; then
+              expectation=diagnostic
+            fi
+            sudo env \
+              TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-repeated/tcp-shift-p6-bbr" \
+              TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+              TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+              TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+              TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+              TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS="$repeats" \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=700 \
+              TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION="$expectation" \
+              TCP_SHIFT_P6_BBR_LONG_TUN_NAME="tsp6ref$repeats" \
+              TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT="$port" \
+              TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT="$((port + 1000))" \
+              sh scripts/p6-bbr-long-flow.sh
+          done
 
       - name: Run Linux BBR repeated-burst matrix
         run: |
           for repeats in 2 3 4; do
-            out="$PWD/.build/linux-bbr-repeated-burst/$repeats"
+            out="$PWD/.build/p6-bbr-repeated-burst/linux-bbr/$repeats"
             sudo env \
               TCP_SHIFT_LINUX_PACING_CC=bbr \
               TCP_SHIFT_LINUX_PACING_CASE="repeated-burst-$repeats" \
@@ -487,31 +528,47 @@ jobs:
               sh scripts/linux-cubic-pacing-reference.sh
           done
 
-      - name: Publish Linux repeated-burst evidence
+      - name: Compare repeated-burst recovery
+        run: |
+          root="$PWD/.build/p6-bbr-repeated-burst"
+          sudo chown -R "$USER:$USER" "$root"
+          for repeats in 2 3 4; do
+            python3 scripts/p6-bbr-repeated-burst-evaluate.py \
+              "$repeats" \
+              "$root/tcp-shift/$repeats/summary.txt" \
+              "$root/linux-bbr/$repeats/summary.txt" \
+              | tee "$root/comparison-$repeats.txt"
+          done
+
+      - name: Publish repeated-burst evidence
         if: always()
         run: |
+          root=.build/p6-bbr-repeated-burst
           {
-            echo "## Linux BBR repeated deterministic bursts"
+            echo "## BBR repeated deterministic bursts"
             echo
             echo "RTT=260ms rate=10Mbit payload=4MiB burst=3 packets gap=700 packets"
             for repeats in 2 3 4; do
-              file=".build/linux-bbr-repeated-burst/$repeats/summary.txt"
-              if [ -f "$file" ]; then
-                echo
-                echo "### repeats=$repeats"
-                echo '~~~text'
-                cat "$file"
-                echo '~~~'
-              fi
+              echo
+              echo "### repeats=$repeats"
+              for file in \
+                "$root/tcp-shift/$repeats/summary.txt" \
+                "$root/linux-bbr/$repeats/summary.txt" \
+                "$root/comparison-$repeats.txt"; do
+                if [ -f "$file" ]; then
+                  echo '~~~text'
+                  cat "$file"
+                  echo '~~~'
+                fi
+              done
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Linux repeated-burst diagnostics
+      - name: Upload repeated-burst diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-bbr-repeated-burst
-          path: .build/linux-bbr-repeated-burst
+          name: p6-bbr-repeated-burst
+          path: .build/p6-bbr-repeated-burst
           if-no-files-found: warn
           include-hidden-files: true
-
