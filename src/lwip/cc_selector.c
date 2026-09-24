@@ -407,6 +407,19 @@ static int tcp_shift_cc_selector_pacing_on_ack(void *arg,
     return tcp_shift_cc_selector_call_paced_ack(arg, pcb, acked_bytes);
 }
 
+static int tcp_shift_cc_selector_pacing_on_ack_observe(
+    void *arg,
+    struct tcp_pcb *pcb,
+    tcpwnd_size_t acked_bytes)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->on_ack_observe == NULL) {
+        return 0;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->on_ack_observe(
+        arg, pcb, acked_bytes);
+}
+
 static int tcp_shift_cc_selector_pacing_on_loss(void *arg,
                                                  struct tcp_pcb *pcb,
                                                  tcpwnd_size_t lost_bytes)
@@ -476,6 +489,7 @@ static void tcp_shift_cc_selector_pacing_on_segment_acked(
 static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_cc_selector_pacing_hook_ops = {
         .on_ack = tcp_shift_cc_selector_pacing_on_ack,
+        .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
         .on_timeout = tcp_shift_cc_selector_pacing_on_timeout,
         .on_segment_send_eligible =
