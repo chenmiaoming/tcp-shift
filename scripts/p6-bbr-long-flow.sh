@@ -12,6 +12,7 @@ LOSS_PCT=${TCP_SHIFT_P6_BBR_LONG_LOSS_PCT:-0}
 FAULT_MODE=${TCP_SHIFT_P6_BBR_LONG_FAULT_MODE:-none}
 FAULT_FIRST_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET:-80}
 FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
+FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -49,8 +50,8 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss) ;;
-    *) echo "FAULT_MODE must be none or multi-loss" >&2; exit 1;;
+    none|multi-loss|burst-loss) ;;
+    *) echo "FAULT_MODE must be none, multi-loss or burst-loss" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -66,8 +67,15 @@ case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&
 case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative decimal" >&2; exit 1;; esac
 case "$FAULT_FIRST_PACKET" in ''|*[!0-9]*) echo "FAULT_FIRST_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_SECOND_PACKET" in ''|*[!0-9]*) echo "FAULT_SECOND_PACKET must be an integer" >&2; exit 1;; esac
-[ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
-    echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
+case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
+if [ "$FAULT_MODE" = multi-loss ]; then
+    [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
+        echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
+        exit 1
+    }
+fi
+[ "$FAULT_BURST_PACKETS" -ge 2 ] && [ "$FAULT_BURST_PACKETS" -le 16 ] || {
+    echo "FAULT_BURST_PACKETS must be between 2 and 16" >&2
     exit 1
 }
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
@@ -200,6 +208,10 @@ if [ "$FAULT_MODE" = multi-loss ]; then
     LOSS_MODE=deterministic-multi
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = burst-loss ]; then
+    LOSS_MODE=deterministic-burst
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -213,21 +225,32 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
     FAULT_JUMP_INSTALLED=1
-    # At 40 ms / 10 Mbit/s the BBR qualification path has enough inflight
-    # for two holes to coexist while still producing the duplicate ACKs needed
-    # for the initial fast retransmit. Keep several successful packets between
-    # the two one-shot faults so the second hole is exposed by a partial ACK.
-    iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-        -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
-    iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-        -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
+    if [ "$LOSS_MODE" = deterministic-multi ]; then
+        # Keep several successful packets between two one-shot losses so the
+        # second hole is exposed by a partial ACK inside one recovery flight.
+        iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
+        iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+            -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+            -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
+    else
+        # Independent nth matchers all use the same index. A packet dropped by
+        # one rule never reaches the next rule, so each following matcher hits
+        # the immediately following data packet and forms one consecutive burst.
+        burst_i=0
+        while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
+            burst_i=$((burst_i + 1))
+        done
+    fi
     iptables -A "$FAULT_CHAIN" -j RETURN
 fi
 
@@ -269,7 +292,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
@@ -316,6 +339,19 @@ case "$LOSS_MODE" in
         [ "$fault_drops" -eq 2 ] || {
             cat "$OUT/iptables-fault.txt" >&2 || true
             echo "P6 BBR deterministic multi-loss expected exactly two drops: drops=$fault_drops" >&2
+            exit 1
+        }
+        ;;
+    deterministic-burst)
+        [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+            echo "P6 BBR deterministic burst path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
+            exit 1
+        }
+        fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+            "$OUT/iptables-fault.txt")
+        [ "$fault_drops" -eq "$FAULT_BURST_PACKETS" ] || {
+            cat "$OUT/iptables-fault.txt" >&2 || true
+            echo "P6 BBR deterministic burst expected exactly $FAULT_BURST_PACKETS drops: drops=$fault_drops" >&2
             exit 1
         }
         ;;
@@ -370,6 +406,12 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-burst)
+        [ "$loss_events" -eq 1 ] && [ "$timeout_events" -eq 0 ] || {
+            echo "deterministic burst did not stay in one recovery episode: loss=$loss_events timeout=$timeout_events" >&2
+            exit 1
+        }
+        ;;
 esac
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
@@ -402,6 +444,12 @@ case "$LOSS_MODE" in
     deterministic-multi)
         [ "$retransmit_events" -ge 2 ] || {
             echo "deterministic BBR multi-loss expected at least two retransmissions: $retransmit_events" >&2
+            exit 1
+        }
+        ;;
+    deterministic-burst)
+        [ "$retransmit_events" -ge "$FAULT_BURST_PACKETS" ] || {
+            echo "deterministic burst expected at least $FAULT_BURST_PACKETS retransmissions: $retransmit_events" >&2
             exit 1
         }
         ;;
@@ -447,13 +495,13 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s fault_burst_packets=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
     "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
-printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_burst_packets=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
