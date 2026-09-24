@@ -443,3 +443,75 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
 
+  repeated-burst-linux-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install repeated-burst reference dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ethtool \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate Linux repeated-burst harness
+        run: sh -n scripts/linux-cubic-pacing-reference.sh
+
+      - name: Run Linux BBR repeated-burst matrix
+        run: |
+          for repeats in 2 3 4; do
+            out="$PWD/.build/linux-bbr-repeated-burst/$repeats"
+            sudo env \
+              TCP_SHIFT_LINUX_PACING_CC=bbr \
+              TCP_SHIFT_LINUX_PACING_CASE="repeated-burst-$repeats" \
+              TCP_SHIFT_LINUX_PACING_MODE=fq \
+              TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+              TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+              TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+              TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MODE=repeated-burst \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_PACKETS=3 \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_REPEATS="$repeats" \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_GAP_PACKETS=700 \
+              TCP_SHIFT_LINUX_PACING_OUT="$out" \
+              sh scripts/linux-cubic-pacing-reference.sh
+          done
+
+      - name: Publish Linux repeated-burst evidence
+        if: always()
+        run: |
+          {
+            echo "## Linux BBR repeated deterministic bursts"
+            echo
+            echo "RTT=260ms rate=10Mbit payload=4MiB burst=3 packets gap=700 packets"
+            for repeats in 2 3 4; do
+              file=".build/linux-bbr-repeated-burst/$repeats/summary.txt"
+              if [ -f "$file" ]; then
+                echo
+                echo "### repeats=$repeats"
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Linux repeated-burst diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bbr-repeated-burst
+          path: .build/linux-bbr-repeated-burst
+          if-no-files-found: warn
+          include-hidden-files: true
+
