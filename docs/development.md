@@ -167,20 +167,21 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: experimental BBR product exposure
+## Active next milestone: provider/OpenVZ BBR qualification before exposure
 
-The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. PRs #34-#38 established live internal BBR integration, Linux reference qualification, NewReno partial-ACK recovery, deterministic WAN burst/repeated-burst recovery, retransmission-safe delivery sampling, filtered-`max_bw` Startup detection, and timeout/model diagnostics.
+The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. The merged path now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery (#41), deterministic first-send-loss qualification (#44), and SACK-aware delivery/rate accounting (#45). Sender SACK remains compile-time experimental/default-OFF; production `tcp-shift-p2` still exposes only `reno|cubic`.
 
-The next development increment should be product-facing rather than another broad controller rewrite:
+The next development increment is evidence-first rather than another broad controller rewrite:
 
-1. register `bbr` behind an explicit experimental production selector while keeping Reno as the default;
-2. preserve the internal/production distinction in tests so unsupported or unqualified controllers still fail closed;
-3. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
-4. begin provider/OpenVZ qualification with real RTT/loss/memory observations;
-5. use real failures to decide whether compact `bbr` needs another bounded v3-informed mechanism or whether the missing behavior belongs to transport recovery;
-6. keep `bbrv3` separate if full current-draft semantics are ever implemented.
+1. qualify `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON` on the target provider/OpenVZ environment with real RTT/loss/memory/TUN behavior;
+2. reproduce the 260 ms / 10 Mbit/s deterministic first-send-loss case outside GitHub runners where practical;
+3. confirm the constrained-host memory budget with sender SACK enabled, keeping the existing P3 gate rather than widening it;
+4. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
+5. only after provider evidence, decide whether to register `bbr` behind an explicit experimental production selector; Reno remains the default;
+6. use real failures to decide whether compact `bbr` needs another bounded mechanism (for example pacing-aware inflight or ACK aggregation) rather than adding machinery preemptively;
+7. keep `bbrv3` separate if full current-draft semantics are ever implemented.
 
-Do not call the compact controller Linux BBR. Clean reference similarity and deterministic recovery qualification are evidence of behavior, not implementation equivalence.
+Do not call the compact controller Linux BBR. The current stable first-send-loss reference is about 0.745x Linux BBR goodput after #45, which is a material improvement but still explicitly not parity.
 
 ## Merge discipline
 

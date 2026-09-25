@@ -134,15 +134,17 @@ heap final:           0
 
 The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. This qualifies pacer correctness under BDP pressure; it does not remove the later need to evaluate window scaling for high-throughput/high-RTT scenarios.
 
-## P6: tcp-shift BBR — active / internal runtime qualified
+## P6: tcp-shift BBR — active / internal + sender-SACK reference qualified
 
-The compact `bbr` controller is no longer model-only. It now runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
+The compact `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
 
-Merged P6 work now covers the bandwidth/min-RTT model, Startup/Drain/ProbeBW/ProbeRTT policy, app-limited treatment, live cwnd/pacing publication, BBR-owned recovery cwnd, transport-owned RFC 6582/NewReno partial-ACK recovery, retransmission-safe delivery snapshots, filtered-`max_bw` Startup detection, and reference/traffic qualification across clean, high-BDP, multi-flow, random loss, deterministic multiple loss, and repeated long-RTT burst cases.
+Merged P6 work now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` (#41), a deterministic first-transmission-only ~1% long-RTT loss reference (#44), and SACK-aware out-of-order delivery accounting for internal BBR (#45). The sender-SACK option remains compile-time OFF by default, so legacy/production Reno/CUBIC behavior is unchanged.
 
-Clean single-flow reference results remain close to Linux BBR + `sch_fq`; lossy long-RTT behavior remains a diagnostic rather than a parity claim. Sender SACK/RACK/TLP-style machinery is not being added preemptively because the deterministic three-/six-packet and repeated-burst gates already recover without RTO in their strict cases.
+The stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss reference injects exactly 28 first-transmission drops. After #45, tcp-shift BBR measured 4.092568 Mbit/s versus Linux BBR at 5.490912 Mbit/s, a ~0.745 diagnostic ratio, with exact 28/28 drop/retransmission accounting and zero RTO fallback. This materially improves the previous ~0.478 ratio but still does not establish Linux-BBR parity.
 
-The next product milestone is to expose `bbr` as an explicitly experimental production selector and begin provider/OpenVZ qualification. Reno remains the default. Production exposure must not be interpreted as Linux-BBR equivalence.
+PRs #42/#43 tested multi-hole batching and a matching baseline; both were closed without merge because batching added complexity without material benefit.
+
+The next milestone is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination, including memory, loss, TUN/netfilter and runtime behavior. Only after that evidence should the project decide whether to expose `bbr` publicly. Reno remains the production default.
 
 ## Milestone state
 
@@ -155,7 +157,7 @@ P4 generic CC boundary     complete
 P5a delivery ledger        complete
 P5b rate/app-limited       complete
 P5c event-driven pacing    complete
-P6 tcp-shift BBR           active / internal runtime qualified
+P6 tcp-shift BBR           active / sender-SACK reference qualified
 ```
 
 ## Stop criteria

@@ -219,15 +219,17 @@ Runner-qualified:
 - P5a: high-resolution delivery ledger and retransmission-safe metadata;
 - P5b: ACK delivery-rate sampling and event-driven app-limited classification;
 - P5c: one process-wide event-driven pacer, deterministic teardown safety, multi-flow scheduling, paced loss/RTO recovery, and high-BDP/window-pressure qualification;
-- P6: compact internal BBR runtime with live cwnd/pacing publication, clean Linux BBR reference comparison, multi-flow and app-limited qualification, deterministic multiple-loss/NewReno recovery, three-/six-packet WAN bursts, repeated burst episodes, and retransmission-safe delivery/Startup telemetry.
+- P6: compact internal BBR runtime with live cwnd/pacing publication, clean Linux BBR reference comparison, multi-flow/app-limited qualification, explicit-loss ProbeBW semantics, NewReno recovery, bounded sender-SACK selective recovery, deterministic first-send-loss qualification, and SACK-aware delivery/rate accounting.
 
 Current merged behavior head:
 
 ```text
-1c8b7b4477f71edde0f5961674f37de0a0dd9832
+ed3507be835a6066d33e840d68f1d3287f7e024b
 ```
 
-Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The next product boundary is controlled experimental public BBR selection plus provider/OpenVZ qualification. That must reuse the existing generic observations, event-driven pacer, and transport-owned recovery boundary rather than widening controller ownership.
+The sender-SACK extension remains compile-time experimental and OFF by default. When enabled for qualification, it still lives inside the transport-owned lwIP recovery surface: inbound SACK blocks mark existing outstanding segments, selective requeue remains bounded, and sequence space / queues / retransmission execution / RTO stay in lwIP. PR #45 additionally lets the generic delivery sidecar charge newly SACKed out-of-order payload exactly once so internal BBR sees delivery progress before cumulative ACK repair; Reno/CUBIC native policy remains unchanged.
+
+Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The next product boundary is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination, followed by an explicit decision on public `bbr` exposure.
 
 This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, loss behavior, and memory on the target VPS class.
 
