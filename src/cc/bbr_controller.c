@@ -54,7 +54,6 @@ int tcp_shift_bbr_controller_init(
     state->initial_cwnd_bytes = init->initial_cwnd_bytes;
     state->cwnd_bytes = init->initial_cwnd_bytes;
     state->pending_probe_loss_bytes = 0U;
-    state->pending_recovery_loss_bytes = 0U;
     state->delivered_bytes = 0U;
     initial_rate = tcp_shift_bbr_initial_pacing_rate_bytes_per_sec(
         init->initial_cwnd_bytes, 0U);
@@ -76,7 +75,6 @@ int tcp_shift_bbr_controller_on_ack(
 {
     uint32_t current_cwnd;
     uint32_t probe_loss_bytes;
-    uint32_t recovery_loss_bytes;
     uint32_t recovery_cwnd = 0U;
     unsigned recovery_owns_cwnd = 0U;
     int probe_rtt_result;
@@ -92,7 +90,6 @@ int tcp_shift_bbr_controller_on_ack(
     }
 
     probe_loss_bytes = state->pending_probe_loss_bytes;
-    recovery_loss_bytes = state->pending_recovery_loss_bytes;
 
     result = tcp_shift_bbr_model_on_ack(
         &state->model, &ack->rate, ack->ack_time_ns);
@@ -107,7 +104,7 @@ int tcp_shift_bbr_controller_on_ack(
     if (state->recovery.in_recovery != 0U) {
         result = tcp_shift_bbr_recovery_on_ack(
             &state->recovery, current_cwnd, transport->inflight_bytes,
-            ack->acked_bytes, recovery_loss_bytes, transport->mss_bytes,
+            ack->acked_bytes, 0U, transport->mss_bytes,
             transport->cwnd_limit_bytes, state->model.round_start,
             &recovery_cwnd, &recovery_owns_cwnd);
         if (result < 0) {
@@ -183,7 +180,6 @@ int tcp_shift_bbr_controller_on_ack(
     state->cwnd_bytes = policy->cwnd_bytes;
     state->pacing_rate_bytes_per_sec = policy->pacing_rate_bytes_per_sec;
     state->pending_probe_loss_bytes = 0U;
-    state->pending_recovery_loss_bytes = 0U;
     return 0;
 }
 
@@ -209,7 +205,6 @@ int tcp_shift_bbr_controller_recovery_enter(
     state->model.next_round_delivered = state->delivered_bytes;
     state->model.round_start = 0U;
     state->pending_probe_loss_bytes = lost_bytes;
-    state->pending_recovery_loss_bytes = 0U;
 
     if (tcp_shift_bbr_recovery_enter(
             &state->recovery, state->cwnd_bytes,
@@ -220,24 +215,6 @@ int tcp_shift_bbr_controller_recovery_enter(
 
     state->cwnd_bytes = cwnd;
     tcp_shift_bbr_controller_publish(state, transport, policy);
-    return 0;
-}
-
-int tcp_shift_bbr_controller_recovery_loss(
-    struct tcp_shift_bbr_controller_state *state,
-    uint32_t lost_bytes)
-{
-    if (state == NULL || state->initialized == 0U ||
-        state->recovery.in_recovery == 0U || lost_bytes == 0U) {
-        return -1;
-    }
-
-    state->pending_probe_loss_bytes =
-        tcp_shift_bbr_controller_add_limit(
-            state->pending_probe_loss_bytes, lost_bytes, UINT32_MAX);
-    state->pending_recovery_loss_bytes =
-        tcp_shift_bbr_controller_add_limit(
-            state->pending_recovery_loss_bytes, lost_bytes, UINT32_MAX);
     return 0;
 }
 
@@ -263,7 +240,6 @@ int tcp_shift_bbr_controller_recovery_exit(
 
     state->cwnd_bytes = cwnd;
     state->pending_probe_loss_bytes = 0U;
-    state->pending_recovery_loss_bytes = 0U;
     tcp_shift_bbr_controller_publish(state, transport, policy);
     return 0;
 }
@@ -291,7 +267,6 @@ int tcp_shift_bbr_controller_on_timeout(
     state->model.full_bw_now = 0U;
     state->model.round_start = 1U;
     state->pending_probe_loss_bytes = 0U;
-    state->pending_recovery_loss_bytes = 0U;
 
     /* An RTO supersedes fast-recovery packet conservation. A future spurious
      * timeout undo contract can preserve/restore separate prior-cwnd state;
