@@ -120,6 +120,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    } else if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
 +      /* We come here when the ACK acknowledges new data. */
 +      tcpwnd_size_t acked;
++      tcpwnd_size_t recovery_newly_lost = 0;
++      struct tcp_seg *recovery_lost_seg = NULL;
 +      u32_t recovery_end_seq = 0;
 +      u8_t recovery_partial = 0;
 +      u8_t recovery_native_window = 0;
@@ -160,6 +162,26 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +      pcb->dupacks = recovery_partial ? 3U : 0U;
 +      pcb->lastack = ackno;
 +
++      if (recovery_partial && !recovery_native_window) {
++        /* The partial ACK ends immediately before the next inferred hole.
++           Find that still-unacknowledged segment before the generic ACK hook
++           consumes delivery metadata or upstream frees ACKed segments. This
++           is a new loss observation, not merely a retransmission marker. */
++        recovery_lost_seg = pcb->unacked;
++        while (recovery_lost_seg != NULL) {
++          u32_t recovery_seq =
++              lwip_ntohl(recovery_lost_seg->tcphdr->seqno);
++          if (TCP_SEQ_GT(recovery_seq + TCP_TCPLEN(recovery_lost_seg),
++                         ackno)) {
++            break;
++          }
++          recovery_lost_seg = recovery_lost_seg->next;
++        }
++        if (recovery_lost_seg != NULL && recovery_lost_seg->len != 0U) {
++          recovery_newly_lost = recovery_lost_seg->len;
++        }
++      }
++
 +      if (recovery_partial && recovery_native_window) {
 +        /* RFC 6582 section 3: deflate by newly acknowledged data and add one
 +           SMSS back when the partial ACK covers at least one full segment.
@@ -191,6 +213,10 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +          if (recovery_native_window) {
 +            (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
 +          } else {
++            if (recovery_newly_lost != 0U) {
++              (void)tcp_shift_lwip_cc_hook_recovery_loss(
++                  pcb, recovery_newly_lost);
++            }
 +            (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
 +          }
 +        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
