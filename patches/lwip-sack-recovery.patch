@@ -55,7 +55,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                }
 +#endif /* LWIP_TCP_SACK_OUT */
                }
-@@ -1355,14 +1388,20 @@
+@@ -1355,14 +1388,21 @@
        } else {
          pcb->rtime = 0;
        }
@@ -70,14 +70,14 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +            pcb->rtime = 0;
 +          }
 +        } else
-NaN
++#endif /* LWIP_TCP_SACK_OUT */
          if (tcp_rexmit(pcb) == ERR_OK) {
            pcb->rtime = 0;
          }
        }
  
        pcb->polltmr = 0;
-@@ -1928,8 +1967,12 @@
+@@ -1928,8 +1968,12 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
  {
@@ -90,7 +90,7 @@ NaN
  #if LWIP_TCP_TIMESTAMPS
    u32_t tsval;
  #endif
-@@ -2016,15 +2059,39 @@
+@@ -2016,15 +2060,39 @@
  #if LWIP_TCP_SACK_OUT
          case LWIP_TCP_OPT_SACK_PERM:
            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
