@@ -64,7 +64,7 @@ This remains a process-PSS planning model, not a full-host capacity guarantee.
 
 P4 established an independently buildable pure-C controller boundary. The generic controller consumes transport-neutral MSS, inflight, peer send window, and cwnd limit; events are init/ACK/loss/RTO; policy publishes cwnd, ssthresh, and optional pacing rate. Conventional Reno uses 16 bytes caller-owned state and requests zero pacing.
 
-Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. The controlled patch is confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. lwIP retains retransmission execution, duplicate-ACK processing, fast recovery, SACK/recovery, RTT/RTO calculation, queues, sequence space, packet construction, and output.
+Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. The controlled patch chain remains confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. The second sender-SACK patch is default OFF and exists only for evidence-driven recovery qualification. lwIP still retains retransmission execution, duplicate-ACK processing, recovery/RTO machinery, queues, sequence space, packet construction, and output; tcp-shift only adds bounded scoreboard/selective-requeue logic inside that transport-owned path when the experiment is enabled.
 
 ## P5a: retransmission-safe delivery ledger — complete
 
