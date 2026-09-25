@@ -120,7 +120,7 @@ Pinned lwIP remains at:
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-`tcp-shift` does not vendor a broad lwIP fork. `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch`.
+`tcp-shift` does not vendor a broad lwIP fork. `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies the controlled patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. The second patch is compile-time dormant unless `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON`; the build definition is propagated through the lwIP target because enabling upstream SACK changes the public `struct tcp_pcb` layout.
 
 The permitted upstream modification surface remains exactly:
 
