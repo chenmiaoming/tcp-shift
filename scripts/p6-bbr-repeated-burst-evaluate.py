@@ -98,18 +98,23 @@ ts_retrans = int(need(ts, "retransmit_events"))
 linux_retrans = int(need(linux, "total_retrans"))
 ts_loss = int(need(ts, "loss_events"))
 ts_timeout = int(need(ts, "timeout_events"))
-if ts_retrans < expected_drops:
+if ts_retrans != expected_drops:
     raise SystemExit(
-        f"tcp-shift retransmissions below explicit drops: "
+        f"tcp-shift retransmission amplification: "
         f"retrans={ts_retrans} drops={expected_drops}"
     )
-if linux_retrans < expected_drops:
+if linux_retrans != expected_drops:
     raise SystemExit(
-        f"Linux retransmissions below explicit drops: "
+        f"Linux retransmission mismatch: "
         f"retrans={linux_retrans} drops={expected_drops}"
     )
-if ts_loss + ts_timeout < 1:
-    raise SystemExit("tcp-shift observed no recovery event")
+if ts_timeout != 0:
+    raise SystemExit(f"tcp-shift repeated burst fell back to RTO: {ts_timeout}")
+if ts_loss < 1 or ts_loss > repeat_count:
+    raise SystemExit(
+        f"tcp-shift recovery episode count outside bounded range: "
+        f"loss={ts_loss} repeats={repeat_count}"
+    )
 
 ts_goodput = float(need(ts, "goodput_mbps"))
 linux_goodput = float(need(linux, "goodput_mbps"))
