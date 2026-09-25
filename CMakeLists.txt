@@ -63,7 +63,10 @@ target_compile_options(tcp_shift_lwip PRIVATE
 )
 
 if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
-    target_compile_definitions(tcp_shift_lwip PRIVATE
+    # lwipopts.h changes struct tcp_pcb when SACK is enabled. This definition is
+    # an ABI requirement, not an implementation detail: every project target
+    # that includes lwIP headers must see the same layout as tcp_shift_lwip.
+    target_compile_definitions(tcp_shift_lwip PUBLIC
         TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=1
     )
 endif()
