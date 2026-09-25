@@ -63,7 +63,7 @@ static int check_cycle_seed_and_gains(void)
 
     tcp_shift_bbr_probe_state_init(&probe, 0U);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1000000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1000000000)) == 0);
     CHECK(probe.cycle_started == 1U);
     CHECK(probe.cycle_index == 0U);
     CHECK(tcp_shift_bbr_probe_bw_pacing_gain_num(&probe) == 320U);
@@ -75,12 +75,12 @@ static int check_cycle_seed_and_gains(void)
      * the target). Base BDP here is exactly 2 MB, so the target is 2.5 MB. */
     sample.prior_inflight_bytes = 2499999U;
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1020000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1020000000)) == 0);
     CHECK(probe.cycle_index == 0U);
 
     sample.prior_inflight_bytes = 2500000U;
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1021000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1021000000)) == 0);
     CHECK(probe.cycle_index == 1U);
     CHECK(tcp_shift_bbr_probe_bw_pacing_gain_num(&probe) == 192U);
     CHECK(tcp_shift_bbr_probe_bw_pacing_rate_bytes_per_sec(
@@ -89,17 +89,17 @@ static int check_cycle_seed_and_gains(void)
     /* Probe-down may end before a full min RTT once inflight reaches one BDP. */
     sample.prior_inflight_bytes = 2000000U;
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1022000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1022000000)) == 0);
     CHECK(probe.cycle_index == 2U);
     CHECK(tcp_shift_bbr_probe_bw_pacing_gain_num(&probe) == 256U);
     CHECK(tcp_shift_bbr_probe_bw_pacing_rate_bytes_per_sec(
               &model, &probe) == UINT64_C(99000000));
 
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1041000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1041000000)) == 0);
     CHECK(probe.cycle_index == 2U);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(1042000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(1042000000)) == 0);
     CHECK(probe.cycle_index == 3U);
 
     /* Linux randomizes the initial cycle over probe-up or cruise phases and
@@ -107,25 +107,30 @@ static int check_cycle_seed_and_gains(void)
      * external deterministic seed rather than owning an RNG. */
     tcp_shift_bbr_probe_state_init(&probe, 1U);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(2000000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(2000000000)) == 0);
     CHECK(probe.cycle_index == 7U);
 
     tcp_shift_bbr_probe_state_init(&probe, 6U);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(3000000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(3000000000)) == 0);
     CHECK(probe.cycle_index == 2U);
 
-    /* RETRANSMITTED is the current transport-neutral loss proxy for ending a
-     * full-length probe-up that cannot reach its 1.25*BDP target. */
+    /* A retransmission marker is not itself new loss. A successfully
+     * delivered retransmission must not terminate probe-up below 1.25*BDP.
+     * Explicit newly-lost bytes do terminate the full-length phase, matching
+     * Linux BBRv1 rate_sample.losses semantics. */
     tcp_shift_bbr_probe_state_init(&probe, 0U);
     sample = rate_sample(2000000U,
                          TCP_SHIFT_CC_RATE_SAMPLE_VALID |
                              TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED,
                          0U, 1000U);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(4000000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(4000000000)) == 0);
     CHECK(tcp_shift_bbr_probe_bw_update(
-              &model, &probe, &sample, UINT64_C(4020000000)) == 0);
+              &model, &probe, &sample, 0U, UINT64_C(4020000000)) == 0);
+    CHECK(probe.cycle_index == 0U);
+    CHECK(tcp_shift_bbr_probe_bw_update(
+              &model, &probe, &sample, 1460U, UINT64_C(4021000000)) == 0);
     CHECK(probe.cycle_index == 1U);
     return 0;
 }
