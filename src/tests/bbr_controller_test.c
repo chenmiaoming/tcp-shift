@@ -221,7 +221,6 @@ static int check_recovery_composition(void)
     CHECK(policy.cwnd_bytes == 12000U);
     CHECK(policy.pacing_rate_bytes_per_sec == pacing_before_recovery);
     CHECK(state.pending_probe_loss_bytes == transport.mss_bytes);
-    CHECK(state.pending_recovery_loss_bytes == 0U);
 
     /* A recovery ACK whose prior-delivered snapshot predates the entry marker
      * is still in the first packet-timed recovery round. Normal STARTUP policy
@@ -234,26 +233,17 @@ static int check_recovery_composition(void)
     CHECK(state.recovery.packet_conservation == 1U);
     CHECK(policy.cwnd_bytes == 12000U);
 
-    /* A partial ACK may expose another hole before the ACK policy runs.
-     * The newly-lost bytes must be consumed once by recovery accounting, not
-     * inferred from RETRANSMITTED delivery metadata. */
-    CHECK(tcp_shift_bbr_controller_recovery_loss(
-              &state, transport.mss_bytes) == 0);
-    CHECK(state.pending_probe_loss_bytes == transport.mss_bytes);
-    CHECK(state.pending_recovery_loss_bytes == transport.mss_bytes);
-
     /* Once prior_delivered reaches the entry marker, model.round_start opens a
      * new packet-timed round. That ACK releases packet conservation and normal
-     * BBR cwnd growth resumes from the loss-adjusted cwnd. */
+     * BBR cwnd growth resumes from the recovery-adjusted cwnd. */
     transport.inflight_bytes = 8500U;
     CHECK(drive_ack(&state, &transport, UINT64_C(1040000000),
                     UINT64_C(10000000), 10000U, 12920U, 8500U,
                     valid, &policy) == 0);
     CHECK(state.pending_probe_loss_bytes == 0U);
-    CHECK(state.pending_recovery_loss_bytes == 0U);
     CHECK(state.model.round_start == 1U);
     CHECK(state.recovery.packet_conservation == 0U);
-    CHECK(policy.cwnd_bytes > 10540U);
+    CHECK(policy.cwnd_bytes > 12000U);
 
     /* Transport-observed exit restores the last known-good pre-recovery cwnd.
      * The real adapter will then feed the same/new ACK through normal policy,
@@ -292,7 +282,6 @@ static int check_invalid_inputs(void)
               &state, &transport, &ack, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_enter(
               &state, &transport, 0U, &policy) < 0);
-    CHECK(tcp_shift_bbr_controller_recovery_loss(&state, 1460U) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_exit(
               &state, &transport, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_init(
