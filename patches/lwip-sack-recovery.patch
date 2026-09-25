@@ -1,7 +1,7 @@
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -100,9 +100,38 @@
+@@ -100,9 +100,35 @@
  #if LWIP_TCP_SACK_OUT
  static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
  static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
@@ -13,7 +13,6 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
-+#define TCP_SHIFT_TF_SEG_SACK_NEW     ((u8_t)0x80U)
 +#define TCP_SHIFT_TCP_OPT_SACK        5U
 +
 +err_t tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb);
@@ -30,10 +29,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    u32_t seg_left = lwip_ntohl(seg->tcphdr->seqno);
 +    u32_t seg_right = seg_left + TCP_TCPLEN(seg);
 +
-+    if (!TCP_SEQ_LT(seg_left, left) && !TCP_SEQ_GT(seg_right, right) &&
-+        (seg->flags & TCP_SHIFT_TF_SEG_SACKED) == 0U) {
-+      seg->flags |= (TCP_SHIFT_TF_SEG_SACKED |
-+                     TCP_SHIFT_TF_SEG_SACK_NEW);
++    if (!TCP_SEQ_LT(seg_left, left) && !TCP_SEQ_GT(seg_right, right)) {
++      seg->flags |= TCP_SHIFT_TF_SEG_SACKED;
 +    }
 +  }
 +}
@@ -136,7 +133,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,11 @@
+@@ -82,5 +82,10 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -144,7 +141,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
-+#define TCP_SHIFT_TF_SEG_SACK_NEW     ((u8_t)0x80U)
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
@@ -165,18 +161,16 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    LWIP_ASSERT("tcp_rexmit_rto_prepare: invalid pcb", pcb != NULL);
-@@ -1669,4 +1678,16 @@
+@@ -1669,4 +1678,14 @@
    /* concatenate unsent queue after unacked queue */
 +#if LWIP_TCP_SACK_OUT
 +  for (sack_seg = pcb->unacked; sack_seg != NULL; sack_seg = sack_seg->next) {
 +    sack_seg->flags &= (u8_t)~(TCP_SHIFT_TF_SEG_SACKED |
-+                              TCP_SHIFT_TF_SEG_SACK_REXMIT |
-+                              TCP_SHIFT_TF_SEG_SACK_NEW);
++                              TCP_SHIFT_TF_SEG_SACK_REXMIT);
 +  }
 +  for (sack_seg = pcb->unsent; sack_seg != NULL; sack_seg = sack_seg->next) {
 +    sack_seg->flags &= (u8_t)~(TCP_SHIFT_TF_SEG_SACKED |
-+                              TCP_SHIFT_TF_SEG_SACK_REXMIT |
-+                              TCP_SHIFT_TF_SEG_SACK_NEW);
++                              TCP_SHIFT_TF_SEG_SACK_REXMIT);
 +  }
 +#endif /* LWIP_TCP_SACK_OUT */
    seg->next = pcb->unsent;
@@ -242,7 +236,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,100 @@
+@@ -1787,5 +1837,81 @@
    return ERR_OK;
  }
  
@@ -254,8 +248,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  struct tcp_seg **unacked_link;
 +  struct tcp_seg **cur_seg;
 +  u16_t sacked_after = 0U;
-+  u16_t new_sacked_after = 0U;
-+  struct tcp_seg *evidence_seg;
 +
 +  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
 +      pcb->unacked == NULL) {
@@ -263,14 +255,9 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
 +
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
-+    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
-+      if (sacked_after != 0xFFFFU) {
-+        sacked_after++;
-+      }
-+      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_NEW) != 0U &&
-+          new_sacked_after != 0xFFFFU) {
-+        new_sacked_after++;
-+      }
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
++        sacked_after != 0xFFFFU) {
++      sacked_after++;
 +    }
 +  }
 +  if (sacked_after < 3U) {
@@ -283,33 +270,21 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      if (sacked_after != 0U) {
 +        sacked_after--;
 +      }
-+      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_NEW) != 0U &&
-+          new_sacked_after != 0U) {
-+        new_sacked_after--;
-+      }
 +      unacked_link = &seg->next;
 +      continue;
 +    }
++    /* Do not retransmit the same hole again during one fast-recovery
++       episode. A later RTO clears SACK_REXMIT and remains the conservative
++       fallback if this retransmission itself is lost. Retrying on every new
++       SACK block causes severe spurious retransmission before one RTT has
++       elapsed on high-latency paths. */
 +    if (sacked_after < 3U ||
-+        (((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) &&
-+         new_sacked_after < 3U)) {
++        (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
 +      unacked_link = &seg->next;
 +      continue;
 +    }
 +    if (tcp_output_segment_busy(seg)) {
 +      return ERR_VAL;
-+    }
-+
-+    /* Consume the current SACK evidence epoch. Duplicate SACK blocks retain
-+       SACKED but cannot re-arm another retransmission; only newly SACKed
-+       segments after this send can set SACK_NEW again. */
-+    for (evidence_seg = pcb->unacked; evidence_seg != NULL;
-+         evidence_seg = evidence_seg->next) {
-+      evidence_seg->flags &= (u8_t)~TCP_SHIFT_TF_SEG_SACK_NEW;
-+    }
-+    for (evidence_seg = pcb->unsent; evidence_seg != NULL;
-+         evidence_seg = evidence_seg->next) {
-+      evidence_seg->flags &= (u8_t)~TCP_SHIFT_TF_SEG_SACK_NEW;
 +    }
 +
 +    *unacked_link = seg->next;
