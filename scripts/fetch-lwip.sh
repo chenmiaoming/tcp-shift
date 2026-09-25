@@ -8,6 +8,7 @@ DEPS="$ROOT/.deps"
 BUILD="$ROOT/.build"
 LWIP_DIR="$DEPS/lwip"
 PATCH="$ROOT/patches/lwip-p4-cc-hooks.patch"
+SACK_PATCH="$ROOT/patches/lwip-sack-recovery.patch"
 mkdir -p "$DEPS" "$BUILD"
 
 if [ ! -d "$LWIP_DIR/.git" ]; then
@@ -16,6 +17,10 @@ fi
 
 [ -f "$PATCH" ] || {
     echo "missing lwIP integration patch: $PATCH" >&2
+    exit 1
+}
+[ -f "$SACK_PATCH" ] || {
+    echo "missing lwIP SACK recovery patch: $SACK_PATCH" >&2
     exit 1
 }
 
@@ -52,16 +57,23 @@ EOF
 ) > "$BUILD/lwip-critical.sha256"
 
 PATCH_SHA256=$(sha256sum "$PATCH" | awk '{print $1}')
+SACK_PATCH_SHA256=$(sha256sum "$SACK_PATCH" | awk '{print $1}')
 git -C "$LWIP_DIR" apply --check "$PATCH"
 git -C "$LWIP_DIR" apply "$PATCH"
+git -C "$LWIP_DIR" apply --check "$SACK_PATCH"
+git -C "$LWIP_DIR" apply "$SACK_PATCH"
 git -C "$LWIP_DIR" diff --check
 cat > "$BUILD/lwip-patch.env" <<EOF
 LWIP_PATCH=patches/lwip-p4-cc-hooks.patch
 LWIP_PATCH_SHA256=$PATCH_SHA256
+LWIP_SACK_PATCH=patches/lwip-sack-recovery.patch
+LWIP_SACK_PATCH_SHA256=$SACK_PATCH_SHA256
 EOF
 
 git -C "$LWIP_DIR" diff -- src/core/tcp.c src/core/tcp_in.c src/core/tcp_out.c \
     > "$BUILD/lwip-p4-cc-hooks.applied.diff"
+cp "$BUILD/lwip-p4-cc-hooks.applied.diff" "$BUILD/lwip-project-patches.applied.diff"
 
 printf 'lwIP baseline: %s\n' "$ACTUAL"
 printf 'lwIP P4 hook patch: %s\n' "$PATCH_SHA256"
+printf 'lwIP sender SACK patch: %s\n' "$SACK_PATCH_SHA256"
