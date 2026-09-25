@@ -29,8 +29,11 @@ struct tcp_shift_bbr_controller_state {
     uint32_t cwnd_bytes;
     /* Newly inferred loss inside an already-open transport recovery episode.
      * The transport reports this immediately before the ACK that exposed the
-     * next hole; controller_on_ack consumes it exactly once. */
-    uint32_t pending_newly_lost_bytes;
+     * next hole. Probe-loss and recovery-cwnd loss are separate because the
+     * initial fast-loss entry already uses post-loss inflight and must not be
+     * subtracted a second time on the next ACK. */
+    uint32_t pending_probe_loss_bytes;
+    uint32_t pending_recovery_loss_bytes;
     uint8_t initialized;
 };
 
