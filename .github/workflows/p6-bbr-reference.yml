@@ -595,6 +595,29 @@ jobs:
               sh scripts/p6-bbr-long-flow.sh
           done
 
+      - name: Run tcp-shift BBR wide-burst matrix
+        run: |
+          for packets in 6 12; do
+            out="$PWD/.build/p6-bbr-repeated-burst/tcp-shift/wide-$packets"
+            port=$((18400 + packets))
+            sudo env \
+              TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-repeated/tcp-shift-p6-bbr" \
+              TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+              TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+              TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+              TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+              TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS="$packets" \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS=1 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=700 \
+              TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+              TCP_SHIFT_P6_BBR_LONG_TUN_NAME="tsp6wide$packets" \
+              TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT="$port" \
+              TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT="$((port + 1000))" \
+              sh scripts/p6-bbr-long-flow.sh
+          done
+
       - name: Exercise lost selective retransmission fallback
         run: |
           out="$PWD/.build/p6-bbr-repeated-burst/tcp-shift/lost-retransmission"
@@ -632,6 +655,26 @@ jobs:
               sh scripts/linux-cubic-pacing-reference.sh
           done
 
+      - name: Run Linux BBR wide-burst matrix
+        run: |
+          for packets in 6 12; do
+            out="$PWD/.build/p6-bbr-repeated-burst/linux-bbr/wide-$packets"
+            sudo env \
+              TCP_SHIFT_LINUX_PACING_CC=bbr \
+              TCP_SHIFT_LINUX_PACING_CASE="wide-burst-$packets" \
+              TCP_SHIFT_LINUX_PACING_MODE=fq \
+              TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+              TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+              TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+              TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MODE=repeated-burst \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_PACKETS="$packets" \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_REPEATS=1 \
+              TCP_SHIFT_LINUX_PACING_FAULT_BURST_GAP_PACKETS=700 \
+              TCP_SHIFT_LINUX_PACING_OUT="$out" \
+              sh scripts/linux-cubic-pacing-reference.sh
+          done
+
       - name: Compare repeated-burst recovery
         run: |
           root="$PWD/.build/p6-bbr-repeated-burst"
@@ -642,6 +685,13 @@ jobs:
               "$root/tcp-shift/$repeats/summary.txt" \
               "$root/linux-bbr/$repeats/summary.txt" \
               | tee "$root/comparison-$repeats.txt"
+          done
+          for packets in 6 12; do
+            python3 scripts/p6-bbr-repeated-burst-evaluate.py \
+              1 \
+              "$root/tcp-shift/wide-$packets/summary.txt" \
+              "$root/linux-bbr/wide-$packets/summary.txt" \
+              | tee "$root/comparison-wide-$packets.txt"
           done
 
       - name: Publish repeated-burst evidence
@@ -659,6 +709,20 @@ jobs:
                 "$root/tcp-shift/$repeats/summary.txt" \
                 "$root/linux-bbr/$repeats/summary.txt" \
                 "$root/comparison-$repeats.txt"; do
+                if [ -f "$file" ]; then
+                  echo '~~~text'
+                  cat "$file"
+                  echo '~~~'
+                fi
+              done
+            done
+            for packets in 6 12; do
+              echo
+              echo "### wide burst packets=$packets"
+              for file in \
+                "$root/tcp-shift/wide-$packets/summary.txt" \
+                "$root/linux-bbr/wide-$packets/summary.txt" \
+                "$root/comparison-wide-$packets.txt"; do
                 if [ -f "$file" ]; then
                   echo '~~~text'
                   cat "$file"
