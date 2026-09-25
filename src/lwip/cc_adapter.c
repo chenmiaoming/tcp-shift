@@ -26,7 +26,7 @@ struct tcp_shift_lwip_cc_listener_binding {
  * the private segment layout. */
 struct tcp_shift_delivery_slot {
     const void *segment;
-    uint64_t first_tx_ns;
+    uint64_t tx_ns;
     uint64_t first_tx_mstamp_at_send_ns;
     uint64_t delivered_at_send;
     uint64_t delivered_mstamp_at_send_ns;
@@ -652,19 +652,41 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
         adapter->stats->delivery_last_tx_ns = now_ns;
     }
 
+    /* Match Linux tcp_rate_skb_sent(): start a new send phase when there
+     * were no packets outstanding before this successful transmission. The
+     * delivery metadata can deliberately outlive the transport's unacked list
+     * across RTO requeueing, so delivery_live is not an equivalent test. At
+     * this hook point lwIP has transmitted seg but has not yet moved it from
+     * unsent back to unacked, making pcb->unacked the pre-send outstanding
+     * state we need. */
+    start_of_flight = pcb->unacked == NULL;
+    if (start_of_flight != 0U) {
+        adapter->rate_first_tx_mstamp_ns = now_ns;
+        adapter->delivered_mstamp_ns = now_ns;
+    }
+
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
+        /* Delivery-rate sampling is keyed to the packet's last transmission,
+         * not only its original transmission. A retransmission therefore
+         * refreshes the delivery/send snapshot and last-tx timestamp. Karn
+         * filtering is carried by the retransmitted flag, so RTT remains
+         * invalid for this slot. */
+        slot->tx_ns = now_ns;
+        slot->first_tx_mstamp_at_send_ns =
+            adapter->rate_first_tx_mstamp_ns != 0U
+                ? adapter->rate_first_tx_mstamp_ns
+                : now_ns;
+        slot->delivered_at_send = adapter->delivered_bytes;
+        slot->delivered_mstamp_at_send_ns =
+            adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
+                                               : now_ns;
+        slot->app_limited = adapter->app_limited_until_bytes != 0U;
         slot->retransmitted = 1U;
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
         }
         return;
-    }
-
-    start_of_flight = adapter->delivery_live == 0U;
-    if (start_of_flight != 0U) {
-        adapter->rate_first_tx_mstamp_ns = now_ns;
-        adapter->delivered_mstamp_ns = now_ns;
     }
 
     slot = tcp_shift_delivery_create(adapter, segment);
@@ -679,7 +701,7 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
         prior_inflight += payload_bytes;
     }
 
-    slot->first_tx_ns = now_ns;
+    slot->tx_ns = now_ns;
     slot->first_tx_mstamp_at_send_ns =
         adapter->rate_first_tx_mstamp_ns != 0U
             ? adapter->rate_first_tx_mstamp_ns
@@ -826,10 +848,13 @@ static void tcp_shift_delivery_build_rate_sample(
         }
 
         if (candidate == NULL ||
-            slot->delivered_at_send > candidate->delivered_at_send ||
-            (slot->delivered_at_send == candidate->delivered_at_send &&
-             slot->delivered_mstamp_at_send_ns >
-                 candidate->delivered_mstamp_at_send_ns)) {
+            slot->tx_ns > candidate->tx_ns ||
+            (slot->tx_ns == candidate->tx_ns &&
+             (int32_t)((slot->seq_start + slot->payload_bytes) -
+                       (candidate->seq_start + candidate->payload_bytes)) > 0)) {
+            /* Match Linux rate sampling: for an ACK covering multiple
+             * segments, use the most recently transmitted segment, breaking a
+             * same-timestamp tie by the highest ending sequence number. */
             candidate = slot;
         }
     }
@@ -873,11 +898,16 @@ static void tcp_shift_delivery_build_rate_sample(
                                 ? UINT32_MAX
                                 : (uint32_t)delivered_delta64;
     rate->prior_inflight_bytes = candidate->prior_inflight_bytes;
-    if (adapter->rate_first_tx_mstamp_ns >=
-        candidate->first_tx_mstamp_at_send_ns) {
-        rate->send_interval_ns = adapter->rate_first_tx_mstamp_ns -
-                                 candidate->first_tx_mstamp_at_send_ns;
+
+    /* Advance the send-phase endpoint to the most recently transmitted
+     * segment covered by this ACK. The candidate's stored first_tx_mstamp is
+     * the endpoint captured when that transmission occurred, so their delta is
+     * the send interval for this delivery window. */
+    if (candidate->tx_ns >= candidate->first_tx_mstamp_at_send_ns) {
+        rate->send_interval_ns =
+            candidate->tx_ns - candidate->first_tx_mstamp_at_send_ns;
     }
+    adapter->rate_first_tx_mstamp_ns = candidate->tx_ns;
     if (now_ns >= candidate->delivered_mstamp_at_send_ns) {
         rate->ack_interval_ns =
             now_ns - candidate->delivered_mstamp_at_send_ns;
@@ -891,8 +921,8 @@ static void tcp_shift_delivery_build_rate_sample(
     }
     if (candidate->retransmitted != 0U) {
         rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED;
-    } else if (candidate->first_tx_ns != 0U && now_ns >= candidate->first_tx_ns) {
-        rate->rtt_ns = now_ns - candidate->first_tx_ns;
+    } else if (candidate->tx_ns != 0U && now_ns >= candidate->tx_ns) {
+        rate->rtt_ns = now_ns - candidate->tx_ns;
         rate->flags |= TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID;
     }
 

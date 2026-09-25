@@ -229,6 +229,67 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             (unsigned long long)pacer->max_lateness_ns);
 }
 
+static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
+{
+    if (stats->bbr_model_observations == 0U) {
+        return;
+    }
+
+    fprintf(stderr,
+            "tcp-shift-p2-bbr: observations=%llu mode=%u "
+            "max_bw_bytes_per_sec=%llu min_rtt_ns=%llu "
+            "full_bw_bytes_per_sec=%llu full_bw_reached=%u "
+            "full_bw_count=%u round_count=%u cycle_index=%u "
+            "accepted_bw_samples=%llu ignored_app_limited_bw_samples=%llu "
+            "recovery_in_progress=%u timeout_observations=%llu "
+            "timeout_last_mode=%u timeout_last_cycle_index=%u "
+            "timeout_last_round_count=%u timeout_last_cwnd_bytes=%u "
+            "timeout_last_transport_inflight_bytes=%u "
+            "timeout_last_max_bw_bytes_per_sec=%llu "
+            "timeout_last_pacing_rate_bytes_per_sec=%llu "
+            "timeout_last_recovery_in_progress=%u "
+            "timeout_last_packet_conservation=%u "
+            "timeout_last_lastack=%u timeout_last_snd_nxt=%u "
+            "timeout_last_recovery_end_seq=%u timeout_last_dupacks=%u "
+            "timeout_last_nrtx=%u timeout_last_unacked_segments=%u "
+            "timeout_last_unacked_bytes=%u timeout_last_unsent_segments=%u "
+            "timeout_last_unsent_bytes=%u timeout_last_rtime=%d "
+            "timeout_last_rto=%d\n",
+            (unsigned long long)stats->bbr_model_observations,
+            stats->bbr_mode,
+            (unsigned long long)stats->bbr_max_bw_bytes_per_sec,
+            (unsigned long long)stats->bbr_min_rtt_ns,
+            (unsigned long long)stats->bbr_full_bw_bytes_per_sec,
+            stats->bbr_full_bw_reached,
+            stats->bbr_full_bw_count,
+            stats->bbr_round_count,
+            stats->bbr_cycle_index,
+            (unsigned long long)stats->bbr_accepted_bw_samples,
+            (unsigned long long)stats->bbr_ignored_app_limited_bw_samples,
+            stats->bbr_recovery_in_progress,
+            (unsigned long long)stats->bbr_timeout_observations,
+            stats->bbr_timeout_last_mode,
+            stats->bbr_timeout_last_cycle_index,
+            stats->bbr_timeout_last_round_count,
+            stats->bbr_timeout_last_cwnd_bytes,
+            stats->bbr_timeout_last_transport_inflight_bytes,
+            (unsigned long long)stats->bbr_timeout_last_max_bw_bytes_per_sec,
+            (unsigned long long)stats->bbr_timeout_last_pacing_rate_bytes_per_sec,
+            stats->bbr_timeout_last_recovery_in_progress,
+            stats->bbr_timeout_last_packet_conservation,
+            stats->bbr_timeout_last_lastack,
+            stats->bbr_timeout_last_snd_nxt,
+            stats->bbr_timeout_last_recovery_end_seq,
+            stats->bbr_timeout_last_dupacks,
+            stats->bbr_timeout_last_nrtx,
+            stats->bbr_timeout_last_unacked_segments,
+            stats->bbr_timeout_last_unacked_bytes,
+            stats->bbr_timeout_last_unsent_segments,
+            stats->bbr_timeout_last_unsent_bytes,
+            stats->bbr_timeout_last_rtime,
+            stats->bbr_timeout_last_rto);
+}
+
 int main(int argc, char **argv)
 {
     struct tcp_shift_tun tun;
@@ -404,6 +465,7 @@ int main(int argc, char **argv)
     print_delivery_stats(cc_stats);
     print_rate_stats(cc_stats);
     print_pacing_stats(cc_stats, &loop);
+    print_bbr_stats(cc_stats);
 
 out:
     if (bridge_started != 0) {

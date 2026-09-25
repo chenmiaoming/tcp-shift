@@ -189,6 +189,44 @@ static int check_round_filter_contract(void)
     return 0;
 }
 
+static int check_startup_uses_filtered_bw_contract(void)
+{
+    struct tcp_shift_bbr_model model;
+    struct tcp_shift_cc_rate_sample rate;
+    const uint32_t valid = TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+
+    tcp_shift_bbr_model_init(&model);
+
+    /* Establish a 100 B/s full-bandwidth baseline at a round boundary. */
+    rate = round_sample(100U, 0U, 1000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 1U) == 0);
+    CHECK(model.round_start == 1U);
+    CHECK(model.full_bw_bytes_per_sec == 100U);
+    CHECK(model.full_bw_count == 0U);
+
+    /* A later ACK in the same packet-timed round raises the windowed max to
+     * 140 B/s, but is not itself eligible for full_bw round accounting. */
+    rate = round_sample(140U, 500U, 1500U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 2U) == 0);
+    CHECK(model.round_start == 0U);
+    CHECK(model.max_bw_bytes_per_sec == 140U);
+    CHECK(model.full_bw_bytes_per_sec == 100U);
+    CHECK(model.full_bw_count == 0U);
+
+    /* The next round begins on a low recovery-shaped ACK. Linux BBR evaluates
+     * Startup growth against the windowed max (140), not this one 80 B/s
+     * sample. Since 140 >= 1.25*100, full_bw must advance and the stagnant
+     * round counter must reset. */
+    rate = round_sample(80U, 1000U, 2000U, valid);
+    CHECK(tcp_shift_bbr_model_on_ack(&model, &rate, 3U) == 0);
+    CHECK(model.round_start == 1U);
+    CHECK(model.max_bw_bytes_per_sec == 140U);
+    CHECK(model.full_bw_bytes_per_sec == 140U);
+    CHECK(model.full_bw_count == 0U);
+    CHECK(model.full_bw_reached == 0U);
+    return 0;
+}
+
 static int check_round_and_startup_contract(struct tcp_shift_bbr_model *model)
 {
     struct tcp_shift_cc_rate_sample rate;
@@ -257,6 +295,7 @@ int main(void)
 
     CHECK(check_estimator_contract() == 0);
     CHECK(check_round_filter_contract() == 0);
+    CHECK(check_startup_uses_filtered_bw_contract() == 0);
     CHECK(check_round_and_startup_contract(&round_model) == 0);
     CHECK(sizeof(round_model) <= 224U);
 
