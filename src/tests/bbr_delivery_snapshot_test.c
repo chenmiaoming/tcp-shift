@@ -38,9 +38,14 @@ int main(void)
     unsigned char segment4;
     unsigned char segment5;
     unsigned char segment6;
+    unsigned char segment7;
+    unsigned char segment8;
     uint32_t seq4;
     uint32_t seq5;
     uint32_t seq6;
+    uint32_t seq7;
+    uint32_t seq8;
+    struct tcp_shift_lwip_sack_range sack_range;
     uint64_t srtt_after_clean_samples;
 
     memset(&adapter, 0, sizeof(adapter));
@@ -203,6 +208,46 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment6, payload);
 
     CHECK(stats.delivery_live_slots == 0U);
+
+    /* SACK-aware delivery accounting must credit out-of-order delivery at the
+     * SACK observation, then charge only the remaining hole when cumulative
+     * ACK catches up. This models Linux acked_sacked accounting without
+     * double-growing BBR cwnd on the later cumulative ACK. */
+    adapter.sack_delivery_policy = 1U;
+    seq7 = seq6 + payload;
+    seq8 = seq7 + payload;
+    pcb->lastack = seq7;
+    pcb->unacked = NULL;
+    pcb->snd_nxt = seq7;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment7, seq7, payload);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    pcb->snd_nxt = seq8;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment8, seq8, payload);
+    pcb->snd_nxt = seq8 + payload;
+    CHECK(stats.delivery_live_slots == 2U);
+
+    CHECK(pause_for_rtt_sample() == 0);
+    sack_range.left = seq8;
+    sack_range.right = seq8 + payload;
+    CHECK(tcp_shift_lwip_cc_hook_sack(pcb, &sack_range, 1U) != 0);
+    CHECK(adapter.delivered_bytes == (uint64_t)payload * 7U);
+    CHECK(stats.delivery_sack_events == 1U);
+    CHECK(stats.delivery_sack_payload_bytes == payload);
+    CHECK(stats.rate_snapshot_samples == 6U);
+
+    /* Cumulative ACK spans both the hole and the already-SACKed segment. Only
+     * segment7 is newly delivered here; segment8 must not be credited twice. */
+    pcb->lastack = seq8 + payload;
+    CHECK(tcp_shift_lwip_cc_hook_ack(
+              pcb, (tcpwnd_size_t)((uint32_t)payload * 2U)) != 0);
+    CHECK(adapter.delivered_bytes == (uint64_t)payload * 8U);
+    CHECK(stats.delivery_sack_payload_bytes == payload);
+    CHECK(stats.rate_snapshot_samples == 7U);
+    CHECK(stats.rate_last_delivered_total_bytes == (uint64_t)payload * 8U);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment7, payload);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment8, payload);
+
+    CHECK(stats.delivery_live_slots == 0U);
     CHECK(stats.delivery_metadata_misses == 0U);
     CHECK(stats.delivery_clock_errors == 0U);
     CHECK(stats.delivery_timestamp_regressions == 0U);
@@ -214,6 +259,7 @@ int main(void)
     printf("bbr_delivery_snapshot=ok samples=%llu errors=%llu "
            "ack_observations=%llu srtt_updates=%llu srtt_ns=%llu "
            "retransmitted_samples=%llu retransmit_events=%llu "
+           "sack_events=%llu sack_payload_bytes=%llu "
            "prior_delivered=%llu delivered_total=%llu payload=%u\n",
            (unsigned long long)stats.rate_snapshot_samples,
            (unsigned long long)stats.rate_snapshot_errors,
@@ -222,6 +268,8 @@ int main(void)
            (unsigned long long)stats.ack_last_smoothed_rtt_ns,
            (unsigned long long)stats.rate_retransmitted_samples,
            (unsigned long long)stats.delivery_retransmit_events,
+           (unsigned long long)stats.delivery_sack_events,
+           (unsigned long long)stats.delivery_sack_payload_bytes,
            (unsigned long long)stats.rate_last_prior_delivered_bytes,
            (unsigned long long)stats.rate_last_delivered_total_bytes,
            (unsigned)payload);
