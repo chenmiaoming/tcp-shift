@@ -15,6 +15,7 @@ FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
 FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
 FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
+FAULT_RETRANS_MARKER=${TCP_SHIFT_P6_BBR_LONG_FAULT_RETRANS_MARKER:-TCP_SHIFT_SACK_RETRANS_LOSS}
 RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
@@ -53,8 +54,8 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss|burst-loss|repeated-burst) ;;
-    *) echo "FAULT_MODE must be none, multi-loss, burst-loss or repeated-burst" >&2; exit 1;;
+    none|multi-loss|burst-loss|repeated-burst|lost-retransmission) ;;
+    *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst or lost-retransmission" >&2; exit 1;;
 esac
 case "$RECOVERY_EXPECTATION" in
     strict|diagnostic) ;;
@@ -146,7 +147,7 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-python3 - "$BACKEND_PORT" "$PAYLOAD_BYTES" \
+python3 - "$BACKEND_PORT" "$PAYLOAD_BYTES" "$FAULT_MODE" "$FAULT_FIRST_PACKET" "$FAULT_RETRANS_MARKER" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -154,7 +155,31 @@ import sys
 
 port = int(sys.argv[1])
 length = int(sys.argv[2])
-payload = bytes(((index * 73 + 19) & 0xFF) for index in range(length))
+fault_mode = sys.argv[3]
+fault_first_packet = int(sys.argv[4])
+fault_marker = sys.argv[5].encode("ascii")
+payload = bytearray(((index * 73 + 19) & 0xFF) for index in range(length))
+
+if fault_mode == "lost-retransmission":
+    # Embed a marker well inside the nominal target segment. Repeating it keeps
+    # at least one complete copy available even if the actual TCP segmentation
+    # boundary crosses this region. The iptables rules can then recognize the
+    # same stream bytes on the original transmission and its retransmission.
+    marker_offset = fault_first_packet * 1460 + 256
+    marker_region = fault_marker * 4
+    if marker_offset + len(marker_region) >= length:
+        raise SystemExit(
+            f"lost-retransmission marker exceeds payload: "
+            f"offset={marker_offset} marker={len(marker_region)} length={length}"
+        )
+    payload[marker_offset : marker_offset + len(marker_region)] = marker_region
+    print(
+        f"backend-fault-marker offset={marker_offset} "
+        f"bytes={len(marker_region)} marker={sys.argv[5]}",
+        flush=True,
+    )
+
+payload = bytes(payload)
 digest = hashlib.sha256(payload).hexdigest()
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -233,6 +258,10 @@ elif [ "$FAULT_MODE" = repeated-burst ]; then
     LOSS_MODE=deterministic-repeated-burst
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = lost-retransmission ]; then
+    LOSS_MODE=deterministic-lost-retransmission
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -246,12 +275,26 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
     FAULT_JUMP_INSTALLED=1
-    if [ "$LOSS_MODE" = deterministic-multi ]; then
+    if [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
+        # The payload marker identifies one exact stream region. The first
+        # independent nth matcher drops the original marked packet. Because a
+        # dropped packet never reaches the next rule, the second matcher sees
+        # the first retransmission as its first match and drops that copy. Any
+        # later retransmission passes both one-shot counters.
+        fault_drop_i=0
+        while [ "$fault_drop_i" -lt 2 ]; do
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m string --algo bm --string "$FAULT_RETRANS_MARKER" \
+                -m statistic --mode nth --every 10000 --packet 0 -j DROP
+            fault_drop_i=$((fault_drop_i + 1))
+        done
+    elif [ "$LOSS_MODE" = deterministic-multi ]; then
         # Keep several successful packets between two one-shot losses so the
         # second hole is exposed by a partial ACK inside one recovery flight.
         iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
@@ -328,7 +371,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
@@ -405,6 +448,19 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-lost-retransmission)
+        [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+            echo "P6 BBR lost-retransmission path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
+            exit 1
+        }
+        fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+            "$OUT/iptables-fault.txt")
+        [ "$fault_drops" -eq 2 ] || {
+            cat "$OUT/iptables-fault.txt" >&2 || true
+            echo "P6 BBR lost-retransmission expected original + first retransmission drops: drops=$fault_drops" >&2
+            exit 1
+        }
+        ;;
 esac
 
 sleep 0.2
@@ -477,6 +533,12 @@ case "$LOSS_MODE" in
             }
         fi
         ;;
+    deterministic-lost-retransmission)
+        [ "$loss_events" -ge 1 ] && [ "$timeout_events" -ge 1 ] || {
+            echo "lost retransmission did not exercise fast-loss plus RTO fallback: loss=$loss_events timeout=$timeout_events" >&2
+            exit 1
+        }
+        ;;
 esac
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
@@ -531,6 +593,12 @@ case "$LOSS_MODE" in
                 exit 1
             }
         fi
+        ;;
+    deterministic-lost-retransmission)
+        [ "$retransmit_events" -ge 2 ] || {
+            echo "lost retransmission expected selective + timeout retransmission activity: $retransmit_events" >&2
+            exit 1
+        }
         ;;
 esac
 
