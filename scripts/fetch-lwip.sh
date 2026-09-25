@@ -60,7 +60,11 @@ PATCH_SHA256=$(sha256sum "$PATCH" | awk '{print $1}')
 SACK_PATCH_SHA256=$(sha256sum "$SACK_PATCH" | awk '{print $1}')
 git -C "$LWIP_DIR" apply --check "$PATCH"
 git -C "$LWIP_DIR" apply "$PATCH"
-git -C "$LWIP_DIR" apply --check "$SACK_PATCH"
+if ! git -C "$LWIP_DIR" apply --check "$SACK_PATCH"; then
+    echo "sender SACK patch context after P4:" >&2
+    nl -ba "$LWIP_DIR/src/core/tcp_out.c" | sed -n '1635,1670p' >&2
+    exit 1
+fi
 git -C "$LWIP_DIR" apply "$SACK_PATCH"
 git -C "$LWIP_DIR" diff --check
 cat > "$BUILD/lwip-patch.env" <<EOF
