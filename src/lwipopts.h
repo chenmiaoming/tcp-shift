@@ -124,15 +124,23 @@
 #define TCP_QUEUE_OOSEQ 1
 
 /*
- * Negotiate RFC 2018 SACK so peers can report out-of-order delivery to the
- * sender-side recovery patch. Keep only one local receive-side SACK range:
- * tcp-shift's performance requirement is sender recovery, and this bounds the
- * extra per-PCB receiver bookkeeping to two 8-byte ranges. The pinned
- * upstream receiver maintenance is not warning-clean with a one-entry array
- * under the project's -Werror build, so two is the minimum qualified value.
+ * Sender-side SACK recovery is still experimental. Production and the legacy
+ * correctness gates stay on pinned lwIP/NewReno semantics unless a dedicated
+ * qualification build opts in through CMake.
+ *
+ * When enabled, upstream SACK negotiation also needs receive-side SACK storage.
+ * Two 8-byte ranges are the minimum warning-clean value for the pinned lwIP
+ * implementation under the project's -Werror build.
  */
+#ifndef TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#define TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY 0
+#endif
+#if TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_MAX_SACK_NUM 2
+#else
+#define LWIP_TCP_SACK_OUT 0
+#endif
 
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 0
