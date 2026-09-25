@@ -1,7 +1,7 @@
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -100,9 +100,35 @@
+@@ -100,9 +100,36 @@
  #if LWIP_TCP_SACK_OUT
  static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
  static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
@@ -13,6 +13,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++#define TCP_SHIFT_SACK_REXMIT_BUDGET   ((u16_t)4U)
 +#define TCP_SHIFT_TCP_OPT_SACK        5U
 +
 +err_t tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb);
@@ -236,7 +237,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,81 @@
+@@ -1787,5 +1837,88 @@
    return ERR_OK;
  }
  
@@ -247,44 +248,52 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  struct tcp_seg *seg;
 +  struct tcp_seg **unacked_link;
 +  struct tcp_seg **cur_seg;
-+  u16_t sacked_after = 0U;
++  u16_t sacked_after;
++  u16_t requeued = 0U;
 +
 +  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
 +      pcb->unacked == NULL) {
 +    return ERR_VAL;
 +  }
 +
-+  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
-+    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
-+        sacked_after != 0xFFFFU) {
-+      sacked_after++;
++  /*
++   * RFC 6675-style conservative batching: every retransmitted hole still
++   * requires at least three later SACKed segments, but one ACK may expose
++   * several independently proven holes. Requeue a bounded batch so a
++   * high-RTT recovery window does not need one extra ACK/RTT per hole.
++   *
++   * SACK_REXMIT remains a per-recovery once-only guard. We never guess that
++   * an already retransmitted hole was lost again; RTO remains that fallback.
++   */
++  while (requeued < TCP_SHIFT_SACK_REXMIT_BUDGET) {
++    sacked_after = 0U;
++    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
++          sacked_after != 0xFFFFU) {
++        sacked_after++;
++      }
 +    }
-+  }
-+  if (sacked_after < 3U) {
-+    return ERR_VAL;
-+  }
++    if (sacked_after < 3U) {
++      break;
++    }
 +
-+  unacked_link = &pcb->unacked;
-+  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
-+    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
-+      if (sacked_after != 0U) {
-+        sacked_after--;
++    unacked_link = &pcb->unacked;
++    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
++        if (sacked_after != 0U) {
++          sacked_after--;
++        }
++        unacked_link = &seg->next;
++        continue;
++      }
++      if (sacked_after >= 3U &&
++          (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) == 0U) {
++        break;
 +      }
 +      unacked_link = &seg->next;
-+      continue;
 +    }
-+    /* Do not retransmit the same hole again during one fast-recovery
-+       episode. A later RTO clears SACK_REXMIT and remains the conservative
-+       fallback if this retransmission itself is lost. Retrying on every new
-+       SACK block causes severe spurious retransmission before one RTT has
-+       elapsed on high-latency paths. */
-+    if (sacked_after < 3U ||
-+        (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
-+      unacked_link = &seg->next;
-+      continue;
-+    }
-+    if (tcp_output_segment_busy(seg)) {
-+      return ERR_VAL;
++    if (seg == NULL || tcp_output_segment_busy(seg)) {
++      break;
 +    }
 +
 +    *unacked_link = seg->next;
@@ -302,17 +311,16 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      pcb->unsent_oversize = 0;
 +    }
 +#endif
-+    /* Extra SACK hole retransmissions are part of the current fast-recovery
-+       episode, not additional RTO retry episodes. pinned lwIP uses pcb->nrtx
-+       as a connection-abandon/backoff budget (TCP_MAXRTX), so charging every
-+       selectively retransmitted hole here can kill a healthy high-RTT flow
-+       after a single burst of losses. The initial legacy tcp_rexmit() still
-+       owns its existing nrtx accounting. */
++    /*
++     * Extra SACK hole retransmissions remain part of the current fast
++     * recovery episode. Do not consume pcb->nrtx/TCP_MAXRTX budget here.
++     */
 +    pcb->rttest = 0;
 +    MIB2_STATS_INC(mib2.tcpretranssegs);
-+    return ERR_OK;
++    requeued++;
 +  }
-+  return ERR_VAL;
++
++  return requeued != 0U ? ERR_OK : ERR_VAL;
 +}
 +#endif /* LWIP_TCP_SACK_OUT */
 +
