@@ -134,7 +134,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,10 @@
+@@ -82,5 +82,11 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -142,6 +142,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++#define TCP_SHIFT_SACK_REXMIT_BUDGET   ((u16_t)4U)
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
