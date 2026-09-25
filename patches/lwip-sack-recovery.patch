@@ -122,7 +122,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1635,6 +1640,9 @@
+@@ -1645,6 +1650,9 @@
  err_t
  tcp_rexmit_rto_prepare(struct tcp_pcb *pcb)
  {
@@ -132,7 +132,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    LWIP_ASSERT("tcp_rexmit_rto: invalid pcb", pcb != NULL);
-@@ -1659,4 +1664,14 @@
+@@ -1669,4 +1677,14 @@
    /* concatenate unsent queue after unacked queue */
 +#if LWIP_TCP_SACK_OUT
 +  for (sack_seg = pcb->unacked; sack_seg != NULL; sack_seg = sack_seg->next) {
@@ -147,7 +147,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1728,14 +1740,31 @@
+@@ -1738,14 +1756,31 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
@@ -179,7 +179,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    /* Give up if the segment is still referenced by the netif driver
-@@ -1748,14 +1764,26 @@
+@@ -1758,14 +1793,26 @@
    /* Move the first unacked segment to the unsent queue */
    /* Keep the unsent queue sorted. */
 -  pcb->unacked = seg->next;
@@ -207,7 +207,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1777,5 +1780,73 @@
+@@ -1787,5 +1834,73 @@
    return ERR_OK;
  }
  
