@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; PR #34 completed the compact BBRv1-style runtime/reference qualification and PR #35 now qualifies transport-owned NewReno-style sender recovery under multiple loss; public `bbr` selection remains disabled pending broader loss/burst/WAN qualification**.
+Status: **active; compact internal BBR runtime/reference qualification, transport-owned NewReno recovery, deterministic WAN burst/repeated-burst qualification, and the latest delivery-sampling/Startup fixes are merged through PR #38; public `bbr` selection remains intentionally disabled until a separate experimental-exposure increment**.
 
 ## Congestion-control architecture
 
@@ -127,9 +127,34 @@ PR #34 was squash-merged as `7bbb175c4d0d69fa5858380b73710a9f8c41d204`, and PR #
 
 PR #36 adds qualification only. On a 260 ms / 10 Mbit/s / 1 MiB path, deterministic consecutive three-packet and six-packet bursts recover for Reno, CUBIC, and internal BBR with exact injected-drop/retransmission counts, one loss episode, zero RTOs, zero unrelated qdisc drops, exact payload integrity, and exact delivery-ledger accounting. Three-packet goodputs were 1.455117 / 1.643490 / 2.372795 Mbit/s for Reno/CUBIC/BBR; six-packet goodputs were 1.277751 / 1.422573 / 1.946821 Mbit/s. Goodput remains diagnostic. The correctness evidence says NewReno is sufficient for the currently tested short/medium consecutive bursts; it does not prove sender SACK has no value under frequent or high aggregate loss.
 
+## Repeated-burst qualification — merged PR #37
+
+PR #37 extends the deterministic loss harness from one burst to repeated recovery episodes without changing NewReno or BBR policy. The 260 ms / 10 Mbit/s reference matrix uses three-packet bursts separated by a large packet gap and compares internal BBR with Linux BBR. Two repeated bursts remain a strict recovery gate; three- and four-burst cases are retained as diagnostics so their throughput/retransmission behavior can be studied without converting a stress threshold into a false correctness promise.
+
+The merged harness requires exact explicit-drop accounting, exact payload/delivery-ledger accounting, zero unrelated qdisc drops, and retransmission activity at least sufficient to cover the injected losses. The result keeps sender SACK/RACK/TLP as evidence-driven follow-up work rather than a prerequisite for the already-passing short/medium burst cases.
+
+PR #37 was squash-merged as `32c21e4303808bb13267b90782df115925a4bf72`.
+
+## BBR sampling and Startup closeout — merged PR #38
+
+PR #38 narrows the subsequent BBR work to fixes that already passed the full regression matrix:
+
+- retransmissions refresh delivery/send snapshots so a rate sample follows the packet's last transmission rather than stale first-send timing;
+- RTO requeueing resets the send-phase marker from actual transport flight state;
+- ACKed transmission metadata advances the send-phase endpoint;
+- Startup full-bandwidth detection uses the filtered `max_bw` estimate rather than a transient current sample;
+- deterministic contracts cover retransmission snapshots and Startup detection;
+- internal BBR timeout/model telemetry records queue and recovery context for future loss debugging.
+
+The deterministic periodic-loss injector was intentionally excluded because it can also drop retransmissions and therefore mixes controller behavior with lost-retransmission transport stress. A later duplicate-ACK recovery-credit experiment was also excluded after it caused clean four-flow qdisc drops. Those experiments are not part of current `main`.
+
+The retained source checkpoint passed all 15 workflows with the existing P3 memory gate unchanged. PR #38 was replayed on top of #37 and squash-merged as `1c8b7b4477f71edde0f5961674f37de0a0dd9832`.
+
+Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through the qualification target. The next P6 increment should expose `bbr` explicitly as experimental, keep Reno as default, and move validation onto the actual provider/OpenVZ target before adding more controller machinery.
+
 ## Original planned order from P6d
 
-Items 1–7 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, and deterministic WAN-burst checkpoints. The remaining active loss qualification is frequent/high aggregate loss before deciding whether a more advanced sender recovery mechanism is warranted; public default changes remain out of scope.
+Items 1–8 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, WAN-burst/repeated-burst, and sampling/Startup checkpoints. The next product step is controlled experimental `bbr` exposure plus real provider/OpenVZ qualification; frequent/high aggregate loss remains an evidence-gathering area rather than a reason to preemptively add a larger sender-recovery stack.
 
 
 
