@@ -52,7 +52,7 @@ P5 completed the prerequisites for model-based congestion control:
 1. **P5a — delivery ledger: complete.** High-resolution send/ACK timestamps, unique delivered-byte accounting, and retransmission-safe lazy sidecar metadata.
 2. **P5b — rate sampler + app-limited: complete.** Transport-neutral ACK delivery-rate samples with send/ACK intervals, RTT validity, prior inflight, retransmission metadata, and event-driven app-limited marking.
 3. **P5c — event-driven pacer: complete.** Controller pacing policy now gates real data sends through one process-wide deadline heap and one one-shot `CLOCK_MONOTONIC` timerfd registered in the existing epoll owner. There is no fixed pacing tick, per-flow timerfd/thread, or busy spin.
-4. **P6 — tcp-shift BBR: active.** P6a starts with a pure-C BBRv3 model/state contract for bandwidth and min-RTT estimation before any live cwnd/pacing policy or lwIP binding is enabled.
+4. **P6 — tcp-shift BBR: active and live internally.** The compact BBRv1-style controller now publishes real cwnd/pacing policy through the generic adapter, runs on the shared process-wide pacer, and is qualified against Linux BBR on clean single-flow, multi-flow, app-limited, loss, and long-RTT burst scenarios. It remains intentionally unavailable through the public production selector.
 
 An experimental controller will not be described as Linux BBR unless the relevant transport semantics are actually equivalent.
 
@@ -159,9 +159,21 @@ heap final:              0
 
 The observed delivery rate becomes window-limited at about 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. P5c therefore proves scheduler correctness/efficiency under BDP pressure; it does not claim the current unscaled window can fully utilize arbitrary high-BDP links. Window scaling remains a later transport concern.
 
-### P6 BBR model — active
+### P6 BBR runtime — internal / experimental
 
-P6a is deliberately model-only. `src/cc/bbr.*` uses the P5 transport-neutral rate sample to establish the BBRv3 bandwidth/min-RTT model and starts in `STARTUP`, but it does not yet publish BBR cwnd/pacing policy or bind BBR to live lwIP PCBs. The reference contract is `draft-ietf-ccwg-bbr-06`.
+The compact `bbr` controller is implemented as a BBRv1-style core with selected BBRv3-informed fixes. It is bound to live lwIP PCBs only through the internal `tcp-shift-p6-bbr` qualification target; production `tcp-shift-p2` still exposes only `reno` and `cubic`.
+
+Current qualification includes:
+
+- clean Linux BBR + `sch_fq` reference cases across low-, edge-, and high-BDP paths;
+- four concurrent internal BBR flows sharing one bottleneck;
+- live app-limited enter/sample/exit behavior;
+- transport-owned RFC 6582/NewReno partial-ACK recovery for multiple losses;
+- deterministic 260 ms three- and six-packet WAN bursts with zero RTO fallback;
+- repeated burst recovery episodes;
+- retransmission-safe delivery/send snapshot refresh, RTO send-phase reset, and filtered-`max_bw` Startup detection.
+
+PR #34 merged the live internal BBR runtime, PR #35 added NewReno partial-ACK recovery, PRs #36-#37 expanded deterministic burst qualification, and PR #38 fixed BBR delivery sampling / Startup telemetry. The next product boundary is controlled experimental `bbr` exposure plus real provider/VPS qualification, not a claim of Linux-BBR equivalence.
 
 ## Project state
 
@@ -175,4 +187,4 @@ Start here:
 - [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
 
-> Status: P0-P5 are GitHub-runner-qualified and P5c is merged; P6 tcp-shift BBR is active at the pure-C model-contract stage. Provider/OpenVZ and production qualification remain separate. Do not use on production traffic.
+> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR is live and broadly runner-qualified through merged PR #38 (`1c8b7b4477f71edde0f5961674f37de0a0dd9832`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
