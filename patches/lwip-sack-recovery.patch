@@ -1,0 +1,283 @@
+diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
+--- a/src/core/tcp_in.c
++++ b/src/core/tcp_in.c
+@@ -100,9 +100,35 @@
+ #if LWIP_TCP_SACK_OUT
+ static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
+ static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
+ #if defined(TCP_OOSEQ_BYTES_LIMIT) || defined(TCP_OOSEQ_PBUFS_LIMIT)
+ static void tcp_remove_sacks_gt(struct tcp_pcb *pcb, u32_t seq);
+ #endif /* TCP_OOSEQ_BYTES_LIMIT || TCP_OOSEQ_PBUFS_LIMIT */
+ #endif /* LWIP_TCP_SACK_OUT */
++
++#if LWIP_TCP_SACK_OUT
++#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
++#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++#define TCP_SHIFT_TCP_OPT_SACK        5U
++
++err_t tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb);
++
++static void
++tcp_shift_tcp_mark_sack_range(struct tcp_pcb *pcb, u32_t left, u32_t right)
++{
++  struct tcp_seg *seg;
++
++  if (pcb == NULL || !TCP_SEQ_LT(left, right)) {
++    return;
++  }
++  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    u32_t seg_left = lwip_ntohl(seg->tcphdr->seqno);
++    u32_t seg_right = seg_left + TCP_TCPLEN(seg);
++
++    if (!TCP_SEQ_LT(seg_left, left) && !TCP_SEQ_GT(seg_right, right)) {
++      seg->flags |= TCP_SHIFT_TF_SEG_SACKED;
++    }
++  }
++}
++#endif /* LWIP_TCP_SACK_OUT */
+ 
+ /**
+@@ -1223,10 +1249,17 @@
+               if (pcb->dupacks > 3) {
+                 /* Inflate the congestion window */
+                 if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+                   TCP_WND_INC(pcb->cwnd, pcb->mss);
+                 }
+               }
+               if (pcb->dupacks >= 3) {
+                 /* Do fast retransmit (checked via TF_INFR, not via dupacks count) */
+                 tcp_rexmit_fast(pcb);
++#if LWIP_TCP_SACK_OUT
++                if ((pcb->flags & TF_INFR) != 0U &&
++                    (pcb->flags & TF_SACK) != 0U &&
++                    tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++                  pcb->rtime = 0;
++                }
++#endif /* LWIP_TCP_SACK_OUT */
+               }
+@@ -1928,8 +1961,12 @@
+ static void
+ tcp_parseopt(struct tcp_pcb *pcb)
+ {
+   u8_t data;
+   u16_t mss;
++#if LWIP_TCP_SACK_OUT
++  u32_t sack_left;
++  u32_t sack_right;
++#endif
+ #if LWIP_TCP_TIMESTAMPS
+   u32_t tsval;
+ #endif
+@@ -2016,15 +2053,39 @@
+ #if LWIP_TCP_SACK_OUT
+         case LWIP_TCP_OPT_SACK_PERM:
+           LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
+           if (tcp_get_next_optbyte() != LWIP_TCP_OPT_LEN_SACK_PERM || (tcp_optidx - 2 + LWIP_TCP_OPT_LEN_SACK_PERM) > tcphdr_optlen) {
+             /* Bad length */
+             LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: bad length\n"));
+             return;
+           }
+           /* TCP SACK_PERM option with valid length */
+           if (flags & TCP_SYN) {
+             /* We only set it if we receive it in a SYN (or SYN+ACK) packet */
+             tcp_set_flags(pcb, TF_SACK);
+           }
+           break;
++        case TCP_SHIFT_TCP_OPT_SACK:
++          data = tcp_get_next_optbyte();
++          LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK len=%"U16_F"\n",
++                                        (u16_t)data));
++          if (data < 10U || ((data - 2U) & 7U) != 0U ||
++              (tcp_optidx - 2U + data) > tcphdr_optlen) {
++            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: bad SACK length\n"));
++            return;
++          }
++          while (data > 2U) {
++            sack_left = ((u32_t)tcp_get_next_optbyte() << 24);
++            sack_left |= ((u32_t)tcp_get_next_optbyte() << 16);
++            sack_left |= ((u32_t)tcp_get_next_optbyte() << 8);
++            sack_left |= tcp_get_next_optbyte();
++            sack_right = ((u32_t)tcp_get_next_optbyte() << 24);
++            sack_right |= ((u32_t)tcp_get_next_optbyte() << 16);
++            sack_right |= ((u32_t)tcp_get_next_optbyte() << 8);
++            sack_right |= tcp_get_next_optbyte();
++            if ((flags & TCP_SYN) == 0U && (pcb->flags & TF_SACK) != 0U) {
++              tcp_shift_tcp_mark_sack_range(pcb, sack_left, sack_right);
++            }
++            data = (u8_t)(data - 8U);
++          }
++          break;
+ #endif /* LWIP_TCP_SACK_OUT */
+diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
+--- a/src/core/tcp_out.c
++++ b/src/core/tcp_out.c
+@@ -82,5 +82,10 @@
+ #ifdef LWIP_HOOK_FILENAME
+ #include LWIP_HOOK_FILENAME
+ #endif
++
++#if LWIP_TCP_SACK_OUT
++#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
++#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++#endif
+ 
+ /* Allow to add custom TCP header options by defining this hook */
+@@ -1635,6 +1640,9 @@
+ err_t
+ tcp_rexmit_rto_prepare(struct tcp_pcb *pcb)
+ {
+   struct tcp_seg *seg;
++#if LWIP_TCP_SACK_OUT
++  struct tcp_seg *sack_seg;
++#endif
+ 
+   LWIP_ASSERT("tcp_rexmit_rto: invalid pcb", pcb != NULL);
+@@ -1659,4 +1664,14 @@
+   /* concatenate unsent queue after unacked queue */
++#if LWIP_TCP_SACK_OUT
++  for (sack_seg = pcb->unacked; sack_seg != NULL; sack_seg = sack_seg->next) {
++    sack_seg->flags &= (u8_t)~(TCP_SHIFT_TF_SEG_SACKED |
++                              TCP_SHIFT_TF_SEG_SACK_REXMIT);
++  }
++  for (sack_seg = pcb->unsent; sack_seg != NULL; sack_seg = sack_seg->next) {
++    sack_seg->flags &= (u8_t)~(TCP_SHIFT_TF_SEG_SACKED |
++                              TCP_SHIFT_TF_SEG_SACK_REXMIT);
++  }
++#endif /* LWIP_TCP_SACK_OUT */
+   seg->next = pcb->unsent;
+ #if TCP_OVERSIZE_DBGCHECK
+   /* if last unsent changed, we need to update unsent_oversize */
+@@ -1728,14 +1740,31 @@
+ tcp_rexmit(struct tcp_pcb *pcb)
+ {
+   struct tcp_seg *seg;
+   struct tcp_seg **cur_seg;
++#if LWIP_TCP_SACK_OUT
++  struct tcp_seg **unacked_link;
++#endif
+ 
+   LWIP_ASSERT("tcp_rexmit: invalid pcb", pcb != NULL);
+ 
+   if (pcb->unacked == NULL) {
+     return ERR_VAL;
+   }
+ 
+   seg = pcb->unacked;
++#if LWIP_TCP_SACK_OUT
++  unacked_link = &pcb->unacked;
++  if ((pcb->flags & TF_SACK) != 0U) {
++    while (seg != NULL &&
++           (seg->flags & (TCP_SHIFT_TF_SEG_SACKED |
++                          TCP_SHIFT_TF_SEG_SACK_REXMIT)) != 0U) {
++      unacked_link = &seg->next;
++      seg = seg->next;
++    }
++    if (seg == NULL) {
++      return ERR_VAL;
++    }
++  }
++#endif
+ 
+   /* Give up if the segment is still referenced by the netif driver
+@@ -1748,14 +1764,26 @@
+   /* Move the first unacked segment to the unsent queue */
+   /* Keep the unsent queue sorted. */
+-  pcb->unacked = seg->next;
++#if LWIP_TCP_SACK_OUT
++  if ((pcb->flags & TF_SACK) != 0U) {
++    *unacked_link = seg->next;
++  } else
++#endif
++  {
++    pcb->unacked = seg->next;
++  }
+ 
+   cur_seg = &(pcb->unsent);
+   while (*cur_seg &&
+          TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno), lwip_ntohl(seg->tcphdr->seqno))) {
+     cur_seg = &((*cur_seg)->next );
+   }
+   seg->next = *cur_seg;
+   *cur_seg = seg;
++#if LWIP_TCP_SACK_OUT
++  if ((pcb->flags & TF_SACK) != 0U) {
++    seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
++  }
++#endif
+ #if TCP_OVERSIZE
+   if (seg->next == NULL) {
+     /* the retransmitted segment is last in unsent, so reset unsent_oversize */
+@@ -1777,5 +1780,73 @@
+   return ERR_OK;
+ }
+ 
++#if LWIP_TCP_SACK_OUT
++err_t
++tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **unacked_link;
++  struct tcp_seg **cur_seg;
++  u16_t sacked_after = 0U;
++
++  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
++      pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++
++  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
++        sacked_after != 0xFFFFU) {
++      sacked_after++;
++    }
++  }
++  if (sacked_after < 3U) {
++    return ERR_VAL;
++  }
++
++  unacked_link = &pcb->unacked;
++  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
++      if (sacked_after != 0U) {
++        sacked_after--;
++      }
++      unacked_link = &seg->next;
++      continue;
++    }
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
++        sacked_after < 3U) {
++      unacked_link = &seg->next;
++      continue;
++    }
++    if (tcp_output_segment_busy(seg)) {
++      return ERR_VAL;
++    }
++
++    *unacked_link = seg->next;
++    cur_seg = &pcb->unsent;
++    while (*cur_seg &&
++           TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno),
++                      lwip_ntohl(seg->tcphdr->seqno))) {
++      cur_seg = &((*cur_seg)->next);
++    }
++    seg->next = *cur_seg;
++    *cur_seg = seg;
++    seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
++#if TCP_OVERSIZE
++    if (seg->next == NULL) {
++      pcb->unsent_oversize = 0;
++    }
++#endif
++    if (pcb->nrtx < 0xFF) {
++      ++pcb->nrtx;
++    }
++    pcb->rttest = 0;
++    MIB2_STATS_INC(mib2.tcpretranssegs);
++    return ERR_OK;
++  }
++  return ERR_VAL;
++}
++#endif /* LWIP_TCP_SACK_OUT */
++
+ 
+ /**
