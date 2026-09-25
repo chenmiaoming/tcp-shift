@@ -1,7 +1,7 @@
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -100,9 +100,35 @@
+@@ -100,9 +100,38 @@
  #if LWIP_TCP_SACK_OUT
  static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
  static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
@@ -40,7 +40,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif /* LWIP_TCP_SACK_OUT */
  
  /**
-@@ -1223,10 +1249,17 @@
+@@ -1223,10 +1252,17 @@
                if (pcb->dupacks > 3) {
                  /* Inflate the congestion window */
                  if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
@@ -58,7 +58,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                }
 +#endif /* LWIP_TCP_SACK_OUT */
                }
-@@ -1355,14 +1388,21 @@
+@@ -1355,14 +1391,21 @@
        } else {
          pcb->rtime = 0;
        }
@@ -80,7 +80,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
        }
  
        pcb->polltmr = 0;
-@@ -1928,8 +1968,12 @@
+@@ -1928,8 +1971,12 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
  {
@@ -93,7 +93,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #if LWIP_TCP_TIMESTAMPS
    u32_t tsval;
  #endif
-@@ -2016,15 +2060,39 @@
+@@ -2016,15 +2063,39 @@
  #if LWIP_TCP_SACK_OUT
          case LWIP_TCP_OPT_SACK_PERM:
            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
@@ -136,7 +136,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,10 @@
+@@ -82,5 +82,11 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -148,7 +148,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1637,13 +1642,16 @@
+@@ -1637,13 +1643,16 @@
  /**
   * Requeue all unacked segments for retransmission
   *
@@ -165,7 +165,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    LWIP_ASSERT("tcp_rexmit_rto_prepare: invalid pcb", pcb != NULL);
-@@ -1669,4 +1677,14 @@
+@@ -1669,4 +1678,16 @@
    /* concatenate unsent queue after unacked queue */
 +#if LWIP_TCP_SACK_OUT
 +  for (sack_seg = pcb->unacked; sack_seg != NULL; sack_seg = sack_seg->next) {
@@ -182,7 +182,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1756,31 @@
+@@ -1738,14 +1759,31 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
@@ -214,7 +214,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    /* Give up if the segment is still referenced by the netif driver
-@@ -1758,14 +1793,26 @@
+@@ -1758,14 +1796,26 @@
    /* Move the first unacked segment to the unsent queue */
    /* Keep the unsent queue sorted. */
 -  pcb->unacked = seg->next;
@@ -242,7 +242,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1834,73 @@
+@@ -1787,5 +1837,97 @@
    return ERR_OK;
  }
  
