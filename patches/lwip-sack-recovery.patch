@@ -122,7 +122,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1645,6 +1650,9 @@
+@@ -1644,6 +1649,9 @@
  err_t
  tcp_rexmit_rto_prepare(struct tcp_pcb *pcb)
  {
