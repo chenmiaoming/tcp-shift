@@ -327,9 +327,12 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      pcb->unsent_oversize = 0;
 +    }
 +#endif
-+    if (pcb->nrtx < 0xFF) {
-+      ++pcb->nrtx;
-+    }
++    /* Extra SACK hole retransmissions are part of the current fast-recovery
++       episode, not additional RTO retry episodes. pinned lwIP uses pcb->nrtx
++       as a connection-abandon/backoff budget (TCP_MAXRTX), so charging every
++       selectively retransmitted hole here can kill a healthy high-RTT flow
++       after a single burst of losses. The initial legacy tcp_rexmit() still
++       owns its existing nrtx accounting. */
 +    pcb->rttest = 0;
 +    MIB2_STATS_INC(mib2.tcpretranssegs);
 +    return ERR_OK;
