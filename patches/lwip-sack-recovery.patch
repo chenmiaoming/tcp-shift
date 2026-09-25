@@ -77,7 +77,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
        }
  
        pcb->polltmr = 0;
-@@ -1928,8 +1971,12 @@
+@@ -1928,8 +1971,14 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
  {
@@ -86,11 +86,13 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#if LWIP_TCP_SACK_OUT
 +  u32_t sack_left;
 +  u32_t sack_right;
++  struct tcp_shift_lwip_sack_range sack_ranges[4];
++  u8_t sack_range_count;
 +#endif
  #if LWIP_TCP_TIMESTAMPS
    u32_t tsval;
  #endif
-@@ -2016,15 +2063,39 @@
+@@ -2016,15 +2063,49 @@
  #if LWIP_TCP_SACK_OUT
          case LWIP_TCP_OPT_SACK_PERM:
            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
@@ -107,6 +109,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
            break;
 +        case TCP_SHIFT_TCP_OPT_SACK:
 +          data = tcp_get_next_optbyte();
++          sack_range_count = 0U;
 +          LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK len=%"U16_F"\n",
 +                                        (u16_t)data));
 +          if (data < 10U || ((data - 2U) & 7U) != 0U ||
@@ -125,8 +128,17 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +            sack_right |= tcp_get_next_optbyte();
 +            if ((flags & TCP_SYN) == 0U && (pcb->flags & TF_SACK) != 0U) {
 +              tcp_shift_tcp_mark_sack_range(pcb, sack_left, sack_right);
++              if (sack_range_count < 4U) {
++                sack_ranges[sack_range_count].left = sack_left;
++                sack_ranges[sack_range_count].right = sack_right;
++                sack_range_count++;
++              }
 +            }
 +            data = (u8_t)(data - 8U);
++          }
++          if (sack_range_count != 0U) {
++            (void)tcp_shift_lwip_cc_hook_sack(
++                pcb, sack_ranges, sack_range_count);
 +          }
 +          break;
  #endif /* LWIP_TCP_SACK_OUT */

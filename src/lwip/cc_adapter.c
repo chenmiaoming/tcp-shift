@@ -611,6 +611,18 @@ static uint32_t tcp_shift_delivery_outstanding_payload(
 /* Outstanding windows are far below 2^31 bytes in the constrained profile,
  * so signed modular distance gives a wrap-safe position of ack_seq relative to
  * this slot's first payload byte. */
+static void tcp_shift_lwip_cc_transport_from_adapter(
+    const struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_pcb *pcb,
+    struct tcp_shift_cc_transport *transport)
+{
+    tcp_shift_lwip_cc_transport_from_pcb(pcb, transport);
+    if (adapter != NULL && adapter->sack_delivery_policy != 0U) {
+        transport->inflight_bytes =
+            tcp_shift_delivery_outstanding_payload(adapter);
+    }
+}
+
 static uint16_t tcp_shift_delivery_acked_payload(
     const struct tcp_shift_delivery_slot *slot,
     uint32_t ack_seq)
@@ -806,58 +818,26 @@ static void tcp_shift_rate_record_stats(
     stats->rate_last_flags = rate->flags;
 }
 
-static void tcp_shift_delivery_build_rate_sample(
+static int tcp_shift_delivery_candidate_newer(
+    const struct tcp_shift_delivery_slot *slot,
+    const struct tcp_shift_delivery_slot *candidate)
+{
+    return candidate == NULL || slot->tx_ns > candidate->tx_ns ||
+           (slot->tx_ns == candidate->tx_ns &&
+            (int32_t)((slot->seq_start + slot->payload_bytes) -
+                      (candidate->seq_start + candidate->payload_bytes)) > 0);
+}
+
+static void tcp_shift_delivery_finalize_rate_sample(
     struct tcp_shift_lwip_cc_adapter *adapter,
-    struct tcp_pcb *pcb,
+    struct tcp_shift_delivery_slot *candidate,
+    uint64_t delivered_added,
+    uint64_t now_ns,
+    uint16_t touched,
+    unsigned partial,
     struct tcp_shift_cc_rate_sample *rate)
 {
-    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
-    struct tcp_shift_delivery_slot *candidate = NULL;
     uint64_t delivered_delta64;
-    uint64_t delivered_added = 0U;
-    uint64_t now_ns;
-    uint16_t touched = 0U;
-    uint16_t index;
-    unsigned partial = 0U;
-
-    memset(rate, 0, sizeof(*rate));
-    now_ns = tcp_shift_delivery_now_ns(adapter);
-    if (now_ns == 0U) {
-        return;
-    }
-
-    for (index = 0U; index < adapter->delivery_capacity; index++) {
-        struct tcp_shift_delivery_slot *slot = &slots[index];
-        uint16_t acked_payload;
-        uint16_t newly_acked;
-
-        if (slot->segment == NULL) {
-            continue;
-        }
-        acked_payload = tcp_shift_delivery_acked_payload(slot, pcb->lastack);
-        if (acked_payload <= slot->acked_payload_bytes) {
-            continue;
-        }
-
-        newly_acked = (uint16_t)(acked_payload - slot->acked_payload_bytes);
-        slot->acked_payload_bytes = acked_payload;
-        delivered_added += newly_acked;
-        touched++;
-        if (acked_payload < slot->payload_bytes) {
-            partial = 1U;
-        }
-
-        if (candidate == NULL ||
-            slot->tx_ns > candidate->tx_ns ||
-            (slot->tx_ns == candidate->tx_ns &&
-             (int32_t)((slot->seq_start + slot->payload_bytes) -
-                       (candidate->seq_start + candidate->payload_bytes)) > 0)) {
-            /* Match Linux rate sampling: for an ACK covering multiple
-             * segments, use the most recently transmitted segment, breaking a
-             * same-timestamp tie by the highest ending sequence number. */
-            candidate = slot;
-        }
-    }
 
     if (delivered_added == 0U) {
         return;
@@ -899,10 +879,6 @@ static void tcp_shift_delivery_build_rate_sample(
                                 : (uint32_t)delivered_delta64;
     rate->prior_inflight_bytes = candidate->prior_inflight_bytes;
 
-    /* Advance the send-phase endpoint to the most recently transmitted
-     * segment covered by this ACK. The candidate's stored first_tx_mstamp is
-     * the endpoint captured when that transmission occurred, so their delta is
-     * the send interval for this delivery window. */
     if (candidate->tx_ns >= candidate->first_tx_mstamp_at_send_ns) {
         rate->send_interval_ns =
             candidate->tx_ns - candidate->first_tx_mstamp_at_send_ns;
@@ -936,6 +912,128 @@ static void tcp_shift_delivery_build_rate_sample(
     tcp_shift_rate_record_stats(adapter, rate);
 }
 
+static uint32_t tcp_shift_delivery_build_rate_sample(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    struct tcp_shift_cc_rate_sample *rate)
+{
+    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
+    struct tcp_shift_delivery_slot *candidate = NULL;
+    uint64_t delivered_added = 0U;
+    uint64_t now_ns;
+    uint16_t touched = 0U;
+    uint16_t index;
+    unsigned partial = 0U;
+
+    memset(rate, 0, sizeof(*rate));
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return 0U;
+    }
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        struct tcp_shift_delivery_slot *slot = &slots[index];
+        uint16_t acked_payload;
+        uint16_t newly_acked;
+
+        if (slot->segment == NULL) {
+            continue;
+        }
+        acked_payload = tcp_shift_delivery_acked_payload(slot, pcb->lastack);
+        if (acked_payload <= slot->acked_payload_bytes) {
+            continue;
+        }
+
+        newly_acked = (uint16_t)(acked_payload - slot->acked_payload_bytes);
+        slot->acked_payload_bytes = acked_payload;
+        delivered_added += newly_acked;
+        touched++;
+        if (acked_payload < slot->payload_bytes) {
+            partial = 1U;
+        }
+
+        if (tcp_shift_delivery_candidate_newer(slot, candidate)) {
+            candidate = slot;
+        }
+    }
+
+    tcp_shift_delivery_finalize_rate_sample(
+        adapter, candidate, delivered_added, now_ns, touched, partial, rate);
+    return delivered_added > UINT32_MAX ? UINT32_MAX
+                                        : (uint32_t)delivered_added;
+}
+
+static int tcp_shift_delivery_slot_in_sack_range(
+    const struct tcp_shift_delivery_slot *slot,
+    const struct tcp_shift_lwip_sack_range *range)
+{
+    uint32_t seq_end;
+
+    if (slot == NULL || range == NULL || slot->segment == NULL ||
+        slot->payload_bytes == 0U) {
+        return 0;
+    }
+    seq_end = slot->seq_start + slot->payload_bytes;
+    return (int32_t)(slot->seq_start - range->left) >= 0 &&
+                   (int32_t)(range->right - seq_end) >= 0
+               ? 1
+               : 0;
+}
+
+static uint32_t tcp_shift_delivery_build_sack_rate_sample(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    uint8_t range_count,
+    struct tcp_shift_cc_rate_sample *rate)
+{
+    struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
+    struct tcp_shift_delivery_slot *candidate = NULL;
+    uint64_t delivered_added = 0U;
+    uint64_t now_ns;
+    uint16_t touched = 0U;
+    uint16_t index;
+    uint8_t range_index;
+
+    memset(rate, 0, sizeof(*rate));
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return 0U;
+    }
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        struct tcp_shift_delivery_slot *slot = &slots[index];
+        int covered = 0;
+
+        if (slot->segment == NULL ||
+            slot->acked_payload_bytes >= slot->payload_bytes) {
+            continue;
+        }
+        for (range_index = 0U; range_index < range_count; range_index++) {
+            if (tcp_shift_delivery_slot_in_sack_range(
+                    slot, &ranges[range_index])) {
+                covered = 1;
+                break;
+            }
+        }
+        if (!covered) {
+            continue;
+        }
+
+        delivered_added +=
+            (uint16_t)(slot->payload_bytes - slot->acked_payload_bytes);
+        slot->acked_payload_bytes = slot->payload_bytes;
+        touched++;
+        if (tcp_shift_delivery_candidate_newer(slot, candidate)) {
+            candidate = slot;
+        }
+    }
+
+    tcp_shift_delivery_finalize_rate_sample(
+        adapter, candidate, delivered_added, now_ns, touched, 0U, rate);
+    return delivered_added > UINT32_MAX ? UINT32_MAX
+                                        : (uint32_t)delivered_added;
+}
+
 static void tcp_shift_lwip_cc_disable_on_error(
     struct tcp_shift_lwip_cc_adapter *adapter)
 {
@@ -961,6 +1059,7 @@ static int tcp_shift_lwip_cc_prepare_ack(
     struct tcp_shift_cc_ack *ack)
 {
     uint64_t ack_time_ns;
+    uint32_t newly_delivered;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
         acked_bytes == 0U || ack == NULL) {
@@ -968,9 +1067,12 @@ static int tcp_shift_lwip_cc_prepare_ack(
     }
 
     memset(ack, 0, sizeof(*ack));
-    tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack->rate);
+    newly_delivered =
+        tcp_shift_delivery_build_rate_sample(adapter, pcb, &ack->rate);
     ack_time_ns = adapter->delivery_last_clock_read_ns;
-    ack->acked_bytes = acked_bytes;
+    ack->acked_bytes = adapter->sack_delivery_policy != 0U
+                           ? newly_delivered
+                           : acked_bytes;
     ack->ack_time_ns = ack_time_ns;
 
     if ((ack->rate.flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
@@ -1016,8 +1118,76 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     if (!tcp_shift_lwip_cc_prepare_ack(adapter, pcb, acked_bytes, &ack)) {
         return 0;
     }
+    if (adapter->sack_delivery_policy != 0U && ack.acked_bytes == 0U) {
+        return 1;
+    }
 
-    tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
+    if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
+                            &policy) != 0 ||
+        tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
+        tcp_shift_lwip_cc_disable_on_error(adapter);
+        return 0;
+    }
+
+    if (adapter->stats != NULL) {
+        adapter->stats->ack_events++;
+        adapter->stats->policy_updates++;
+    }
+    return 1;
+}
+
+static int tcp_shift_lwip_cc_on_sack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    u8_t range_count)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_cc_transport transport;
+    struct tcp_shift_cc_ack ack;
+    struct tcp_shift_cc_policy policy;
+    uint32_t newly_delivered;
+    uint64_t ack_time_ns;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        adapter->sack_delivery_policy == 0U || ranges == NULL ||
+        range_count == 0U) {
+        return 0;
+    }
+
+    memset(&ack, 0, sizeof(ack));
+    newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
+        adapter, ranges, range_count, &ack.rate);
+    if (adapter->stats != NULL) {
+        adapter->stats->delivery_sack_events++;
+        adapter->stats->delivery_sack_payload_bytes += newly_delivered;
+    }
+    if (newly_delivered == 0U) {
+        return 1;
+    }
+
+    ack_time_ns = adapter->delivery_last_clock_read_ns;
+    ack.acked_bytes = newly_delivered;
+    ack.ack_time_ns = ack_time_ns;
+    if ((ack.rate.flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
+        ack.rate.rtt_ns != 0U) {
+        if (tcp_shift_cc_srtt_update(&adapter->srtt, ack.rate.rtt_ns) != 0) {
+            tcp_shift_lwip_cc_disable_on_error(adapter);
+            return 0;
+        }
+        if (adapter->stats != NULL) {
+            adapter->stats->srtt_updates++;
+        }
+    }
+    ack.smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
+    if (adapter->stats != NULL) {
+        adapter->stats->ack_observation_events++;
+        adapter->stats->ack_last_time_ns = ack_time_ns;
+        adapter->stats->ack_last_smoothed_rtt_ns = ack.smoothed_rtt_ns;
+    }
+
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
                             &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
@@ -1046,7 +1216,7 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
         return 0;
     }
 
-    tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     loss.lost_bytes = lost_bytes;
     if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
                              &policy) != 0 ||
@@ -1072,7 +1242,7 @@ static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
         return 0;
     }
 
-    tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     if (tcp_shift_cc_on_timeout(&adapter->controller, &transport, &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
         tcp_shift_lwip_cc_disable_on_error(adapter);
@@ -1089,6 +1259,7 @@ static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
 static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack = tcp_shift_lwip_cc_on_ack,
     .on_ack_observe = tcp_shift_lwip_cc_on_ack_observe,
+    .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
     .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,
@@ -1152,7 +1323,7 @@ int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
             (uint32_t)sizeof(struct tcp_shift_delivery_slot);
     }
 
-    tcp_shift_lwip_cc_transport_from_pcb(pcb, &transport);
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     init.initial_cwnd_bytes = pcb->cwnd;
     if (init.initial_cwnd_bytes < pcb->mss && pcb->state == ESTABLISHED) {
         init.initial_cwnd_bytes = tcp_shift_lwip_cc_initial_cwnd(pcb->mss);

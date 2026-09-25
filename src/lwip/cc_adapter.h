@@ -38,6 +38,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_first_tx_events;
     uint64_t delivery_retransmit_events;
     uint64_t delivery_acked_segment_events;
+    uint64_t delivery_sack_events;
+    uint64_t delivery_sack_payload_bytes;
     uint64_t delivery_payload_bytes;
     uint64_t delivery_metadata_alloc_failures;
     uint64_t delivery_metadata_misses;
@@ -149,6 +151,7 @@ struct tcp_shift_lwip_cc_adapter {
     unsigned pacing_scheduled;
     unsigned bound;
     unsigned heap_owned;
+    unsigned sack_delivery_policy;
 };
 
 int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,

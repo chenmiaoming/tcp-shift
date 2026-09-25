@@ -37,11 +37,20 @@
  * active, patched lwIP suppresses only its native recovery cwnd inflation and
  * delegates the exit transition before clearing TF_INFR.
  */
+struct tcp_shift_lwip_sack_range {
+    u32_t left;
+    u32_t right;
+};
+
 struct tcp_shift_lwip_cc_hook_ops {
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
     int (*on_ack_observe)(void *arg,
                           struct tcp_pcb *pcb,
                           tcpwnd_size_t acked_bytes);
+    int (*on_sack)(void *arg,
+                   struct tcp_pcb *pcb,
+                   const struct tcp_shift_lwip_sack_range *ranges,
+                   u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
@@ -183,6 +192,21 @@ tcp_shift_lwip_cc_hook_ack_observe(struct tcp_pcb *pcb,
         return 0;
     }
     return hook->ops->on_ack_observe(hook->arg, pcb, acked_bytes) != 0;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_sack(
+    struct tcp_pcb *pcb,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    u8_t range_count)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL || hook->ops->on_sack == NULL ||
+        ranges == NULL || range_count == 0U) {
+        return 0;
+    }
+    return hook->ops->on_sack(hook->arg, pcb, ranges, range_count) != 0;
 }
 
 static inline int
