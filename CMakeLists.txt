@@ -6,6 +6,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+    "Enable experimental sender-side SACK recovery in the pinned lwIP transport"
+    OFF
+)
+
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
 if(NOT EXISTS "${LWIP_DIR}/src/Filelists.cmake")
     message(FATAL_ERROR "lwIP source not found at ${LWIP_DIR}; run scripts/fetch-lwip.sh first")
@@ -56,6 +61,12 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -Wall -Wextra -Wpedantic -Werror
     -ffunction-sections -fdata-sections
 )
+
+if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
+    target_compile_definitions(tcp_shift_lwip PRIVATE
+        TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=1
+    )
+endif()
 
 add_subdirectory(src/cc)
 
