@@ -48,13 +48,16 @@ uint64_t tcp_shift_bbr_probe_bw_pacing_rate_bytes_per_sec(
  * randomized reset: probe-up or one of the six cruise phases, never the drain
  * phase. No wall-clock source is owned here; now_ns is supplied by the caller.
  *
- * RETRANSMITTED is used only as the transport-neutral signal that a probe-up
- * phase should stop waiting for its 1.25*BDP inflight target after one min RTT.
+ * newly_lost_bytes is the transport-neutral equivalent of Linux rate_sample
+ * losses for this ACK. Retransmission metadata is deliberately not a loss
+ * signal: a retransmitted packet can be delivered successfully and must not
+ * prematurely end a probe-up phase.
  */
 int tcp_shift_bbr_probe_bw_update(
     struct tcp_shift_bbr_model *model,
     struct tcp_shift_bbr_probe_state *state,
     const struct tcp_shift_cc_rate_sample *sample,
+    uint32_t newly_lost_bytes,
     uint64_t now_ns);
 
 /* ProbeBW uses the phase pacing gain and a steady-state cwnd target of 2*BDP,

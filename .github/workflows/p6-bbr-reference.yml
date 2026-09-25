@@ -487,9 +487,6 @@ jobs:
             out="$PWD/.build/p6-bbr-repeated-burst/tcp-shift/$repeats"
             port=$((18200 + repeats))
             expectation=strict
-            if [ "$repeats" -ge 3 ]; then
-              expectation=diagnostic
-            fi
             sudo env \
               TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-repeated/tcp-shift-p6-bbr" \
               TCP_SHIFT_P6_BBR_LONG_OUT="$out" \

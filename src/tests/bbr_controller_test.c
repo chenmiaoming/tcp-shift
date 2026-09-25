@@ -220,6 +220,7 @@ static int check_recovery_composition(void)
     CHECK(state.model.round_start == 0U);
     CHECK(policy.cwnd_bytes == 12000U);
     CHECK(policy.pacing_rate_bytes_per_sec == pacing_before_recovery);
+    CHECK(state.pending_probe_loss_bytes == transport.mss_bytes);
 
     /* A recovery ACK whose prior-delivered snapshot predates the entry marker
      * is still in the first packet-timed recovery round. Normal STARTUP policy
@@ -239,6 +240,7 @@ static int check_recovery_composition(void)
     CHECK(drive_ack(&state, &transport, UINT64_C(1040000000),
                     UINT64_C(10000000), 10000U, 12920U, 8500U,
                     valid, &policy) == 0);
+    CHECK(state.pending_probe_loss_bytes == 0U);
     CHECK(state.model.round_start == 1U);
     CHECK(state.recovery.packet_conservation == 0U);
     CHECK(policy.cwnd_bytes > 12000U);

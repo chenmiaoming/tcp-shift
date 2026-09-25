@@ -464,8 +464,10 @@ case "$LOSS_MODE" in
         ;;
     deterministic-repeated-burst)
         if [ "$RECOVERY_EXPECTATION" = strict ]; then
-            [ "$loss_events" -eq "$FAULT_BURST_REPEATS" ] && [ "$timeout_events" -eq 0 ] || {
-                echo "repeated bursts did not produce one clean recovery episode per burst: expected=$FAULT_BURST_REPEATS loss=$loss_events timeout=$timeout_events" >&2
+            [ "$loss_events" -ge 1 ] &&
+            [ "$loss_events" -le "$FAULT_BURST_REPEATS" ] &&
+            [ "$timeout_events" -eq 0 ] || {
+                echo "repeated bursts did not stay in bounded fast recovery: repeats=$FAULT_BURST_REPEATS loss=$loss_events timeout=$timeout_events" >&2
                 exit 1
             }
         else
@@ -518,10 +520,17 @@ case "$LOSS_MODE" in
         ;;
     deterministic-repeated-burst)
         expected_retransmits=$((FAULT_BURST_PACKETS * FAULT_BURST_REPEATS))
-        [ "$retransmit_events" -ge "$expected_retransmits" ] || {
-            echo "repeated bursts expected at least $expected_retransmits retransmissions: $retransmit_events" >&2
-            exit 1
-        }
+        if [ "$RECOVERY_EXPECTATION" = strict ]; then
+            [ "$retransmit_events" -eq "$expected_retransmits" ] || {
+                echo "repeated bursts amplified retransmissions: expected=$expected_retransmits actual=$retransmit_events" >&2
+                exit 1
+            }
+        else
+            [ "$retransmit_events" -ge "$expected_retransmits" ] || {
+                echo "repeated bursts expected at least $expected_retransmits retransmissions: $retransmit_events" >&2
+                exit 1
+            }
+        fi
         ;;
 esac
 

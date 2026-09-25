@@ -27,6 +27,10 @@ struct tcp_shift_bbr_controller_state {
     uint64_t delivered_bytes;
     uint32_t initial_cwnd_bytes;
     uint32_t cwnd_bytes;
+    /* Newly observed transport loss pending for the next ACK's ProbeBW phase
+     * decision. Recovery cwnd accounting remains owned by the existing
+     * transport/recovery boundary. */
+    uint32_t pending_probe_loss_bytes;
     uint8_t initialized;
 };
 

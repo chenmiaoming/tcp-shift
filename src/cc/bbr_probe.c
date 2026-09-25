@@ -143,6 +143,7 @@ int tcp_shift_bbr_probe_bw_update(
     struct tcp_shift_bbr_model *model,
     struct tcp_shift_bbr_probe_state *state,
     const struct tcp_shift_cc_rate_sample *sample,
+    uint32_t newly_lost_bytes,
     uint64_t now_ns)
 {
     uint64_t bdp;
@@ -184,8 +185,7 @@ int tcp_shift_bbr_probe_bw_update(
         phase_target = tcp_shift_bbr_probe_scale_ceil_u64(
             bdp, gain, TCP_SHIFT_BBR_GAIN_DEN);
         advance = full_length != 0 &&
-                  (((sample->flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) !=
-                    0U) ||
+                  (newly_lost_bytes != 0U ||
                    (uint64_t)sample->prior_inflight_bytes >= phase_target);
     } else if (gain < TCP_SHIFT_BBR_GAIN_DEN) {
         advance = full_length != 0 ||
