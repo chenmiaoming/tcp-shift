@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; compact internal BBR is broadly runner-qualified, and Draft PR #41 now qualifies a default-OFF sender-SACK transport experiment that materially closes the high-RTT random-loss gap; public `bbr` selection remains intentionally disabled pending provider/P3 closeout and an explicit exposure decision**.
+Status: **active; compact internal BBR, explicit-loss ProbeBW, bounded sender-SACK recovery, deterministic first-send-loss qualification, and SACK-aware delivery accounting are merged through PR #45; public `bbr` selection remains intentionally disabled pending provider/OpenVZ qualification and an explicit exposure decision**.
 
 ## Congestion-control architecture
 
@@ -150,19 +150,105 @@ The deterministic periodic-loss injector was intentionally excluded because it c
 
 The retained source checkpoint passed all 15 workflows with the existing P3 memory gate unchanged. PR #38 was replayed on top of #37 and squash-merged as `1c8b7b4477f71edde0f5961674f37de0a0dd9832`.
 
-Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through the qualification target. Draft PR #41 shows that a bounded sender-SACK transport increment can close most of the long-RTT loss gap, but it remains default OFF. The next product decision is therefore provider/OpenVZ + P3 closeout for the experimental transport/BBR combination, followed by an explicit decision on public `bbr` exposure; Reno remains the default.
+Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through qualification targets. The sender-SACK transport extension remains compile-time experimental/default-OFF. The next product decision is provider/OpenVZ qualification of the combined BBR + sender-SACK path, followed by an explicit decision on public `bbr` exposure; Reno remains the default.
 
-## Experimental sender SACK recovery — Draft PR #41
+## ProbeBW loss semantics — merged PR #40
 
-The next transport experiment is intentionally separated from the compact BBR controller. `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` defaults OFF, so all legacy P0-P6/production builds retain the already-qualified pinned-lwIP/NewReno path. Dedicated loss-reference builds opt in. The CMake definition is PUBLIC on the lwIP target because upstream `LWIP_TCP_SACK_OUT` changes `struct tcp_pcb`; an earlier PRIVATE definition produced a cross-target PCB ABI mismatch and immediate CC bind failures, which the qualification caught.
+PR #40 fixed a BBRv1 semantic mismatch: ProbeBW had treated a `RETRANSMITTED` delivery sample as if it were Linux BBRv1 `rate_sample.losses`. A successfully delivered retransmission is not itself new loss, so that proxy could prematurely terminate ProbeBW UP.
 
-The sender scoreboard stays within the pinned three-file lwIP surface and reuses spare bits in the existing `tcp_seg.flags` byte, avoiding per-segment layout growth. Inbound SACK blocks mark delivered outstanding segments; a hole is selectively requeued only with at least three later SACKed segments. Each hole is retransmitted at most once in a fast-recovery episode. Extra SACK hole retransmissions do not consume `pcb->nrtx`, because pinned lwIP uses that field as the `TCP_MAXRTX` connection-abandon/RTO-backoff budget. Both constraints came from live failures: charging every SACK hole to `nrtx` caused mid-flow aborts, while retrying a hole on every new SACK block caused severe spurious retransmission before one 260 ms RTT had elapsed.
+The final change keeps the actual transport fast-loss signal as one-shot ProbeBW loss credit and consumes it on the next BBR ACK. Retransmission metadata alone no longer ends probe-up below the gain×BDP target.
 
-The deterministic 260 ms / 10 Mbit/s repeated-burst matrix is now strict for two, three, and four three-packet bursts. tcp-shift retransmission amplification is exactly 1.0 in every case, matching Linux BBR: 6/6, 9/9, and 12/12 injected drops/retransmissions, respectively. Each burst produces exactly one controller loss episode, all cases have zero RTOs and exact payload integrity, and tcp-shift/Linux goodput ratios are 0.950308, 0.889202, and 0.862150.
+The deterministic 260 ms / 10 Mbit/s repeated-burst matrix became a strict no-amplification gate. After the fix:
 
-The 4 MiB, 260 ms / 10 Mbit/s / 1% random-loss diagnostic also changes materially. On the current PR checkpoint, tcp-shift internal BBR measured 4.716169 Mbit/s versus 5.728751 Mbit/s for Linux BBR, a 0.823246 goodput ratio. tcp-shift observed 29 data qdisc drops and 29 retransmission events, five loss episodes, and zero RTOs; Linux observed 26 drops and 25 retransmissions. Same-stack CUBIC measured 0.923736 Mbit/s. Random realizations remain non-identical, so this ratio is evidence rather than a parity threshold, but the combination of zero RTO fallback, near-unit retransmission amplification, and the deterministic burst matrix strongly confirms that sender recovery—not BBR gain tuning—was the dominant remaining high-RTT loss limitation.
+- 2 × 3-packet bursts: 6 drops / 6 retransmissions / 0 RTO;
+- 3 × 3-packet bursts: 9 drops / 9 retransmissions / 0 RTO;
+- 4 × 3-packet bursts: 12 drops / 12 retransmissions / 0 RTO.
 
-The sender-SACK experiment remains Draft/default-OFF. Before any production-default change, rerun P3 closeout on a stable host baseline and qualify the same option on the target provider/OpenVZ environment. The current hosted-runner P3 sample again hit the unchanged 128 KiB warm-floor gate at 129 KiB while its staged/active/repeated measurements otherwise passed; this is retained as a closeout rerun, not treated as a proven SACK memory regression.
+Before #40, the same 3/4-burst cases had produced 919 / 1406 retransmissions plus one RTO. Clean low/edge/high-BDP reference and four-flow qualification remained intact. PR #40 was squash-merged as `f7d3ac1f1d1a6cbfd5d6aa87739e680118dee0d9`.
+
+## Bounded sender SACK recovery — merged PR #41
+
+PR #41 keeps sender SACK separate from the compact BBR controller and gated by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY`, which remains OFF by default. Legacy/production qualification therefore retains the previous NewReno path unless a dedicated experiment explicitly opts in.
+
+The controlled `patches/lwip-sack-recovery.patch` stays on the same pinned three-file lwIP surface. It:
+
+- negotiates SACK only in experiment builds;
+- parses inbound SACK blocks;
+- reuses spare bits in the existing `tcp_seg.flags` byte as a sender scoreboard, avoiding segment layout growth;
+- selectively requeues an unsacked hole only with sufficient later SACK evidence;
+- retransmits a SACK hole at most once per fast-recovery episode;
+- keeps selective-hole retransmissions out of `pcb->nrtx`, because that field is the pinned lwIP RTO/connection-abandon retry budget;
+- clears the sender scoreboard on RTO;
+- leaves sequence space, queues, retransmission execution, ACK processing, and RTO ownership in lwIP.
+
+Two live integration failures shaped the final boundary: the SACK compile definition must propagate PUBLICly because upstream SACK changes `struct tcp_pcb`, and repeatedly charging/retrying selective holes can cause either ABI/bind failures or spurious retransmission/connection-abandon behavior.
+
+The merged deterministic repeated-burst reference remains exact: 6/6, 9/9, and 12/12 injected drops/retransmissions for two/three/four bursts, zero RTOs, and goodput ratios versus Linux BBR of 0.950308 / 0.889202 / 0.862150. A hosted random 260 ms / 10 Mbit/s / 1% realization measured tcp-shift BBR at 4.716169 Mbit/s versus Linux BBR at 5.728751 Mbit/s (0.823246 diagnostic ratio), with tcp-shift 29 drops / 29 retransmissions / 0 RTO.
+
+PR #41 was squash-merged as `ae8108a892f9cabd9f5ad7312b4211f1ab849289`. Sender SACK remains default-OFF.
+
+## Recovery batching experiments — PRs #42/#43 closed without merge
+
+PR #42 tested batching multiple proven SACK holes per ACK. PR #43 supplied a matching current-main baseline. Both preserved correctness, but the batched helper did not materially improve 6- or 12-packet wide-burst throughput, so the extra recovery complexity was rejected.
+
+Representative A/B:
+
+- 6-packet burst: batched 5.851693 Mbit/s vs single-hole 5.847477 Mbit/s;
+- 12-packet burst: batched 5.858491 Mbit/s vs single-hole 5.903027 Mbit/s.
+
+Both variants retained exact retransmissions and zero RTO. Neither PR merged.
+
+## Deterministic first-send-loss reference — merged PR #44
+
+PR #44 replaced noisy random-loss controller comparisons with a reproducible first-transmission-only loss reference:
+
+- payload: 4 MiB;
+- RTT / bottleneck: 260 ms / 10 Mbit/s;
+- queue: 1784 packets;
+- exactly 28 unique first-transmission drops, spaced by deterministic payload markers;
+- retransmissions do not match the one-shot drop counters;
+- tcp-shift and Linux BBR use the same marker layout and exact fault count.
+
+Strict correctness requires exactly 28 explicit drops and 28 retransmissions, zero unrelated qdisc drops, tcp-shift zero RTO fallback, and exact payload/delivery-ledger accounting. Goodput remains diagnostic rather than a parity threshold.
+
+PR #44 was squash-merged as `4be055b92d156618e4b32ef107719d4f2ed5f8ad`.
+
+## SACK delivery accounting — merged PR #45
+
+PR #45 identified the next missing semantic after sender recovery itself was fixed. Linux rate sampling counts newly SACKed out-of-order bytes as delivered immediately; tcp-shift previously waited for the cumulative ACK to repair the hole. On frequent long-RTT loss, that delayed delivery observations and kept BBR's bandwidth/cwnd estimates too low.
+
+The merged change:
+
+- reports every SACK range from the controlled lwIP parser through the project hook boundary;
+- charges complete delivery-sidecar slots covered by a new SACK range exactly once;
+- generates a rate sample from newly SACKed delivery;
+- lets only internal BBR consume SACK delivery as a policy ACK; Reno/CUBIC native policy remains unchanged;
+- uses sidecar-undelivered payload as BBR inflight when SACK delivery accounting is active;
+- later cumulative ACKs credit only payload not already delivered through SACK;
+- adds deterministic coverage proving SACK delivery plus later cumulative ACK cannot double-count payload or cwnd credit;
+- exposes SACK delivery event/byte telemetry.
+
+Stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss evidence:
+
+Before #45 (#44 checkpoint):
+- tcp-shift BBR: 2.625210 Mbit/s;
+- Linux BBR: 5.491581 Mbit/s;
+- ratio: ~0.478;
+- max bandwidth estimate: 753361 B/s;
+- final cwnd: 321838 bytes;
+- 28 drops / 28 retransmissions / 0 RTO.
+
+After #45:
+- tcp-shift BBR: 4.092568 Mbit/s;
+- Linux BBR: 5.490912 Mbit/s;
+- ratio: ~0.745;
+- max bandwidth estimate: 1206530 B/s;
+- final cwnd: 629958 bytes;
+- 28 drops / 28 retransmissions / 0 RTO.
+
+The delivery sidecar recorded 2,178 SACK-delivery events covering 3,308,360 payload bytes, while final delivered payload stayed exactly 4,194,304 bytes with zero metadata misses. This materially closes the stable-loss gap but still does not establish Linux-BBR parity.
+
+PR #45 passed all 15 workflows at its retained code checkpoint and was squash-merged as `ed3507be835a6066d33e840d68f1d3287f7e024b`.
 
 ## Original planned order from P6d
 
