@@ -161,7 +161,7 @@ The observed delivery rate becomes window-limited at about 43.7 KiB/s, consisten
 
 ### P6 BBR runtime — internal / experimental
 
-The compact `bbr` controller is implemented as a BBRv1-style core with selected BBRv3-informed fixes. It is bound to live lwIP PCBs only through the internal `tcp-shift-p6-bbr` qualification target; production `tcp-shift-p2` still exposes only `reno` and `cubic`.
+The compact `bbr` controller is implemented as a BBRv1-style core with selected BBRv3-informed fixes. It runs on real lwIP PCBs through the internal `tcp-shift-p6-bbr` qualification target; production `tcp-shift-p2` still exposes only `reno` and `cubic`.
 
 Current qualification includes:
 
@@ -169,11 +169,15 @@ Current qualification includes:
 - four concurrent internal BBR flows sharing one bottleneck;
 - live app-limited enter/sample/exit behavior;
 - transport-owned RFC 6582/NewReno partial-ACK recovery for multiple losses;
-- deterministic 260 ms three- and six-packet WAN bursts with zero RTO fallback;
-- repeated burst recovery episodes;
-- retransmission-safe delivery/send snapshot refresh, RTO send-phase reset, and filtered-`max_bw` Startup detection.
+- strict deterministic repeated-burst recovery with exact drop/retransmission accounting and zero RTO fallback;
+- explicit-loss ProbeBW semantics instead of treating retransmission metadata as new loss;
+- a bounded sender-SACK transport experiment, compile-time OFF by default;
+- deterministic first-transmission-only ~1% loss reference at 260 ms / 10 Mbit/s;
+- SACKed out-of-order delivery accounting into the internal-BBR rate sampler without later cumulative-ACK double credit.
 
-PR #34 merged the live internal BBR runtime, PR #35 added NewReno partial-ACK recovery, PRs #36-#37 expanded deterministic burst qualification, and PR #38 fixed BBR delivery sampling / Startup telemetry. The next product boundary is controlled experimental `bbr` exposure plus real provider/VPS qualification, not a claim of Linux-BBR equivalence.
+The merged sequence is now PR #40 (ProbeBW loss semantics), PR #41 (bounded sender SACK), PR #44 (deterministic first-send-loss reference), and PR #45 (SACK delivery accounting). PRs #42/#43 were controlled batching/baseline experiments and were closed without merge after showing no material benefit.
+
+On the stable first-send-loss case, #45 improved tcp-shift BBR from 2.625210 to 4.092568 Mbit/s while Linux BBR measured 5.490912 Mbit/s, moving the goodput ratio from about 0.478 to about 0.745 with 28 explicit drops, 28 retransmissions, and zero RTOs. Sender SACK remains experimental/default-OFF, and public `bbr` selection remains disabled pending provider/OpenVZ qualification and an explicit exposure decision.
 
 ## Project state
 
@@ -187,4 +191,4 @@ Start here:
 - [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
 
-> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR is live and broadly runner-qualified through merged PR #38 (`1c8b7b4477f71edde0f5961674f37de0a0dd9832`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
+> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR plus the default-OFF sender-SACK/rate-sampling path are runner-qualified through merged PR #45 (`ed3507be835a6066d33e840d68f1d3287f7e024b`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
