@@ -15,9 +15,11 @@
 struct fake_state {
     unsigned ack_observe_calls;
     unsigned loss_calls;
+    unsigned recovery_loss_calls;
     unsigned timeout_calls;
     unsigned recovery_exit_calls;
     unsigned handle_loss;
+    unsigned handle_recovery_loss;
     unsigned handle_timeout;
     unsigned handle_recovery_exit;
 };
@@ -46,6 +48,18 @@ static int fake_loss(void *arg,
     return state->handle_loss != 0U;
 }
 
+static int fake_recovery_loss(void *arg,
+                              struct tcp_pcb *pcb,
+                              tcpwnd_size_t lost_bytes)
+{
+    struct fake_state *state = arg;
+
+    (void)pcb;
+    (void)lost_bytes;
+    state->recovery_loss_calls++;
+    return state->handle_recovery_loss != 0U;
+}
+
 static int fake_recovery_exit(void *arg, struct tcp_pcb *pcb)
 {
     struct fake_state *state = arg;
@@ -69,6 +83,7 @@ int main(void)
     static const struct tcp_shift_lwip_cc_hook_ops ops = {
         .on_ack_observe = fake_ack_observe,
         .on_loss = fake_loss,
+        .on_recovery_loss = fake_recovery_loss,
         .on_timeout = fake_timeout,
         .on_recovery_exit = fake_recovery_exit,
     };
@@ -110,11 +125,17 @@ int main(void)
     CHECK(hook.recovery_end_seq == 9000U);
 
     hook.recovery_controller_owned = 1U;
+    state.handle_recovery_loss = 1U;
+    CHECK(tcp_shift_lwip_cc_hook_recovery_loss(&pcb, 1460U) == 1);
+    CHECK(state.recovery_loss_calls == 1U);
+    CHECK(hook.recovery_enter_events == 1U);
     state.handle_recovery_exit = 1U;
     CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb) == 1);
     CHECK(state.recovery_exit_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_loss(&pcb, 1460U) == 0);
+    CHECK(state.recovery_loss_calls == 1U);
     CHECK(hook.recovery_exit_events == 1U);
     CHECK(hook.recovery_end_seq == 0U);
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 1U);
