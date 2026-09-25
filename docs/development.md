@@ -34,9 +34,9 @@ Production lwIP pin:
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-The repository-owned integration patch is `patches/lwip-p4-cc-hooks.patch`. `scripts/fetch-lwip.sh` records pristine critical-source hashes before applying it. Provenance CI independently proves the modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the patch result for the pin.
+The repository-owned integration is a controlled two-patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. `scripts/fetch-lwip.sh` records pristine critical-source hashes before applying either patch. Provenance CI independently proves the modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the chained patch result for the pin.
 
-P5 remains within this three-file upstream patch boundary. Do not expand it casually. Any new upstream file requires an architectural reason, bounded hook surface, provenance coverage, and regression evidence.
+The sender-SACK patch is an experimental transport increment, default OFF behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY`. It must not silently become part of production builds. Both patches stay within the existing three-file upstream boundary; any new upstream file still requires an architectural reason, bounded surface, provenance coverage, and regression evidence.
 
 ## Current architecture
 
