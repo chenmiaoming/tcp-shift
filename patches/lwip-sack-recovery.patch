@@ -55,6 +55,28 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                }
 +#endif /* LWIP_TCP_SACK_OUT */
                }
+@@ -1355,14 +1388,21 @@
+       } else {
+         pcb->rtime = 0;
+       }
+ 
+       if (recovery_partial && pcb->unacked != NULL) {
+         /* A partial ACK identifies the next hole without waiting for another
+            three duplicate ACKs. tcp_rexmit() only requeues the first unacked
+            segment; tcp_input() will drive ordinary tcp_output() afterwards. */
++#if LWIP_TCP_SACK_OUT
++        if ((pcb->flags & TF_SACK) != 0U) {
++          if (tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++            pcb->rtime = 0;
++          }
++        } else
+NaN
+         if (tcp_rexmit(pcb) == ERR_OK) {
+           pcb->rtime = 0;
+         }
+       }
+ 
+       pcb->polltmr = 0;
 @@ -1928,8 +1961,12 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
