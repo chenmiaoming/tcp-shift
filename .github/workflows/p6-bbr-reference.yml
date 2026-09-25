@@ -24,6 +24,7 @@ on:
       - 'CMakeLists.txt'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
+      - 'patches/lwip-sack-recovery.patch'
       - '.lwip-baseline'
   workflow_dispatch:
 
@@ -351,7 +352,7 @@ jobs:
       - name: Build internal BBR qualification target
         run: |
           sh scripts/fetch-lwip.sh
-          cmake -S . -B .build-p6-bbr-loss -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B .build-p6-bbr-loss -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
           cmake --build .build-p6-bbr-loss --target tcp-shift-p6-bbr tcp-shift-p2 --parallel
 
       - name: Run tcp-shift BBR with moderate random loss
@@ -478,7 +479,7 @@ jobs:
       - name: Build internal BBR qualification target
         run: |
           sh scripts/fetch-lwip.sh
-          cmake -S . -B .build-p6-bbr-repeated -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B .build-p6-bbr-repeated -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
           cmake --build .build-p6-bbr-repeated --target tcp-shift-p6-bbr --parallel
 
       - name: Run tcp-shift BBR repeated-burst matrix
