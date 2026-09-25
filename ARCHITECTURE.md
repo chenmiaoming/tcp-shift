@@ -128,7 +128,7 @@ The permitted upstream modification surface remains exactly:
 - `src/core/tcp_in.c`;
 - `src/core/tcp_out.c`.
 
-P4 delegates ACK/loss/RTO base congestion policy. P5 adds send/ACK observations and the narrow data-send eligibility hook in the already-controlled surface. P5b exposes host-order segment sequence information to project sidecar accounting without exposing private `tcp_seg` layout to the generic controller. P5c gates eligible data sends but resumes through native `tcp_output()`.
+P4 delegates ACK/loss/RTO base congestion policy. P5 adds send/ACK observations and the narrow data-send eligibility hook in the already-controlled surface. P5b exposes host-order segment sequence information to project sidecar accounting without exposing private `tcp_seg` layout to the generic controller. P5c gates eligible data sends but resumes through native `tcp_output()`. P6 keeps that same ownership split: internal BBR may own its recovery cwnd policy, while lwIP still owns retransmission execution and sequence-space recovery. PR #35 adds bounded RFC 6582/NewReno partial-ACK continuation inside the existing `tcp_in.c` patch surface rather than moving recovery into `src/cc/`.
 
 Window scaling uses upstream lwIP configuration rather than any additional source patch. The qualified low-memory profile sets `LWIP_WND_SCALE=1` and `TCP_RCV_SCALE=0`: sender-side window/cwnd accounting is 32-bit, while the local receive window and send-buffer profile remain 32 KiB at this checkpoint. Real SYN/SYN-ACK qualification observes a peer scale offer and an lwIP `wscale 0` response. Increasing sender buffering and local receive-window residency are separate memory-qualified milestones.
 
@@ -218,17 +218,18 @@ Runner-qualified:
 - P4: generic pure-C CC boundary plus real ACK/loss/RTO integration;
 - P5a: high-resolution delivery ledger and retransmission-safe metadata;
 - P5b: ACK delivery-rate sampling and event-driven app-limited classification;
-- P5c: one process-wide event-driven pacer, deterministic teardown safety, multi-flow scheduling, paced loss/RTO recovery, and high-BDP/window-pressure qualification.
+- P5c: one process-wide event-driven pacer, deterministic teardown safety, multi-flow scheduling, paced loss/RTO recovery, and high-BDP/window-pressure qualification;
+- P6: compact internal BBR runtime with live cwnd/pacing publication, clean Linux BBR reference comparison, multi-flow and app-limited qualification, deterministic multiple-loss/NewReno recovery, three-/six-packet WAN bursts, repeated burst episodes, and retransmission-safe delivery/Startup telemetry.
 
-Final P5 behavior head:
+Current merged behavior head:
 
 ```text
-046152dbaba56a0be3b1d2a1902fee6f2bbf9044
+1c8b7b4477f71edde0f5961674f37de0a0dd9832
 ```
 
-The next milestone is P6 tcp-shift BBR. It must use the existing generic observations and pacing policy surface rather than taking ownership of lwIP recovery or runtime scheduling.
+Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The next product boundary is controlled experimental public BBR selection plus provider/OpenVZ qualification. That must reuse the existing generic observations, event-driven pacer, and transport-owned recovery boundary rather than widening controller ownership.
 
-This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, and memory behavior on the target VPS class.
+This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, loss behavior, and memory on the target VPS class.
 
 ## Stop criteria
 
