@@ -123,6 +123,15 @@
 
 #define TCP_QUEUE_OOSEQ 1
 
+/*
+ * Negotiate RFC 2018 SACK so peers can report out-of-order delivery to the
+ * sender-side recovery patch. Keep only one local receive-side SACK range:
+ * tcp-shift's performance requirement is sender recovery, and this bounds the
+ * extra per-PCB receiver bookkeeping to one 8-byte range.
+ */
+#define LWIP_TCP_SACK_OUT 1
+#define LWIP_TCP_MAX_SACK_NUM 1
+
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 0
 
