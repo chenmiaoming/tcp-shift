@@ -43,9 +43,6 @@ struct tcp_shift_lwip_cc_hook_ops {
                           struct tcp_pcb *pcb,
                           tcpwnd_size_t acked_bytes);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
-    int (*on_recovery_loss)(void *arg,
-                            struct tcp_pcb *pcb,
-                            tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
@@ -202,21 +199,6 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
         tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
-}
-
-static inline int
-tcp_shift_lwip_cc_hook_recovery_loss(struct tcp_pcb *pcb,
-                                      tcpwnd_size_t lost_bytes)
-{
-    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
-
-    if (hook == NULL || lost_bytes == 0U ||
-        hook->recovery_active == 0U ||
-        hook->recovery_controller_owned == 0U ||
-        hook->ops == NULL || hook->ops->on_recovery_loss == NULL) {
-        return 0;
-    }
-    return hook->ops->on_recovery_loss(hook->arg, pcb, lost_bytes) != 0;
 }
 
 static inline int
