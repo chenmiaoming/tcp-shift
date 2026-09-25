@@ -167,23 +167,20 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: P6 tcp-shift BBR
+## Active next milestone: experimental BBR product exposure
 
-P5 prerequisites are complete. P6 may now implement BBR-specific model/state logic, but it must use the already-qualified generic observation/policy/pacing surfaces rather than moving TCP ownership into `src/cc/`.
+The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. PRs #34-#38 established live internal BBR integration, Linux reference qualification, NewReno partial-ACK recovery, deterministic WAN burst/repeated-burst recovery, retransmission-safe delivery sampling, filtered-`max_bw` Startup detection, and timeout/model diagnostics.
 
-P6 work should proceed in small, independently testable increments. At minimum it must establish:
+The next development increment should be product-facing rather than another broad controller rewrite:
 
-1. an explicit BBR state/model representation in pure C;
-2. bandwidth and min-RTT model updates from P5 rate samples;
-3. pacing-rate and cwnd policy publication through the existing generic interface;
-4. mode/state transitions and probing logic;
-5. app-limited treatment;
-6. loss/RTO interaction without replacing lwIP recovery;
-7. deterministic model/unit contracts before integrated traffic claims;
-8. reproducible RTT/loss/bandwidth scenarios compared with reference behavior;
-9. P0-P5 regressions, P3 memory/CPU, pacer wakeups/lateness, and high-BDP evidence on each meaningful integration step.
+1. register `bbr` behind an explicit experimental production selector while keeping Reno as the default;
+2. preserve the internal/production distinction in tests so unsupported or unqualified controllers still fail closed;
+3. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
+4. begin provider/OpenVZ qualification with real RTT/loss/memory observations;
+5. use real failures to decide whether compact `bbr` needs another bounded v3-informed mechanism or whether the missing behavior belongs to transport recovery;
+6. keep `bbrv3` separate if full current-draft semantics are ever implemented.
 
-Do not call the controller Linux BBR merely because it uses a bandwidth/RTT model. Equivalence claims require explicit semantic evidence.
+Do not call the compact controller Linux BBR. Clean reference similarity and deterministic recovery qualification are evidence of behavior, not implementation equivalence.
 
 ## Merge discipline
 

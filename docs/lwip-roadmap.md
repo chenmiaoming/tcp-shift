@@ -134,13 +134,15 @@ heap final:           0
 
 The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. This qualifies pacer correctness under BDP pressure; it does not remove the later need to evaluate window scaling for high-throughput/high-RTT scenarios.
 
-## P6: tcp-shift BBR — next
+## P6: tcp-shift BBR — active / internal runtime qualified
 
-P6 is now the active controller milestone. It implements tcp-shift's bandwidth/min-RTT model, pacing/cwnd policy, mode transitions, probing, loss behavior, and app-limited treatment over the already-qualified generic CC boundary and P5 pacer.
+The compact `bbr` controller is no longer model-only. It now runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
 
-Reference order remains: current IETF BBR specification, Google QUICHE, ns-3 `TcpBbr`, Picoquic, then Linux `tcp_bbr.c` / `tcp_rate.c` as TCP behavior cross-checks.
+Merged P6 work now covers the bandwidth/min-RTT model, Startup/Drain/ProbeBW/ProbeRTT policy, app-limited treatment, live cwnd/pacing publication, BBR-owned recovery cwnd, transport-owned RFC 6582/NewReno partial-ACK recovery, retransmission-safe delivery snapshots, filtered-`max_bw` Startup detection, and reference/traffic qualification across clean, high-BDP, multi-flow, random loss, deterministic multiple loss, and repeated long-RTT burst cases.
 
-Qualification must compare bandwidth estimate, min RTT, cwnd, pacing rate, mode transitions, app-limited behavior, loss response, throughput, retransmissions, CPU, timer wakeups, and memory against reproducible references. P5 completion does not establish BBR equivalence.
+Clean single-flow reference results remain close to Linux BBR + `sch_fq`; lossy long-RTT behavior remains a diagnostic rather than a parity claim. Sender SACK/RACK/TLP-style machinery is not being added preemptively because the deterministic three-/six-packet and repeated-burst gates already recover without RTO in their strict cases.
+
+The next product milestone is to expose `bbr` as an explicitly experimental production selector and begin provider/OpenVZ qualification. Reno remains the default. Production exposure must not be interpreted as Linux-BBR equivalence.
 
 ## Milestone state
 
@@ -153,7 +155,7 @@ P4 generic CC boundary     complete
 P5a delivery ledger        complete
 P5b rate/app-limited       complete
 P5c event-driven pacing    complete
-P6 tcp-shift BBR           next
+P6 tcp-shift BBR           active / internal runtime qualified
 ```
 
 ## Stop criteria

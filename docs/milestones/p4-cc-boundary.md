@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified; sender-side multiple-loss recovery is merged in PR #35 and deterministic long-RTT burst qualification is covered by PR #36**.
+Status: **runner-qualified; sender-side multiple-loss recovery is merged in PR #35, deterministic long-RTT burst qualification is covered by PR #36, and repeated recovery episodes are qualified by PR #37**.
 
 ## Goal
 
