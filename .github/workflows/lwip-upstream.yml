@@ -9,6 +9,7 @@ on:
       - '.lwip-baseline'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
+      - 'patches/lwip-sack-recovery.patch'
   workflow_dispatch:
 
 permissions:
@@ -28,6 +29,7 @@ jobs:
           grep -Eq '^LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip\.git$' .lwip-baseline
           grep -Eq '^LWIP_COMMIT=[0-9a-f]{40}$' .lwip-baseline
           test -f patches/lwip-p4-cc-hooks.patch
+          test -f patches/lwip-sack-recovery.patch
 
       - name: Fetch exact lwIP baseline and apply controlled hook patch
         run: sh scripts/fetch-lwip.sh
@@ -38,9 +40,14 @@ jobs:
           . ./.build/lwip-patch.env
           test "$(git -C .deps/lwip rev-parse HEAD)" = "$LWIP_COMMIT"
           test "$LWIP_PATCH" = 'patches/lwip-p4-cc-hooks.patch'
+          test "$LWIP_SACK_PATCH" = 'patches/lwip-sack-recovery.patch'
           test "$(sha256sum "$LWIP_PATCH" | awk '{print $1}')" = "$LWIP_PATCH_SHA256"
+          test "$(sha256sum "$LWIP_SACK_PATCH" | awk '{print $1}')" = "$LWIP_SACK_PATCH_SHA256"
           git -C .deps/lwip diff --check
+          git -C .deps/lwip apply --reverse --check "$PWD/$LWIP_SACK_PATCH"
+          git -C .deps/lwip apply --reverse "$PWD/$LWIP_SACK_PATCH"
           git -C .deps/lwip apply --reverse --check "$PWD/$LWIP_PATCH"
+          git -C .deps/lwip apply "$PWD/$LWIP_SACK_PATCH"
           git -C .deps/lwip diff --name-only | sort > .build/lwip-modified-files.txt
           printf '%s\n' \
             src/core/tcp.c \
@@ -53,6 +60,7 @@ jobs:
           expected="$PWD/.build/lwip-expected-patched"
           git -C .deps/lwip worktree add --detach "$expected" "$LWIP_COMMIT"
           git -C "$expected" apply "$PWD/$LWIP_PATCH"
+          git -C "$expected" apply "$PWD/$LWIP_SACK_PATCH"
           for source in src/core/tcp.c src/core/tcp_in.c src/core/tcp_out.c; do
             cmp ".deps/lwip/$source" "$expected/$source"
           done
@@ -74,5 +82,6 @@ jobs:
             .build/lwip-critical.sha256
             .build/lwip-patch.env
             .build/lwip-p4-cc-hooks.applied.diff
+            .build/lwip-project-patches.applied.diff
             .build/lwip-modified-files.txt
           if-no-files-found: error

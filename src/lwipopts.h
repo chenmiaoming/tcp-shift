@@ -123,6 +123,25 @@
 
 #define TCP_QUEUE_OOSEQ 1
 
+/*
+ * Sender-side SACK recovery is still experimental. Production and the legacy
+ * correctness gates stay on pinned lwIP/NewReno semantics unless a dedicated
+ * qualification build opts in through CMake.
+ *
+ * When enabled, upstream SACK negotiation also needs receive-side SACK storage.
+ * Two 8-byte ranges are the minimum warning-clean value for the pinned lwIP
+ * implementation under the project's -Werror build.
+ */
+#ifndef TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#define TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY 0
+#endif
+#if TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#define LWIP_TCP_SACK_OUT 1
+#define LWIP_TCP_MAX_SACK_NUM 2
+#else
+#define LWIP_TCP_SACK_OUT 0
+#endif
+
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 0
 

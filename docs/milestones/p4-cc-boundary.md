@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified; sender-side multiple-loss recovery is merged in PR #35, deterministic long-RTT burst qualification is covered by PR #36, and repeated recovery episodes are qualified by PR #37**.
+Status: **runner-qualified; NewReno multiple-loss/burst recovery is merged through PR #37, while Draft PR #41 independently qualifies a default-OFF sender-SACK transport experiment without changing the production recovery default**.
 
 ## Goal
 
@@ -32,9 +32,9 @@ Pinned lwIP remains at:
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-`scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch`.
+`scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`.
 
-The controlled patch remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 additionally extends the sender ACK/recovery path in `tcp_in.c` with bounded NewReno-style partial-ACK handling.
+The controlled patch chain remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 extends the sender ACK/recovery path with bounded NewReno-style partial-ACK handling. Draft PR #41 adds inbound SACK parsing and a minimal sender scoreboard/selective requeue path, but that second path is compile-time gated by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` and remains OFF in all legacy/production qualification builds.
 
 Unbound PCBs retain native pinned-lwIP behavior. For bound tcp-shift PCBs, the patched lwIP transport still owns duplicate-ACK processing, retransmission execution, `TF_INFR`, recovery-window mechanics, RTT/RTO calculation, queues, sequence space, packet construction, and `tcp_output()`. The congestion controller receives observations and may own only its published recovery cwnd when explicitly declared (internal BBR); sender recovery itself is not moved into `src/cc/`.
 

@@ -1,4 +1,5 @@
 #include "lwip/tcp_memory.h"
+#include "lwip/priv/tcp_priv.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -166,5 +167,9 @@ int main(void)
            "tcp_mem=25165824,33554432,50331648 "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
            "accounting=queued_payload\n");
+    printf("tcp_memory_layout=ok sack_out=%u pcb_bytes=%zu seg_bytes=%zu\n",
+           (unsigned)LWIP_TCP_SACK_OUT,
+           sizeof(struct tcp_pcb),
+           sizeof(struct tcp_seg));
     return 0;
 }

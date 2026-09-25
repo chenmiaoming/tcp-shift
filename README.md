@@ -81,9 +81,9 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 make build
 ```
 
-The repository carries one controlled lwIP integration patch, `patches/lwip-p4-cc-hooks.patch`. Provenance CI hashes pristine critical TCP sources, verifies patch identity and modified-file scope, reverse-applies it, and independently reapplies it to a fresh worktree.
+The repository carries two controlled lwIP patches on the same three-file TCP surface. `patches/lwip-p4-cc-hooks.patch` provides the generic ACK/loss/RTO, delivery, and pacing hooks. `patches/lwip-sack-recovery.patch` adds the sender-side SACK experiment used only when `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON`; production/default builds keep it disabled. Provenance CI hashes pristine critical TCP sources, verifies both patch identities and modified-file scope, reverse-applies the chain, and independently reapplies it to a fresh worktree.
 
-The patch remains confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4 uses those sites for ACK/loss/RTO policy delegation; P5 adds delivery observations and a narrow data-send pacing eligibility hook without replacing `tcp_output()` or recovery mechanics. Unbound PCBs retain native lwIP behavior.
+Both patches remain confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4/P5 keep policy, observations, and pacing behind the project hook boundary; the SACK increment still leaves sequence space, retransmission execution, queues, ACK processing, and RTO ownership in lwIP. Unbound/default PCBs retain the previously qualified behavior.
 
 ## Qualification summary
 

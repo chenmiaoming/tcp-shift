@@ -23,9 +23,9 @@ The production baseline is `.lwip-baseline`, pinning lwIP commit:
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-`scripts/fetch-lwip.sh` records pristine critical-source hashes, applies `patches/lwip-p4-cc-hooks.patch`, and provenance CI proves exact pin, patch identity, reverse application, bounded modified-file scope, no untracked dependency files, and byte-identical independent reapplication.
+`scripts/fetch-lwip.sh` records pristine critical-source hashes, applies `patches/lwip-p4-cc-hooks.patch` and then `patches/lwip-sack-recovery.patch`, and provenance CI proves exact pin, both patch identities, reverse application of the chain, bounded modified-file scope, no untracked dependency files, and byte-identical independent reapplication.
 
-The controlled patch remains confined to `src/core/tcp.c`, `tcp_in.c`, and `tcp_out.c`. P5 adds delivery observations and the narrow send-eligibility hook within that existing surface; no new upstream file was added.
+The controlled patch chain remains confined to `src/core/tcp.c`, `tcp_in.c`, and `tcp_out.c`; no new upstream file is added. The sender-SACK increment is dormant in default builds and is enabled only by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON` in dedicated qualification jobs. Because that option changes upstream `struct tcp_pcb`, CMake propagates the definition publicly to every project target that consumes lwIP headers, preventing cross-target PCB ABI skew.
 
 ## P0/P1/P2 regression layers
 
