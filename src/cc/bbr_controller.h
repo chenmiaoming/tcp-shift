@@ -27,13 +27,10 @@ struct tcp_shift_bbr_controller_state {
     uint64_t delivered_bytes;
     uint32_t initial_cwnd_bytes;
     uint32_t cwnd_bytes;
-    /* Newly inferred loss inside an already-open transport recovery episode.
-     * The transport reports this immediately before the ACK that exposed the
-     * next hole. Probe-loss and recovery-cwnd loss are separate because the
-     * initial fast-loss entry already uses post-loss inflight and must not be
-     * subtracted a second time on the next ACK. */
+    /* Newly observed transport loss pending for the next ACK's ProbeBW phase
+     * decision. Recovery cwnd accounting remains owned by the existing
+     * transport/recovery boundary. */
     uint32_t pending_probe_loss_bytes;
-    uint32_t pending_recovery_loss_bytes;
     uint8_t initialized;
 };
 
@@ -72,14 +69,6 @@ int tcp_shift_bbr_controller_recovery_enter(
     const struct tcp_shift_cc_transport *transport,
     uint32_t lost_bytes,
     struct tcp_shift_cc_policy *policy);
-
-/* Record a new hole discovered by a partial ACK while the same transport
- * Recovery episode remains open. The bytes are consumed by the immediately
- * following ACK policy update so packet-conservation loss accounting and
- * ProbeBW phase decisions see the same newly-lost signal. */
-int tcp_shift_bbr_controller_recovery_loss(
-    struct tcp_shift_bbr_controller_state *state,
-    uint32_t lost_bytes);
 
 /* Restore the last known-good cwnd when the transport reports Recovery exit.
  * A following ACK observation then applies the current mode's normal BDP
