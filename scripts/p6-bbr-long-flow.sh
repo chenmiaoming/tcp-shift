@@ -16,6 +16,9 @@ FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
 FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
 FAULT_RETRANS_MARKER=${TCP_SHIFT_P6_BBR_LONG_FAULT_RETRANS_MARKER:-TCP_SHIFT_SACK_RETRANS_LOSS}
+FAULT_MARKER_COUNT=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT:-28}
+FAULT_MARKER_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS:-96}
+FAULT_MARKER_PREFIX=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX:-TSFS}
 RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
@@ -54,8 +57,8 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss|burst-loss|repeated-burst|lost-retransmission) ;;
-    *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst or lost-retransmission" >&2; exit 1;;
+    none|multi-loss|burst-loss|repeated-burst|lost-retransmission|first-send-loss) ;;
+    *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst, lost-retransmission or first-send-loss" >&2; exit 1;;
 esac
 case "$RECOVERY_EXPECTATION" in
     strict|diagnostic) ;;
@@ -78,6 +81,8 @@ case "$FAULT_SECOND_PACKET" in ''|*[!0-9]*) echo "FAULT_SECOND_PACKET must be an
 case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
 case "$FAULT_BURST_REPEATS" in ''|*[!0-9]*) echo "FAULT_BURST_REPEATS must be an integer" >&2; exit 1;; esac
 case "$FAULT_BURST_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_GAP_PACKETS must be an integer" >&2; exit 1;; esac
+case "$FAULT_MARKER_COUNT" in ''|*[!0-9]*) echo "FAULT_MARKER_COUNT must be an integer" >&2; exit 1;; esac
+case "$FAULT_MARKER_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_MARKER_GAP_PACKETS must be an integer" >&2; exit 1;; esac
 if [ "$FAULT_MODE" = multi-loss ]; then
     [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
         echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
@@ -94,6 +99,18 @@ fi
 }
 [ "$FAULT_BURST_GAP_PACKETS" -ge "$FAULT_BURST_PACKETS" ] || {
     echo "FAULT_BURST_GAP_PACKETS must be at least FAULT_BURST_PACKETS" >&2
+    exit 1
+}
+[ "$FAULT_MARKER_COUNT" -ge 1 ] && [ "$FAULT_MARKER_COUNT" -le 64 ] || {
+    echo "FAULT_MARKER_COUNT must be between 1 and 64" >&2
+    exit 1
+}
+[ "$FAULT_MARKER_GAP_PACKETS" -ge 4 ] || {
+    echo "FAULT_MARKER_GAP_PACKETS must be at least 4" >&2
+    exit 1
+}
+[ -n "$FAULT_MARKER_PREFIX" ] || {
+    echo "FAULT_MARKER_PREFIX must not be empty" >&2
     exit 1
 }
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
@@ -148,6 +165,7 @@ cleanup()
 trap cleanup EXIT HUP INT TERM
 
 python3 - "$BACKEND_PORT" "$PAYLOAD_BYTES" "$FAULT_MODE" "$FAULT_FIRST_PACKET" "$FAULT_RETRANS_MARKER" \
+    "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -158,7 +176,30 @@ length = int(sys.argv[2])
 fault_mode = sys.argv[3]
 fault_first_packet = int(sys.argv[4])
 fault_marker = sys.argv[5].encode("ascii")
+fault_marker_count = int(sys.argv[6])
+fault_marker_gap_packets = int(sys.argv[7])
+fault_marker_prefix = sys.argv[8]
 payload = bytearray(((index * 73 + 19) & 0xFF) for index in range(length))
+
+if fault_mode == "first-send-loss":
+    for marker_index in range(fault_marker_count):
+        packet_index = fault_first_packet + marker_index * fault_marker_gap_packets
+        marker = f"{fault_marker_prefix}{marker_index:04d}".encode("ascii")
+        marker_region = marker * 4
+        marker_offset = packet_index * 1460 + 256
+        if marker_offset + len(marker_region) >= length:
+            raise SystemExit(
+                f"first-send marker exceeds payload: index={marker_index} "
+                f"packet={packet_index} offset={marker_offset} "
+                f"marker={len(marker_region)} length={length}"
+            )
+        payload[marker_offset : marker_offset + len(marker_region)] = marker_region
+    print(
+        f"backend-first-send-markers count={fault_marker_count} "
+        f"first_packet={fault_first_packet} gap_packets={fault_marker_gap_packets} "
+        f"prefix={fault_marker_prefix}",
+        flush=True,
+    )
 
 if fault_mode == "lost-retransmission":
     # Embed a marker well inside the nominal target segment. Repeating it keeps
@@ -262,6 +303,10 @@ elif [ "$FAULT_MODE" = lost-retransmission ]; then
     LOSS_MODE=deterministic-lost-retransmission
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = first-send-loss ]; then
+    LOSS_MODE=deterministic-first-send
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -275,12 +320,22 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ] || [ "$LOSS_MODE" = deterministic-first-send ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
     FAULT_JUMP_INSTALLED=1
-    if [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
+    if [ "$LOSS_MODE" = deterministic-first-send ]; then
+        marker_i=0
+        while [ "$marker_i" -lt "$FAULT_MARKER_COUNT" ]; do
+            marker=$(printf '%s%04d' "$FAULT_MARKER_PREFIX" "$marker_i")
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m string --algo bm --string "$marker" \
+                -m statistic --mode nth --every 10000 --packet 0 -j DROP
+            marker_i=$((marker_i + 1))
+        done
+    elif [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
         # The payload marker identifies one exact stream region. The first
         # independent nth matcher drops the original marked packet. Because a
         # dropped packet never reaches the next rule, the second matcher sees
@@ -371,7 +426,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ] || [ "$LOSS_MODE" = deterministic-first-send ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
