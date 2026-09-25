@@ -122,7 +122,14 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1644,4 +1649,7 @@
+@@ -1637,13 +1642,16 @@
+ /**
+  * Requeue all unacked segments for retransmission
+  *
+  * Called by tcp_slowtmr() for slow retransmission.
+  *
+  * @param pcb the tcp_pcb for which to re-enqueue all unacked segments
+  */
  err_t
  tcp_rexmit_rto_prepare(struct tcp_pcb *pcb)
  {
@@ -130,6 +137,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +  struct tcp_seg *sack_seg;
 +#endif
+ 
+   LWIP_ASSERT("tcp_rexmit_rto_prepare: invalid pcb", pcb != NULL);
 @@ -1669,4 +1677,14 @@
    /* concatenate unsent queue after unacked queue */
 +#if LWIP_TCP_SACK_OUT
