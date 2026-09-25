@@ -8,6 +8,11 @@ RTT_MS=${TCP_SHIFT_LINUX_PACING_RTT_MS:-10}
 RATE_MBIT=${TCP_SHIFT_LINUX_PACING_RATE_MBIT:-20}
 PAYLOAD_BYTES=${TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES:-8388608}
 LOSS_PCT=${TCP_SHIFT_LINUX_PACING_LOSS_PCT:-0}
+FAULT_MODE=${TCP_SHIFT_LINUX_PACING_FAULT_MODE:-none}
+FAULT_FIRST_PACKET=${TCP_SHIFT_LINUX_PACING_FAULT_FIRST_PACKET:-80}
+FAULT_BURST_PACKETS=${TCP_SHIFT_LINUX_PACING_FAULT_BURST_PACKETS:-3}
+FAULT_BURST_REPEATS=${TCP_SHIFT_LINUX_PACING_FAULT_BURST_REPEATS:-1}
+FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_LINUX_PACING_FAULT_BURST_GAP_PACKETS:-700}
 REQUIRE_ZERO_DROPS=${TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS:-0}
 OUT=${TCP_SHIFT_LINUX_PACING_OUT:-.build/linux-cubic-pacing/$CASE-$MODE}
 
@@ -29,10 +34,18 @@ case "$CC" in
     cubic|bbr) ;;
     *) echo "CC must be cubic or bbr" >&2; exit 1 ;;
 esac
+case "$FAULT_MODE" in
+    none|repeated-burst) ;;
+    *) echo "FAULT_MODE must be none or repeated-burst" >&2; exit 1 ;;
+esac
 case "$RTT_MS" in ''|*[!0-9]*) echo "RTT_MS must be an integer" >&2; exit 1;; esac
 case "$RATE_MBIT" in ''|*[!0-9]*) echo "RATE_MBIT must be an integer" >&2; exit 1;; esac
 case "$PAYLOAD_BYTES" in ''|*[!0-9]*) echo "PAYLOAD_BYTES must be an integer" >&2; exit 1;; esac
 case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative decimal" >&2; exit 1;; esac
+case "$FAULT_FIRST_PACKET" in ''|*[!0-9]*) echo "FAULT_FIRST_PACKET must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_REPEATS" in ''|*[!0-9]*) echo "FAULT_BURST_REPEATS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_GAP_PACKETS must be an integer" >&2; exit 1;; esac
 case "$REQUIRE_ZERO_DROPS" in 0|1) ;; *) echo "REQUIRE_ZERO_DROPS must be 0 or 1" >&2; exit 1;; esac
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
     echo "RTT_MS must be a positive even integer" >&2
@@ -40,6 +53,13 @@ case "$REQUIRE_ZERO_DROPS" in 0|1) ;; *) echo "REQUIRE_ZERO_DROPS must be 0 or 1
 }
 [ "$RATE_MBIT" -gt 0 ] || { echo "RATE_MBIT must be positive" >&2; exit 1; }
 [ "$PAYLOAD_BYTES" -gt 0 ] || { echo "PAYLOAD_BYTES must be positive" >&2; exit 1; }
+[ "$FAULT_BURST_PACKETS" -ge 2 ] && [ "$FAULT_BURST_PACKETS" -le 16 ] || { echo "FAULT_BURST_PACKETS must be between 2 and 16" >&2; exit 1; }
+[ "$FAULT_BURST_REPEATS" -ge 1 ] && [ "$FAULT_BURST_REPEATS" -le 16 ] || { echo "FAULT_BURST_REPEATS must be between 1 and 16" >&2; exit 1; }
+[ "$FAULT_BURST_GAP_PACKETS" -ge "$FAULT_BURST_PACKETS" ] || { echo "FAULT_BURST_GAP_PACKETS must be at least FAULT_BURST_PACKETS" >&2; exit 1; }
+if [ "$FAULT_MODE" != none ]; then
+    command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic Linux loss" >&2; exit 1; }
+    [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ] || { echo "deterministic FAULT_MODE cannot be combined with random LOSS_PCT" >&2; exit 1; }
+fi
 [ "$(id -u)" -eq 0 ] || { echo "Linux pacing probe requires root" >&2; exit 1; }
 
 command -v ip >/dev/null 2>&1 || { echo "ip is required" >&2; exit 1; }
@@ -102,14 +122,16 @@ fi
 ip netns exec "$NS_CLIENT" tc qdisc replace dev "$VETH_CLIENT" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
+if [ "$FAULT_MODE" = repeated-burst ]; then
+    LOSS_MODE=deterministic-repeated-burst
+elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
 else
     LOSS_MODE=random
 fi
 
 if [ "$MODE" = netem ]; then
-    if [ "$LOSS_MODE" = none ]; then
+    if [ "$LOSS_MODE" = none ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
         ip netns exec "$NS_SERVER" tc qdisc replace dev "$VETH_SERVER" root netem \
             delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
     else
@@ -127,7 +149,7 @@ else
     ip netns exec "$NS_CLIENT" tc filter add dev "$VETH_CLIENT" parent ffff: \
         protocol ip prio 1 u32 match u32 0 0 \
         action mirred egress redirect dev "$IFB_CLIENT"
-    if [ "$LOSS_MODE" = none ]; then
+    if [ "$LOSS_MODE" = none ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
         ip netns exec "$NS_CLIENT" tc qdisc replace dev "$IFB_CLIENT" root netem \
             delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
     else
@@ -135,6 +157,30 @@ else
             delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
             loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
     fi
+fi
+
+if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    FAULT_CHAIN=LNX_BURST
+    ip netns exec "$NS_CLIENT" iptables -N "$FAULT_CHAIN"
+    ip netns exec "$NS_CLIENT" iptables -I INPUT 1 -p tcp \
+        -s "$SERVER_IP" -d "$CLIENT_IP" --sport "$PORT" -j "$FAULT_CHAIN"
+    repeat_i=0
+    while [ "$repeat_i" -lt "$FAULT_BURST_REPEATS" ]; do
+        burst_packet=$((FAULT_FIRST_PACKET + repeat_i * FAULT_BURST_GAP_PACKETS))
+        [ "$burst_packet" -lt 10000 ] || {
+            echo "Linux repeated-burst matcher index must stay below 10000: $burst_packet" >&2
+            exit 1
+        }
+        burst_i=0
+        while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
+            ip netns exec "$NS_CLIENT" iptables -A "$FAULT_CHAIN" \
+                -p tcp -m length --length 100:65535 \
+                -m statistic --mode nth --every 10000 --packet "$burst_packet" -j DROP
+            burst_i=$((burst_i + 1))
+        done
+        repeat_i=$((repeat_i + 1))
+    done
+    ip netns exec "$NS_CLIENT" iptables -A "$FAULT_CHAIN" -j RETURN
 fi
 
 ip netns exec "$NS_SERVER" tc -s qdisc show dev "$VETH_SERVER" > "$OUT/server-qdisc-before.txt"
@@ -280,6 +326,11 @@ fi
 ack_qdisc_file="$OUT/client-qdisc-after.txt"
 DATA_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$data_qdisc_file" | head -n 1)
 ACK_QDISC_DROPS=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$ack_qdisc_file" | head -n 1)
+FAULT_DROPS=0
+if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    ip netns exec "$NS_CLIENT" iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
+    FAULT_DROPS=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' "$OUT/iptables-fault.txt")
+fi
 [ -n "$DATA_QDISC_DROPS" ] && [ -n "$ACK_QDISC_DROPS" ] || {
     cat "$data_qdisc_file" >&2 || true
     cat "$ack_qdisc_file" >&2 || true
@@ -291,6 +342,17 @@ if [ "$REQUIRE_ZERO_DROPS" -eq 1 ]; then
         echo "Linux $CC clean path qdisc dropped packets: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
         exit 1
     }
+elif [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    [ "$DATA_QDISC_DROPS" -eq 0 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
+        echo "Linux $CC repeated-burst path had qdisc drops: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
+        exit 1
+    }
+    expected_fault_drops=$((FAULT_BURST_PACKETS * FAULT_BURST_REPEATS))
+    [ "$FAULT_DROPS" -eq "$expected_fault_drops" ] || {
+        cat "$OUT/iptables-fault.txt" >&2 || true
+        echo "Linux $CC repeated bursts expected exactly $expected_fault_drops drops: drops=$FAULT_DROPS" >&2
+        exit 1
+    }
 elif [ "$LOSS_MODE" = random ]; then
     [ "$DATA_QDISC_DROPS" -ge 1 ] && [ "$ACK_QDISC_DROPS" -eq 0 ] || {
         echo "Linux $CC random-loss path did not isolate data loss: data=$DATA_QDISC_DROPS ack=$ACK_QDISC_DROPS" >&2
@@ -300,17 +362,25 @@ fi
 
 FINAL_RETRANS=$(sed -n 's/.* total_retrans=\([0-9][0-9]*\).*/\1/p' "$OUT/server.txt" | tail -n 1)
 [ -n "$FINAL_RETRANS" ] || { echo "missing final retransmission count" >&2; exit 1; }
+if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+    [ "$FINAL_RETRANS" -ge "$FAULT_DROPS" ] || {
+        echo "Linux $CC repeated-burst retransmissions below explicit drops: retrans=$FINAL_RETRANS drops=$FAULT_DROPS" >&2
+        exit 1
+    }
+fi
 
 python3 - "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$BDP_BYTES" "$QUEUE_PKTS" \
-    "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" \
+    "$FINAL_RETRANS" "$DATA_QDISC_DROPS" "$ACK_QDISC_DROPS" "$FAULT_DROPS" \
+    "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" \
     "$OUT/client.txt" "$OUT/tcp-info.tsv" <<'PY' | tee "$OUT/summary.txt"
 import statistics
 import sys
 from pathlib import Path
 
 (case, mode, cc, rtt_ms, rate_mbit, loss_pct, loss_mode, bdp, queue_pkts,
- final_retrans, data_qdisc_drops, ack_qdisc_drops, client_path,
- samples_path) = sys.argv[1:]
+ final_retrans, data_qdisc_drops, ack_qdisc_drops, fault_drops,
+ fault_burst_packets, fault_burst_repeats, fault_burst_gap_packets,
+ client_path, samples_path) = sys.argv[1:]
 client = Path(client_path).read_text(encoding="utf-8").strip()
 goodput = float(client.split("goodput_mbps=")[1].split()[0])
 rows = []
@@ -328,6 +398,8 @@ key = "linux_cubic_pacing_reference" if cc == "cubic" else "linux_bbr_pacing_ref
 print(
     f"{key}=ok cc={cc} case={case} mode={mode} base_rtt_ms={rtt_ms} "
     f"rate_mbit={rate_mbit} loss_pct={loss_pct} loss_mode={loss_mode} "
+    f"fault_burst_packets={fault_burst_packets} fault_burst_repeats={fault_burst_repeats} "
+    f"fault_burst_gap_packets={fault_burst_gap_packets} fault_drops={fault_drops} "
     f"bdp_bytes={bdp} queue_pkts={queue_pkts} "
     f"goodput_mbps={goodput:.6f} samples={len(rows)} "
     f"pacing_rate_min_Bps={min(pacing)} pacing_rate_median_Bps={int(statistics.median(pacing))} "
@@ -340,8 +412,9 @@ print(
 PY
 
 uname -a > "$OUT/kernel.txt"
-printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
+printf 'case=%s\nmode=%s\ncc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_drops=%s\npayload_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\n' \
     "$CASE" "$MODE" "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" \
+    "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_DROPS" \
     "$PAYLOAD_BYTES" "$BDP_BYTES" "$QUEUE_PKTS" > "$OUT/path.env"
 
 echo "Linux $CC pacing reference completed: case=$CASE mode=$MODE"

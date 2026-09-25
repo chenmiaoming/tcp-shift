@@ -228,6 +228,42 @@ jobs:
             TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19148 \
             sh scripts/p6-bbr-long-flow.sh
 
+      - name: Qualify repeated Reno WAN burst recovery episodes
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=reno \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p4-repeated-burst-ci" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS=4 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=350 \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp4repeat0 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18149 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19149 \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Qualify repeated CUBIC WAN burst recovery episodes
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/p4-repeated-burst-cubic-ci" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=repeated-burst \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS=3 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS=4 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS=350 \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp4repeat1 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18150 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19150 \
+            sh scripts/p6-bbr-long-flow.sh
+
       - name: Exercise integrated Reno RTO path
         run: |
           sudo env TCP_SHIFT_P4_BINARY="$PWD/.build/tcp-shift-p2" \
@@ -247,6 +283,8 @@ jobs:
             .build/p4-burst-loss-cubic-ci
             .build/p4-burst6-loss-ci
             .build/p4-burst6-loss-cubic-ci
+            .build/p4-repeated-burst-ci
+            .build/p4-repeated-burst-cubic-ci
             .build/p4-rto-ci
             .build/p4-live-selector-summary.txt
             .build/p4-invalid-selector.stdout

@@ -13,6 +13,9 @@ FAULT_MODE=${TCP_SHIFT_P6_BBR_LONG_FAULT_MODE:-none}
 FAULT_FIRST_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET:-80}
 FAULT_SECOND_PACKET=${TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET:-84}
 FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
+FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
+FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
+RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -50,8 +53,12 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss|burst-loss) ;;
-    *) echo "FAULT_MODE must be none, multi-loss or burst-loss" >&2; exit 1;;
+    none|multi-loss|burst-loss|repeated-burst) ;;
+    *) echo "FAULT_MODE must be none, multi-loss, burst-loss or repeated-burst" >&2; exit 1;;
+esac
+case "$RECOVERY_EXPECTATION" in
+    strict|diagnostic) ;;
+    *) echo "RECOVERY_EXPECTATION must be strict or diagnostic" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -68,6 +75,8 @@ case "$LOSS_PCT" in ''|*[!0-9.]*|*.*.*) echo "LOSS_PCT must be a nonnegative dec
 case "$FAULT_FIRST_PACKET" in ''|*[!0-9]*) echo "FAULT_FIRST_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_SECOND_PACKET" in ''|*[!0-9]*) echo "FAULT_SECOND_PACKET must be an integer" >&2; exit 1;; esac
 case "$FAULT_BURST_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_PACKETS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_REPEATS" in ''|*[!0-9]*) echo "FAULT_BURST_REPEATS must be an integer" >&2; exit 1;; esac
+case "$FAULT_BURST_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_GAP_PACKETS must be an integer" >&2; exit 1;; esac
 if [ "$FAULT_MODE" = multi-loss ]; then
     [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
         echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
@@ -76,6 +85,14 @@ if [ "$FAULT_MODE" = multi-loss ]; then
 fi
 [ "$FAULT_BURST_PACKETS" -ge 2 ] && [ "$FAULT_BURST_PACKETS" -le 16 ] || {
     echo "FAULT_BURST_PACKETS must be between 2 and 16" >&2
+    exit 1
+}
+[ "$FAULT_BURST_REPEATS" -ge 1 ] && [ "$FAULT_BURST_REPEATS" -le 16 ] || {
+    echo "FAULT_BURST_REPEATS must be between 1 and 16" >&2
+    exit 1
+}
+[ "$FAULT_BURST_GAP_PACKETS" -ge "$FAULT_BURST_PACKETS" ] || {
+    echo "FAULT_BURST_GAP_PACKETS must be at least FAULT_BURST_PACKETS" >&2
     exit 1
 }
 [ "$RTT_MS" -gt 0 ] && [ $((RTT_MS % 2)) -eq 0 ] || {
@@ -212,6 +229,10 @@ elif [ "$FAULT_MODE" = burst-loss ]; then
     LOSS_MODE=deterministic-burst
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = repeated-burst ]; then
+    LOSS_MODE=deterministic-repeated-burst
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -225,7 +246,7 @@ fi
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
     iptables -N "$FAULT_CHAIN"
     FAULT_CHAIN_CREATED=1
     iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
@@ -240,15 +261,30 @@ if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burs
             -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
             -m statistic --mode nth --every 10000 --packet "$FAULT_SECOND_PACKET" -j DROP
     else
-        # Independent nth matchers all use the same index. A packet dropped by
-        # one rule never reaches the next rule, so each following matcher hits
-        # the immediately following data packet and forms one consecutive burst.
-        burst_i=0
-        while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
-            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
-                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
-                -m statistic --mode nth --every 10000 --packet "$FAULT_FIRST_PACKET" -j DROP
-            burst_i=$((burst_i + 1))
+        # Independent nth matchers in one group all use the same index. A packet
+        # dropped by one rule never reaches the next rule, so the following
+        # matcher hits the immediately following data packet and forms a
+        # consecutive burst. repeated-burst adds later groups at fixed matcher
+        # gaps; the large gap is chosen so the prior recovery can fully exit.
+        repeat_i=0
+        repeat_limit=1
+        if [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
+            repeat_limit=$FAULT_BURST_REPEATS
+        fi
+        while [ "$repeat_i" -lt "$repeat_limit" ]; do
+            burst_packet=$((FAULT_FIRST_PACKET + repeat_i * FAULT_BURST_GAP_PACKETS))
+            [ "$burst_packet" -lt 10000 ] || {
+                echo "deterministic burst matcher index must stay below 10000: $burst_packet" >&2
+                exit 1
+            }
+            burst_i=0
+            while [ "$burst_i" -lt "$FAULT_BURST_PACKETS" ]; do
+                iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                    -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                    -m statistic --mode nth --every 10000 --packet "$burst_packet" -j DROP
+                burst_i=$((burst_i + 1))
+            done
+            repeat_i=$((repeat_i + 1))
         done
     fi
     iptables -A "$FAULT_CHAIN" -j RETURN
@@ -292,7 +328,7 @@ print(
 )
 PY
 
-if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ]; then
+if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ]; then
     iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
 fi
 
@@ -355,6 +391,20 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-repeated-burst)
+        [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+            echo "P6 BBR repeated-burst path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
+            exit 1
+        }
+        fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+            "$OUT/iptables-fault.txt")
+        expected_fault_drops=$((FAULT_BURST_PACKETS * FAULT_BURST_REPEATS))
+        [ "$fault_drops" -eq "$expected_fault_drops" ] || {
+            cat "$OUT/iptables-fault.txt" >&2 || true
+            echo "P6 BBR repeated bursts expected exactly $expected_fault_drops drops: drops=$fault_drops" >&2
+            exit 1
+        }
+        ;;
 esac
 
 sleep 0.2
@@ -412,6 +462,19 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-repeated-burst)
+        if [ "$RECOVERY_EXPECTATION" = strict ]; then
+            [ "$loss_events" -eq "$FAULT_BURST_REPEATS" ] && [ "$timeout_events" -eq 0 ] || {
+                echo "repeated bursts did not produce one clean recovery episode per burst: expected=$FAULT_BURST_REPEATS loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        else
+            [ $((loss_events + timeout_events)) -ge 1 ] || {
+                echo "diagnostic repeated bursts produced no recovery observation" >&2
+                exit 1
+            }
+        fi
+        ;;
 esac
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
@@ -450,6 +513,13 @@ case "$LOSS_MODE" in
     deterministic-burst)
         [ "$retransmit_events" -ge "$FAULT_BURST_PACKETS" ] || {
             echo "deterministic burst expected at least $FAULT_BURST_PACKETS retransmissions: $retransmit_events" >&2
+            exit 1
+        }
+        ;;
+    deterministic-repeated-burst)
+        expected_retransmits=$((FAULT_BURST_PACKETS * FAULT_BURST_REPEATS))
+        [ "$retransmit_events" -ge "$expected_retransmits" ] || {
+            echo "repeated bursts expected at least $expected_retransmits retransmissions: $retransmit_events" >&2
             exit 1
         }
         ;;
@@ -495,13 +565,13 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s fault_burst_packets=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
     "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
-printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nfault_burst_packets=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$FAULT_BURST_PACKETS" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
