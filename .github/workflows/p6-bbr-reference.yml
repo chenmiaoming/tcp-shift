@@ -15,6 +15,7 @@ on:
       - 'scripts/p6-bbr-multiflow-evaluate.py'
       - 'scripts/p6-bbr-loss-reference-evaluate.py'
       - 'scripts/p6-bbr-loss-same-stack-evaluate.py'
+      - 'scripts/p6-bbr-first-send-loss-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -683,3 +684,116 @@ jobs:
           path: .build/p6-bbr-repeated-burst
           if-no-files-found: warn
           include-hidden-files: true
+
+  deterministic-first-send-loss-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install deterministic-loss dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate deterministic first-send harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-bbr-first-send-loss-evaluate.py
+
+      - name: Build internal BBR with sender SACK
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-first-send \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
+          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr --parallel
+
+      - name: Run tcp-shift deterministic first-send loss
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run Linux BBR deterministic first-send loss
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/linux-bbr"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=bbr \
+            TCP_SHIFT_LINUX_PACING_CASE=first-send-loss-260ms \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_LINUX_PACING_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare deterministic first-send loss
+        run: |
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-bbr-first-send-loss-evaluate.py \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-bbr/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish deterministic first-send evidence
+        if: always()
+        run: |
+          root=.build/p6-bbr-first-send-loss
+          {
+            echo "## Deterministic first-send loss"
+            echo
+            echo "RTT=260ms rate=10Mbit payload=4MiB markers=28 gap=96 MSS"
+            for file in "$root/tcp-shift/summary.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deterministic first-send diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-first-send-loss
+          path: .build/p6-bbr-first-send-loss
+          if-no-files-found: warn
+          include-hidden-files: true
+
