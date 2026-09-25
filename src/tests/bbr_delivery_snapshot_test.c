@@ -29,15 +29,23 @@ int main(void)
     struct tcp_shift_lwip_cc_adapter adapter;
     struct tcp_shift_lwip_cc_stats stats;
     struct tcp_pcb *pcb;
+    unsigned char outstanding_sentinel;
     uint32_t seq;
     uint16_t payload;
     unsigned char segment1;
     unsigned char segment2;
     unsigned char segment3;
+    unsigned char segment4;
+    unsigned char segment5;
+    unsigned char segment6;
+    uint32_t seq4;
+    uint32_t seq5;
+    uint32_t seq6;
     uint64_t srtt_after_clean_samples;
 
     memset(&adapter, 0, sizeof(adapter));
     memset(&stats, 0, sizeof(stats));
+    outstanding_sentinel = 0U;
     lwip_init();
 
     pcb = tcp_new();
@@ -104,12 +112,15 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment2, payload);
     CHECK(stats.delivery_live_slots == 0U);
 
-    /* Retransmitting the third segment marks its RTT ambiguous. The ACK still
-     * carries a monotonic observation and delivery snapshot, but Karn filtering
-     * must prevent it from updating the RFC 6298 SRTT state. */
+    /* Model an RTO-style retransmission after the transport has moved the
+     * outstanding segment back to unsent: metadata is still live, while the
+     * pre-send unacked list is empty. Linux starts a fresh rate-sampling send
+     * phase in this case. Karn filtering must still keep RTT ambiguous. */
     seq += payload;
+    pcb->unacked = NULL;
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment3, seq, payload);
     CHECK(pause_for_rtt_sample() == 0);
+    pcb->unacked = NULL;
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment3, seq, payload);
     CHECK(stats.delivery_retransmit_events == 1U);
     pcb->snd_nxt = seq + payload;
@@ -117,6 +128,7 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_ack(pcb, payload) != 0);
     CHECK(stats.rate_snapshot_samples == 3U);
     CHECK(stats.rate_retransmitted_samples == 1U);
+    CHECK(stats.rate_last_send_interval_ns == 0U);
     CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U);
     CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) == 0U);
     CHECK(stats.ack_observation_events == 3U);
@@ -127,23 +139,89 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment3, payload);
 
     CHECK(stats.delivery_live_slots == 0U);
+
+    /* Reproduce a NewReno-style two-hole flight. Segments 4-6 are first sent
+     * with delivered=3*MSS. Repairing the first hole lets a partial ACK charge
+     * segments 4 and 5, advancing delivered to 5*MSS. The retransmission of
+     * segment 6 must therefore refresh its delivery snapshot to that newer
+     * delivered point. Linux rate sampling keys the ACK sample to the packet's
+     * last transmission, not its original transmission. */
+    seq += payload;
+    seq4 = seq;
+    seq5 = seq4 + payload;
+    seq6 = seq5 + payload;
+
+    pcb->unacked = NULL;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment4, seq4, payload);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    pcb->snd_nxt = seq5;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment5, seq5, payload);
+    pcb->snd_nxt = seq6;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment6, seq6, payload);
+    pcb->snd_nxt = seq6 + payload;
+    CHECK(stats.delivery_first_tx_events == 6U);
+    CHECK(stats.delivery_live_slots == 3U);
+
+    CHECK(pause_for_rtt_sample() == 0);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment4, seq4, payload);
+    CHECK(stats.delivery_retransmit_events == 2U);
+
+    /* Partial ACK through segment 5: the second hole starts at segment 6. */
+    pcb->lastack = seq6;
+    CHECK(tcp_shift_lwip_cc_hook_ack(
+              pcb, (tcpwnd_size_t)((uint32_t)payload * 2U)) != 0);
+    CHECK(adapter.delivered_bytes == (uint64_t)payload * 5U);
+    CHECK(stats.rate_snapshot_samples == 4U);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment4, payload);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment5, payload);
+    CHECK(stats.delivery_live_slots == 1U);
+
+    /* Retransmit the second hole only after the partial ACK advanced delivery.
+     * Its final ACK must use this retransmission snapshot (prior_delivered=5P),
+     * while Karn filtering still marks RTT as ambiguous. */
+    CHECK(pause_for_rtt_sample() == 0);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment6, seq6, payload);
+    CHECK(stats.delivery_retransmit_events == 3U);
+    pcb->lastack = seq6 + payload;
+    CHECK(tcp_shift_lwip_cc_hook_ack(pcb, payload) != 0);
+    CHECK(adapter.delivered_bytes == (uint64_t)payload * 6U);
+    CHECK(stats.rate_snapshot_samples == 5U);
+    CHECK(stats.rate_snapshot_errors == 0U);
+    CHECK(stats.rate_last_prior_delivered_bytes == (uint64_t)payload * 5U);
+    CHECK(stats.rate_last_delivered_total_bytes == (uint64_t)payload * 6U);
+    CHECK(stats.rate_last_delivered_bytes == payload);
+    CHECK(stats.rate_last_send_interval_ns > 0U);
+    CHECK(stats.rate_last_send_interval_ns <= stats.rate_last_interval_ns);
+    CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U);
+    CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) == 0U);
+    CHECK(stats.ack_observation_events == 5U);
+    CHECK(stats.srtt_updates == 2U);
+    CHECK(adapter.srtt.samples == 2U);
+    CHECK(adapter.srtt.smoothed_rtt_ns == srtt_after_clean_samples);
+    tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment6, payload);
+
+    CHECK(stats.delivery_live_slots == 0U);
     CHECK(stats.delivery_metadata_misses == 0U);
     CHECK(stats.delivery_clock_errors == 0U);
     CHECK(stats.delivery_timestamp_regressions == 0U);
 
+    pcb->unacked = NULL;
     tcp_shift_lwip_cc_adapter_unbind(&adapter);
     tcp_abort(pcb);
 
     printf("bbr_delivery_snapshot=ok samples=%llu errors=%llu "
            "ack_observations=%llu srtt_updates=%llu srtt_ns=%llu "
-           "retransmitted_samples=%llu prior_delivered=%llu "
-           "delivered_total=%llu payload=%u\n",
+           "retransmitted_samples=%llu retransmit_events=%llu "
+           "prior_delivered=%llu delivered_total=%llu payload=%u\n",
            (unsigned long long)stats.rate_snapshot_samples,
            (unsigned long long)stats.rate_snapshot_errors,
            (unsigned long long)stats.ack_observation_events,
            (unsigned long long)stats.srtt_updates,
            (unsigned long long)stats.ack_last_smoothed_rtt_ns,
            (unsigned long long)stats.rate_retransmitted_samples,
+           (unsigned long long)stats.delivery_retransmit_events,
            (unsigned long long)stats.rate_last_prior_delivered_bytes,
            (unsigned long long)stats.rate_last_delivered_total_bytes,
            (unsigned)payload);

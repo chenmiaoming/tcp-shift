@@ -388,9 +388,13 @@ static void tcp_shift_bbr_check_startup_full_bw(
     }
 
     threshold = tcp_shift_bbr_full_bw_threshold(model->full_bw_bytes_per_sec);
+    /* Linux BBRv1 evaluates STARTUP growth against the current windowed
+     * maximum bandwidth estimate, not the single rate sample that happened to
+     * open this packet-timed round. A low recovery-shaped round-start ACK must
+     * not hide a higher trustworthy sample already admitted to max_bw. */
     if (model->full_bw_bytes_per_sec == 0U ||
-        sample->delivery_rate_bytes_per_sec >= threshold) {
-        model->full_bw_bytes_per_sec = sample->delivery_rate_bytes_per_sec;
+        model->max_bw_bytes_per_sec >= threshold) {
+        model->full_bw_bytes_per_sec = model->max_bw_bytes_per_sec;
         model->full_bw_count = 0U;
         return;
     }

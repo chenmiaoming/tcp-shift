@@ -84,6 +84,43 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t delivery_peak_capacity_slots_per_flow;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
+
+    /* Internal-BBR qualification telemetry. These remain zero for Reno/CUBIC
+     * and record the latest compact-controller state for single-flow P6 runs. */
+    uint64_t bbr_model_observations;
+    uint64_t bbr_max_bw_bytes_per_sec;
+    uint64_t bbr_min_rtt_ns;
+    uint64_t bbr_full_bw_bytes_per_sec;
+    uint64_t bbr_accepted_bw_samples;
+    uint64_t bbr_ignored_app_limited_bw_samples;
+    uint32_t bbr_round_count;
+    uint32_t bbr_full_bw_count;
+    uint32_t bbr_mode;
+    uint32_t bbr_cycle_index;
+    uint32_t bbr_full_bw_reached;
+    uint32_t bbr_recovery_in_progress;
+
+    uint64_t bbr_timeout_observations;
+    uint64_t bbr_timeout_last_max_bw_bytes_per_sec;
+    uint64_t bbr_timeout_last_pacing_rate_bytes_per_sec;
+    uint32_t bbr_timeout_last_cwnd_bytes;
+    uint32_t bbr_timeout_last_transport_inflight_bytes;
+    uint32_t bbr_timeout_last_round_count;
+    uint32_t bbr_timeout_last_mode;
+    uint32_t bbr_timeout_last_cycle_index;
+    uint32_t bbr_timeout_last_recovery_in_progress;
+    uint32_t bbr_timeout_last_packet_conservation;
+    uint32_t bbr_timeout_last_lastack;
+    uint32_t bbr_timeout_last_snd_nxt;
+    uint32_t bbr_timeout_last_recovery_end_seq;
+    uint32_t bbr_timeout_last_dupacks;
+    uint32_t bbr_timeout_last_nrtx;
+    uint32_t bbr_timeout_last_unacked_segments;
+    uint32_t bbr_timeout_last_unacked_bytes;
+    uint32_t bbr_timeout_last_unsent_segments;
+    uint32_t bbr_timeout_last_unsent_bytes;
+    int32_t bbr_timeout_last_rtime;
+    int32_t bbr_timeout_last_rto;
 };
 
 struct tcp_shift_lwip_cc_adapter {

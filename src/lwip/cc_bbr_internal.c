@@ -7,6 +7,7 @@
 #include "cc/bbr_controller.h"
 #include "cc/bbr_recovery.h"
 #include "lwip/tcp_memory.h"
+#include "lwip/priv/tcp_priv.h"
 
 #define TCP_SHIFT_LWIP_BBR_EXT_ARG_ID 2U
 
@@ -17,6 +18,35 @@ struct tcp_shift_lwip_bbr_binding {
     uint32_t cycle_seed;
 };
 
+static void tcp_shift_lwip_bbr_record_stats(
+    struct tcp_shift_lwip_bbr_binding *binding)
+{
+    struct tcp_shift_lwip_cc_stats *stats;
+    const struct tcp_shift_bbr_model *model;
+
+    if (binding == NULL || binding->adapter == NULL ||
+        binding->adapter->stats == NULL) {
+        return;
+    }
+
+    stats = binding->adapter->stats;
+    model = &binding->controller.model;
+    stats->bbr_model_observations++;
+    stats->bbr_max_bw_bytes_per_sec = model->max_bw_bytes_per_sec;
+    stats->bbr_min_rtt_ns = model->has_min_rtt != 0U ? model->min_rtt_ns : 0U;
+    stats->bbr_full_bw_bytes_per_sec = model->full_bw_bytes_per_sec;
+    stats->bbr_accepted_bw_samples = model->accepted_bw_samples;
+    stats->bbr_ignored_app_limited_bw_samples =
+        model->ignored_app_limited_bw_samples;
+    stats->bbr_round_count = model->round_count;
+    stats->bbr_full_bw_count = model->full_bw_count;
+    stats->bbr_mode = (uint32_t)model->mode;
+    stats->bbr_cycle_index = binding->controller.probe.cycle_index;
+    stats->bbr_full_bw_reached = model->full_bw_reached;
+    stats->bbr_recovery_in_progress =
+        binding->controller.recovery.in_recovery;
+}
+
 static uint32_t tcp_shift_lwip_bbr_cwnd_limit(void)
 {
 #if LWIP_WND_SCALE
@@ -25,6 +55,33 @@ static uint32_t tcp_shift_lwip_bbr_cwnd_limit(void)
     return UINT16_MAX;
 #endif
 }
+
+static void tcp_shift_lwip_bbr_segment_list_stats(
+    const struct tcp_seg *seg,
+    uint32_t *segments,
+    uint32_t *bytes)
+{
+    uint32_t count = 0U;
+    uint32_t total = 0U;
+
+    while (seg != NULL) {
+        count++;
+        if (UINT32_MAX - total < seg->len) {
+            total = UINT32_MAX;
+        } else {
+            total += seg->len;
+        }
+        seg = seg->next;
+    }
+
+    if (segments != NULL) {
+        *segments = count;
+    }
+    if (bytes != NULL) {
+        *bytes = total;
+    }
+}
+
 
 static void tcp_shift_lwip_bbr_transport_from_pcb(
     const struct tcp_pcb *pcb,
@@ -84,11 +141,17 @@ static int tcp_shift_lwip_bbr_on_ack(
     struct tcp_shift_cc_policy *policy)
 {
     struct tcp_shift_lwip_bbr_binding *binding = state;
+    int result;
 
-    return binding == NULL
-               ? -1
-               : tcp_shift_bbr_controller_on_ack(&binding->controller,
-                                                  transport, ack, policy);
+    if (binding == NULL) {
+        return -1;
+    }
+    result = tcp_shift_bbr_controller_on_ack(
+        &binding->controller, transport, ack, policy);
+    if (result == 0) {
+        tcp_shift_lwip_bbr_record_stats(binding);
+    }
+    return result;
 }
 
 static int tcp_shift_lwip_bbr_on_loss(
@@ -113,8 +176,14 @@ static int tcp_shift_lwip_bbr_on_loss(
         loss->lost_bytes >= transport->inflight_bytes
             ? 0U
             : transport->inflight_bytes - loss->lost_bytes;
-    return tcp_shift_bbr_controller_recovery_enter(
-        &binding->controller, &post_loss, loss->lost_bytes, policy);
+    {
+        int result = tcp_shift_bbr_controller_recovery_enter(
+            &binding->controller, &post_loss, loss->lost_bytes, policy);
+        if (result == 0) {
+            tcp_shift_lwip_bbr_record_stats(binding);
+        }
+        return result;
+    }
 }
 
 static int tcp_shift_lwip_bbr_on_timeout(
@@ -137,8 +206,52 @@ static int tcp_shift_lwip_bbr_on_timeout(
      * retransmission and moved to unsent, while commit/output has not run yet.
      * The transport-equivalent post-loss in-flight observation is therefore 0. */
     timeout.post_loss_inflight_bytes = 0U;
-    return tcp_shift_bbr_controller_on_timeout(
-        &binding->controller, transport, &timeout, policy);
+    if (binding->adapter->stats != NULL) {
+        struct tcp_shift_lwip_cc_stats *stats = binding->adapter->stats;
+
+        stats->bbr_timeout_observations++;
+        stats->bbr_timeout_last_max_bw_bytes_per_sec =
+            binding->controller.model.max_bw_bytes_per_sec;
+        stats->bbr_timeout_last_pacing_rate_bytes_per_sec =
+            binding->controller.pacing_rate_bytes_per_sec;
+        stats->bbr_timeout_last_cwnd_bytes = binding->controller.cwnd_bytes;
+        stats->bbr_timeout_last_transport_inflight_bytes =
+            transport->inflight_bytes;
+        stats->bbr_timeout_last_round_count =
+            binding->controller.model.round_count;
+        stats->bbr_timeout_last_mode =
+            (uint32_t)binding->controller.model.mode;
+        stats->bbr_timeout_last_cycle_index =
+            binding->controller.probe.cycle_index;
+        stats->bbr_timeout_last_recovery_in_progress =
+            binding->controller.recovery.in_recovery;
+        stats->bbr_timeout_last_packet_conservation =
+            binding->controller.recovery.packet_conservation;
+        stats->bbr_timeout_last_lastack = binding->adapter->pcb->lastack;
+        stats->bbr_timeout_last_snd_nxt = binding->adapter->pcb->snd_nxt;
+        stats->bbr_timeout_last_recovery_end_seq =
+            binding->adapter->hook.recovery_end_seq;
+        stats->bbr_timeout_last_dupacks = binding->adapter->pcb->dupacks;
+        stats->bbr_timeout_last_nrtx = binding->adapter->pcb->nrtx;
+        stats->bbr_timeout_last_rtime = binding->adapter->pcb->rtime;
+        stats->bbr_timeout_last_rto = binding->adapter->pcb->rto;
+        tcp_shift_lwip_bbr_segment_list_stats(
+            binding->adapter->pcb->unacked,
+            &stats->bbr_timeout_last_unacked_segments,
+            &stats->bbr_timeout_last_unacked_bytes);
+        tcp_shift_lwip_bbr_segment_list_stats(
+            binding->adapter->pcb->unsent,
+            &stats->bbr_timeout_last_unsent_segments,
+            &stats->bbr_timeout_last_unsent_bytes);
+    }
+    {
+        int result = tcp_shift_bbr_controller_on_timeout(
+            &binding->controller, transport, &timeout, policy);
+        if (result == 0) {
+            tcp_shift_lwip_bbr_record_stats(binding);
+        }
+        return result;
+    }
 }
 
 static const struct tcp_shift_cc_ops tcp_shift_lwip_internal_bbr_ops = {
@@ -256,6 +369,7 @@ static int tcp_shift_lwip_bbr_hook_recovery_exit(void *arg,
     if (adapter->stats != NULL) {
         adapter->stats->policy_updates++;
     }
+    tcp_shift_lwip_bbr_record_stats(binding);
     return 1;
 }
 
@@ -404,6 +518,7 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
         adapter->stats->pacing_last_rate_bytes_per_sec =
             policy.pacing_rate_bytes_per_sec;
     }
+    tcp_shift_lwip_bbr_record_stats(binding);
     return 0;
 }
 
