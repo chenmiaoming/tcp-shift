@@ -105,13 +105,13 @@ int main(void)
     }
 
     memset(&bbr_pcb, 0, sizeof(bbr_pcb));
-    bbr_pcb.cwnd = KIB(64);
+    bbr_pcb.cwnd = KIB(32);
     if (tcp_shift_tcp_memory_flow_init(&manager, &bbr_flow, &bbr_pcb) < 0 ||
         tcp_shift_tcp_memory_flow_set_sndbuf_expand(
             &bbr_flow,
             TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM,
             TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN) < 0 ||
-        expect(bbr_flow.sndbuf_expand_num == 3U,
+        expect(bbr_flow.sndbuf_expand_num == 6U,
                "BBR expand numerator") < 0 ||
         expect(bbr_flow.sndbuf_expand_den == 1U,
                "BBR expand denominator") < 0 ||
@@ -119,7 +119,7 @@ int main(void)
             &bbr_flow, &bbr_pcb, bbr_flow.sndbuf_expand_num,
             bbr_flow.sndbuf_expand_den) != 1 ||
         expect(bbr_flow.capacity_bytes == KIB(192),
-               "3xcwnd controller-hint growth") < 0) {
+               "6xcwnd controller-hint growth") < 0) {
         return 1;
     }
 
@@ -129,14 +129,14 @@ int main(void)
      * credit even when the controller had room to send. The availability
      * helper must grow first and recover write headroom from a zero sndbuf. */
     bbr_pcb.snd_buf = 0U;
-    bbr_pcb.cwnd = KIB(80);
+    bbr_pcb.cwnd = KIB(40);
     if (expect(tcp_shift_tcp_memory_flow_available_bytes(
                    &bbr_flow, &bbr_pcb) == KIB(48),
                "zero-sndbuf autotune headroom") < 0 ||
         expect(bbr_flow.capacity_bytes == KIB(240),
                "zero-sndbuf capacity growth") < 0 ||
         tcp_shift_tcp_memory_flow_set_sndbuf_expand(&bbr_flow, 0U, 1U) == 0 ||
-        tcp_shift_tcp_memory_flow_set_sndbuf_expand(&bbr_flow, 3U, 0U) == 0) {
+        tcp_shift_tcp_memory_flow_set_sndbuf_expand(&bbr_flow, 6U, 0U) == 0) {
         return 1;
     }
     tcp_shift_tcp_memory_flow_release(&bbr_flow);
@@ -180,7 +180,7 @@ int main(void)
 
     printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
            "tcp_mem=25165824,33554432,50331648 "
-           "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
+           "pressure=ok high=ok autotune=2xcwnd controller_hint=6xcwnd "
            "zero_sndbuf_growth=ok accounting=queued_payload\n");
     printf("tcp_memory_layout=ok sack_out=%u pcb_bytes=%zu seg_bytes=%zu\n",
            (unsigned)LWIP_TCP_SACK_OUT,
