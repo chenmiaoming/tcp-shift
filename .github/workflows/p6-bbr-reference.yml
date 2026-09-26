@@ -834,13 +834,13 @@ jobs:
           cmake -S . -B .build-p6-cubic-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
-          cmake --build .build-p6-cubic-first-send --target tcp-shift-p6-bbr --parallel
+          cmake --build .build-p6-cubic-first-send --target tcp-shift-p2 --parallel
 
       - name: Run tcp-shift CUBIC deterministic first-send loss
         run: |
           out="$PWD/.build/p6-cubic-first-send-loss/tcp-shift"
           sudo env \
-            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-cubic-first-send/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-cubic-first-send/tcp-shift-p2" \
             TCP_SHIFT_P6_BBR_LONG_CC=cubic \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
