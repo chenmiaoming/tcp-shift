@@ -156,14 +156,17 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1262,7 +1267,8 @@ tcp_output(struct tcp_pcb *pcb)
+@@ -1262,7 +1267,12 @@ tcp_output(struct tcp_pcb *pcb)
    if (tcp_input_pcb == pcb) {
      return ERR_OK;
    }
  
--  wnd = LWIP_MIN(pcb->snd_wnd, pcb->cwnd);
++#if LWIP_TCP_SACK_OUT
 +  wnd = LWIP_MIN(pcb->snd_wnd,
 +                 tcp_shift_lwip_cc_hook_effective_cwnd(pcb));
++#else
+   wnd = LWIP_MIN(pcb->snd_wnd, pcb->cwnd);
++#endif
  
    seg = pcb->unsent;
  
