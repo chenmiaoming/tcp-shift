@@ -56,6 +56,9 @@ static struct tcp_shift_lwip_cc_listener_binding
 static struct tcp_shift_lwip_cc_stats tcp_shift_lwip_cc_stats;
 static struct tcp_shift_pacing_service tcp_shift_pacing_service;
 
+static uint32_t tcp_shift_delivery_outstanding_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter);
+
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 {
 #if LWIP_WND_SCALE
@@ -296,6 +299,42 @@ static void tcp_shift_pacing_note_tx(struct tcp_shift_lwip_cc_adapter *adapter,
         adapter->stats->pacing_last_deadline_ns =
             adapter->pacing_next_send_ns;
     }
+}
+
+static u32_t tcp_shift_lwip_cc_effective_cwnd(void *arg,
+                                                    struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    uint32_t raw_inflight;
+    uint32_t actual_inflight;
+    uint32_t credit;
+    uint32_t cwnd;
+
+    if (pcb == NULL) {
+        return 0U;
+    }
+    cwnd = (uint32_t)pcb->cwnd;
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        adapter->sack_delivery_policy == 0U) {
+        return cwnd;
+    }
+
+    raw_inflight = pcb->snd_nxt - pcb->lastack;
+    actual_inflight = tcp_shift_delivery_outstanding_payload(adapter);
+    if (actual_inflight >= raw_inflight) {
+        return cwnd;
+    }
+
+    /* lwIP gates new sends with seq-lastack against cwnd. Linux SACK-aware
+     * in-flight accounting removes already-SACKed data from packets_in_flight.
+     * Add exactly that released sequence-space as temporary cwnd credit so the
+     * existing tcp_output() inequality becomes equivalent to
+     * actual_unsacked_inflight + new_bytes <= controller_cwnd. */
+    credit = raw_inflight - actual_inflight;
+    if (cwnd > UINT32_MAX - credit) {
+        return UINT32_MAX;
+    }
+    return cwnd + credit;
 }
 
 static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
@@ -703,10 +742,15 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
             adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
                                                : now_ns;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
-        slot->retransmitted = 1U;
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
+            if (slot->retransmitted != 0U) {
+                adapter->stats->delivery_repeat_retransmit_events++;
+            } else {
+                adapter->stats->delivery_unique_retransmit_events++;
+            }
         }
+        slot->retransmitted = 1U;
         return;
     }
 
@@ -1271,6 +1315,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+    .effective_cwnd = tcp_shift_lwip_cc_effective_cwnd,
     .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,
     .on_segment_tx = tcp_shift_lwip_cc_on_segment_tx,
     .on_segment_acked = tcp_shift_lwip_cc_on_segment_acked,
