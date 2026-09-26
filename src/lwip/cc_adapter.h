@@ -98,6 +98,14 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t pacing_max_tx_gap_send_window_bytes;
     uint32_t pacing_max_tx_gap_recovery_owned;
     uint32_t pacing_max_tx_gap_tf_infr;
+    uint32_t pacing_max_tx_gap_start_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_start_effective_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_start_raw_inflight_bytes;
+    uint32_t pacing_max_tx_gap_start_actual_inflight_bytes;
+    uint32_t pacing_max_tx_gap_start_send_window_bytes;
+    uint32_t pacing_max_tx_gap_start_snd_buf_bytes;
+    uint32_t pacing_max_tx_gap_start_recovery_owned;
+    uint32_t pacing_max_tx_gap_start_tf_infr;
 
     /* Internal-BBR qualification telemetry. These remain zero for Reno/CUBIC
      * and record the latest compact-controller state for single-flow P6 runs. */
@@ -178,6 +186,14 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t pacing_next_send_ns;
     uint64_t pacing_flow_id;
     uint32_t pacing_generation;
+    uint32_t last_tx_cwnd_bytes;
+    uint32_t last_tx_effective_cwnd_bytes;
+    uint32_t last_tx_raw_inflight_bytes;
+    uint32_t last_tx_actual_inflight_bytes;
+    uint32_t last_tx_send_window_bytes;
+    uint32_t last_tx_snd_buf_bytes;
+    unsigned last_tx_recovery_owned;
+    unsigned last_tx_tf_infr;
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned pacing_scheduled;
