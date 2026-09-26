@@ -140,7 +140,7 @@ static int check_limits_and_invalid_inputs(void)
 
 int main(void)
 {
-    CHECK(TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM == 3U);
+    CHECK(TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM == 6U);
     CHECK(TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN == 1U);
     CHECK(check_packet_conservation() == 0);
     CHECK(check_limits_and_invalid_inputs() == 0);
