@@ -698,6 +698,7 @@ pacing_deferrals=$(printf '%s\n' "$pacing" | sed -n 's/.* deferrals=\([0-9][0-9]
 pacing_resumes=$(printf '%s\n' "$pacing" | sed -n 's/.* resume_events=\([0-9][0-9]*\).*/\1/p')
 pacing_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* scheduler_errors=\([0-9][0-9]*\).*/\1/p')
 pacing_tx_bytes=$(printf '%s\n' "$pacing" | sed -n 's/.* tx_bytes=\([0-9][0-9]*\).*/\1/p')
+pacing_max_tx_gap_ns=$(printf '%s\n' "$pacing" | sed -n 's/.* max_tx_gap_ns=\([0-9][0-9]*\).*/\1/p')
 pacing_rate=$(printf '%s\n' "$pacing" | sed -n 's/.* last_rate_bytes_per_sec=\([0-9][0-9]*\).*/\1/p')
 loop_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* loop_callback_errors=\([0-9][0-9]*\).*/\1/p')
 heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*\).*/\1/p')
@@ -705,6 +706,7 @@ heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*
 [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
 [ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -ge "$PAYLOAD_BYTES" ] &&
+[ -n "$pacing_max_tx_gap_ns" ] &&
 [ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
 [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
 [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
@@ -716,6 +718,49 @@ if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
     exit 1
 fi
 
+recovery_enter_events=0
+recovery_exit_events=0
+recovery_total_ns=0
+recovery_max_ns=0
+recovery_packet_conservation_acks=0
+recovery_last_enter_cwnd_bytes=0
+recovery_last_enter_inflight_bytes=0
+recovery_min_cwnd_bytes=0
+if [ "$CC" = bbr-internal ]; then
+    bbr=$(grep -m1 'tcp-shift-p2-bbr:' "$OUT/runtime.stderr")
+    recovery_enter_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_enter_events=\([0-9][0-9]*\).*/\1/p')
+    recovery_exit_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_exit_events=\([0-9][0-9]*\).*/\1/p')
+    recovery_total_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_total_ns=\([0-9][0-9]*\).*/\1/p')
+    recovery_max_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_max_ns=\([0-9][0-9]*\).*/\1/p')
+    recovery_packet_conservation_acks=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_packet_conservation_acks=\([0-9][0-9]*\).*/\1/p')
+    recovery_last_enter_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
+    recovery_last_enter_inflight_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_inflight_bytes=\([0-9][0-9]*\).*/\1/p')
+    recovery_min_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_min_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
+    [ -n "$recovery_enter_events" ] && [ -n "$recovery_exit_events" ] &&
+    [ -n "$recovery_total_ns" ] && [ -n "$recovery_max_ns" ] &&
+    [ -n "$recovery_packet_conservation_acks" ] &&
+    [ -n "$recovery_last_enter_cwnd_bytes" ] &&
+    [ -n "$recovery_last_enter_inflight_bytes" ] &&
+    [ -n "$recovery_min_cwnd_bytes" ] || {
+        echo "invalid BBR recovery diagnostic telemetry" >&2
+        exit 1
+    }
+    if [ "$LOSS_MODE" = none ]; then
+        [ "$recovery_enter_events" -eq 0 ] &&
+        [ "$recovery_exit_events" -eq 0 ] &&
+        [ "$recovery_total_ns" -eq 0 ] &&
+        [ "$recovery_max_ns" -eq 0 ] || {
+            echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
+            exit 1
+        }
+    else
+        [ "$recovery_enter_events" -ge 1 ] || {
+            echo "lossy BBR long-flow recorded no recovery entry" >&2
+            exit 1
+        }
+    fi
+fi
+
 client_sha=$(sed -n 's/.* sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' "$OUT/client.stdout")
 backend_sha=$(sed -n 's/.* sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' "$OUT/backend.stdout")
 goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdout")
@@ -724,11 +769,14 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s pacing_max_tx_gap_ns=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s recovery_enter_events=%s recovery_exit_events=%s recovery_total_ns=%s recovery_max_ns=%s recovery_packet_conservation_acks=%s recovery_last_enter_cwnd_bytes=%s recovery_last_enter_inflight_bytes=%s recovery_min_cwnd_bytes=%s payload_integrity=ok\n' \
     "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
-    "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$retransmit_events" \
-    "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
+    "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$pacing_max_tx_gap_ns" "$retransmit_events" \
+    "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" \
+    "$recovery_enter_events" "$recovery_exit_events" "$recovery_total_ns" "$recovery_max_ns" \
+    "$recovery_packet_conservation_acks" "$recovery_last_enter_cwnd_bytes" \
+    "$recovery_last_enter_inflight_bytes" "$recovery_min_cwnd_bytes" | tee "$OUT/summary.txt"
 
 printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_marker_count=%s\nfault_marker_gap_packets=%s\nfault_marker_prefix=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
     "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \

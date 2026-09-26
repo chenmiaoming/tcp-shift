@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cc/bbr_controller.h"
 #include "cc/bbr_recovery.h"
@@ -15,8 +16,39 @@ struct tcp_shift_lwip_bbr_binding {
     struct tcp_shift_bbr_controller_state controller;
     struct tcp_shift_lwip_cc_adapter *adapter;
     const struct tcp_shift_lwip_cc_hook_ops *base_hook_ops;
+    uint64_t recovery_enter_ns;
     uint32_t cycle_seed;
 };
+
+static uint64_t tcp_shift_lwip_bbr_now_ns(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0U;
+    }
+    return (uint64_t)now.tv_sec * UINT64_C(1000000000) +
+           (uint64_t)now.tv_nsec;
+}
+
+static void tcp_shift_lwip_bbr_note_recovery_cwnd(
+    struct tcp_shift_lwip_bbr_binding *binding)
+{
+    struct tcp_shift_lwip_cc_stats *stats;
+    uint32_t cwnd;
+
+    if (binding == NULL || binding->adapter == NULL ||
+        binding->adapter->stats == NULL) {
+        return;
+    }
+    stats = binding->adapter->stats;
+    cwnd = binding->controller.cwnd_bytes;
+    if (cwnd != 0U &&
+        (stats->bbr_recovery_min_cwnd_bytes == 0U ||
+         cwnd < stats->bbr_recovery_min_cwnd_bytes)) {
+        stats->bbr_recovery_min_cwnd_bytes = cwnd;
+    }
+}
 
 static void tcp_shift_lwip_bbr_record_stats(
     struct tcp_shift_lwip_bbr_binding *binding)
@@ -149,6 +181,14 @@ static int tcp_shift_lwip_bbr_on_ack(
     result = tcp_shift_bbr_controller_on_ack(
         &binding->controller, transport, ack, policy);
     if (result == 0) {
+        if (binding->controller.recovery.in_recovery != 0U &&
+            binding->adapter != NULL && binding->adapter->stats != NULL) {
+            if (binding->controller.recovery.packet_conservation != 0U) {
+                binding->adapter->stats
+                    ->bbr_recovery_packet_conservation_acks++;
+            }
+            tcp_shift_lwip_bbr_note_recovery_cwnd(binding);
+        }
         tcp_shift_lwip_bbr_record_stats(binding);
     }
     return result;
@@ -180,6 +220,21 @@ static int tcp_shift_lwip_bbr_on_loss(
         int result = tcp_shift_bbr_controller_recovery_enter(
             &binding->controller, &post_loss, loss->lost_bytes, policy);
         if (result == 0) {
+            uint64_t now_ns = tcp_shift_lwip_bbr_now_ns();
+
+            binding->recovery_enter_ns = now_ns;
+            if (binding->adapter != NULL && binding->adapter->stats != NULL) {
+                struct tcp_shift_lwip_cc_stats *stats =
+                    binding->adapter->stats;
+
+                stats->bbr_recovery_enter_events++;
+                stats->bbr_recovery_last_enter_ns = now_ns;
+                stats->bbr_recovery_last_enter_cwnd_bytes =
+                    binding->controller.cwnd_bytes;
+                stats->bbr_recovery_last_enter_inflight_bytes =
+                    post_loss.inflight_bytes;
+            }
+            tcp_shift_lwip_bbr_note_recovery_cwnd(binding);
             tcp_shift_lwip_bbr_record_stats(binding);
         }
         return result;
@@ -385,8 +440,28 @@ static int tcp_shift_lwip_bbr_hook_recovery_exit(void *arg,
         return 0;
     }
     if (adapter->stats != NULL) {
-        adapter->stats->policy_updates++;
+        uint64_t now_ns = tcp_shift_lwip_bbr_now_ns();
+        struct tcp_shift_lwip_cc_stats *stats = adapter->stats;
+
+        stats->policy_updates++;
+        stats->bbr_recovery_exit_events++;
+        stats->bbr_recovery_last_exit_ns = now_ns;
+        if (binding->recovery_enter_ns != 0U &&
+            now_ns >= binding->recovery_enter_ns) {
+            uint64_t recovery_ns = now_ns - binding->recovery_enter_ns;
+
+            if (UINT64_MAX - stats->bbr_recovery_total_ns < recovery_ns) {
+                stats->bbr_recovery_total_ns = UINT64_MAX;
+            } else {
+                stats->bbr_recovery_total_ns += recovery_ns;
+            }
+            if (recovery_ns > stats->bbr_recovery_max_ns) {
+                stats->bbr_recovery_max_ns = recovery_ns;
+            }
+        }
     }
+    binding->recovery_enter_ns = 0U;
+    tcp_shift_lwip_bbr_note_recovery_cwnd(binding);
     tcp_shift_lwip_bbr_record_stats(binding);
     return 1;
 }
