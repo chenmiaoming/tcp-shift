@@ -199,7 +199,15 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
     fprintf(stderr,
             "tcp-shift-p2-pacing: deferrals=%llu resume_events=%llu "
             "stale_releases=%llu scheduler_errors=%llu tx_events=%llu "
-            "tx_bytes=%llu max_tx_gap_ns=%llu last_rate_bytes_per_sec=%llu "
+            "tx_bytes=%llu max_tx_gap_ns=%llu "
+            "max_tx_gap_last_ack_age_ns=%llu "
+            "max_tx_gap_last_release_age_ns=%llu "
+            "max_tx_gap_cwnd_bytes=%u max_tx_gap_effective_cwnd_bytes=%u "
+            "max_tx_gap_raw_inflight_bytes=%u "
+            "max_tx_gap_actual_inflight_bytes=%u "
+            "max_tx_gap_send_window_bytes=%u "
+            "max_tx_gap_recovery_owned=%u max_tx_gap_tf_infr=%u "
+            "last_rate_bytes_per_sec=%llu "
             "last_deadline_ns=%llu last_actual_release_ns=%llu "
             "loop_pacing_wakeups=%llu loop_release_callbacks=%llu "
             "loop_callback_errors=%llu timerfd_creates=%llu "
@@ -215,6 +223,15 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             (unsigned long long)stats->pacing_tx_events,
             (unsigned long long)stats->pacing_tx_bytes,
             (unsigned long long)stats->pacing_max_tx_gap_ns,
+            (unsigned long long)stats->pacing_max_tx_gap_last_ack_age_ns,
+            (unsigned long long)stats->pacing_max_tx_gap_last_release_age_ns,
+            stats->pacing_max_tx_gap_cwnd_bytes,
+            stats->pacing_max_tx_gap_effective_cwnd_bytes,
+            stats->pacing_max_tx_gap_raw_inflight_bytes,
+            stats->pacing_max_tx_gap_actual_inflight_bytes,
+            stats->pacing_max_tx_gap_send_window_bytes,
+            stats->pacing_max_tx_gap_recovery_owned,
+            stats->pacing_max_tx_gap_tf_infr,
             (unsigned long long)stats->pacing_last_rate_bytes_per_sec,
             (unsigned long long)stats->pacing_last_deadline_ns,
             (unsigned long long)stats->pacing_last_actual_release_ns,
@@ -251,10 +268,17 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "recovery_in_progress=%u recovery_enter_events=%llu "
             "recovery_exit_events=%llu recovery_total_ns=%llu "
             "recovery_max_ns=%llu recovery_packet_conservation_acks=%llu "
+            "recovery_packet_conservation_clear_events=%llu "
+            "recovery_packet_conservation_total_ns=%llu "
+            "recovery_packet_conservation_max_ns=%llu "
+            "recovery_last_packet_conservation_clear_ns=%llu "
             "recovery_last_enter_ns=%llu recovery_last_exit_ns=%llu "
             "recovery_last_enter_cwnd_bytes=%u "
             "recovery_last_enter_inflight_bytes=%u "
-            "recovery_min_cwnd_bytes=%u timeout_observations=%llu "
+            "recovery_min_cwnd_bytes=%u "
+            "recovery_last_packet_conservation_cwnd_bytes=%u "
+            "recovery_last_packet_conservation_inflight_bytes=%u "
+            "timeout_observations=%llu "
             "timeout_last_mode=%u timeout_last_cycle_index=%u "
             "timeout_last_round_count=%u timeout_last_cwnd_bytes=%u "
             "timeout_last_transport_inflight_bytes=%u "
@@ -285,11 +309,21 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)stats->bbr_recovery_total_ns,
             (unsigned long long)stats->bbr_recovery_max_ns,
             (unsigned long long)stats->bbr_recovery_packet_conservation_acks,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_clear_events,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_total_ns,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_max_ns,
+            (unsigned long long)
+                stats->bbr_recovery_last_packet_conservation_clear_ns,
             (unsigned long long)stats->bbr_recovery_last_enter_ns,
             (unsigned long long)stats->bbr_recovery_last_exit_ns,
             stats->bbr_recovery_last_enter_cwnd_bytes,
             stats->bbr_recovery_last_enter_inflight_bytes,
             stats->bbr_recovery_min_cwnd_bytes,
+            stats->bbr_recovery_last_packet_conservation_cwnd_bytes,
+            stats->bbr_recovery_last_packet_conservation_inflight_bytes,
             (unsigned long long)stats->bbr_timeout_observations,
             stats->bbr_timeout_last_mode,
             stats->bbr_timeout_last_cycle_index,
