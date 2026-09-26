@@ -13,6 +13,10 @@ extern "C" {
 #define TCP_SHIFT_BBR_PROBE_RTT_INTERVAL_NS UINT64_C(5000000000)
 #define TCP_SHIFT_BBR_MIN_RTT_FILTER_NS UINT64_C(10000000000)
 #define TCP_SHIFT_BBR_FULL_BW_ROUNDS 3U
+#define TCP_SHIFT_BBR_EXTRA_ACKED_WIN_RTTS 5U
+#define TCP_SHIFT_BBR_ACK_EPOCH_RESET_BYTES (1U << 20)
+#define TCP_SHIFT_BBR_ACK_EPOCH_MAX_BYTES ((1U << 20) - 1U)
+#define TCP_SHIFT_BBR_EXTRA_ACKED_MAX_NS UINT64_C(100000000)
 
 /* Linux BBRv1 represents gains in BBR_SCALE=8 fixed point. Its Startup
  * high_gain is BBR_UNIT * 2885 / 1000 + 1 = 739/256. Keep the quantized
@@ -63,8 +67,11 @@ struct tcp_shift_bbr_model {
 
     uint64_t next_round_delivered;
     uint64_t full_bw_bytes_per_sec;
+    uint64_t ack_epoch_mstamp_ns;
 
     uint32_t bw_filter_round;
+    uint32_t ack_epoch_acked_bytes;
+    uint32_t extra_acked_bytes[2];
     uint32_t round_count;
     uint32_t full_bw_count;
     enum tcp_shift_bbr_mode mode;
@@ -78,6 +85,8 @@ struct tcp_shift_bbr_model {
     uint8_t round_start;
     uint8_t full_bw_now;
     uint8_t full_bw_reached;
+    uint8_t extra_acked_win_rtts;
+    uint8_t extra_acked_win_idx;
 };
 
 void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
@@ -85,6 +94,19 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model);
 int tcp_shift_bbr_model_on_ack(struct tcp_shift_bbr_model *model,
                                const struct tcp_shift_cc_rate_sample *sample,
                                uint64_t now_ns);
+
+/* Track Linux BBRv1-style excess ACKed delivery over a packet-timed 5-10 RTT
+ * window. The estimator is updated for valid ACK/rate observations regardless
+ * of whether the full-pipe gate is reached; the resulting cwnd budget is only
+ * exposed once full_bw_reached is true. */
+int tcp_shift_bbr_model_update_ack_aggregation(
+    struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_rate_sample *sample,
+    uint32_t acked_bytes,
+    uint32_t current_cwnd_bytes,
+    uint64_t now_ns);
+uint32_t tcp_shift_bbr_ack_aggregation_cwnd_bytes(
+    const struct tcp_shift_bbr_model *model);
 
 /* Overflow-safe model arithmetic. BDP is rounded upward so integer truncation
  * cannot create a negative feedback loop. Saturation is UINT64_MAX. */
