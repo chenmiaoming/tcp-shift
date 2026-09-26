@@ -731,9 +731,10 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
     if (policy.cwnd_bytes == 0U || policy.ssthresh_bytes == 0U ||
         policy.cwnd_bytes > limit || policy.ssthresh_bytes > limit ||
         policy.pacing_rate_bytes_per_sec == 0U ||
+        /* Qualification A/B: keep all BBR control semantics fixed and
+         * vary only sender-buffer headroom above the normal 3x hint. */
         tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
-            adapter->pcb, TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM,
-            TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN) != 0) {
+            adapter->pcb, 4U, TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN) != 0) {
         free(binding);
         return -1;
     }
