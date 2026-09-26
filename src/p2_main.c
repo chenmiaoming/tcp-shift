@@ -124,7 +124,9 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
 {
     fprintf(stderr,
             "tcp-shift-p2-delivery: first_tx_events=%llu "
-            "retransmit_events=%llu acked_segment_events=%llu "
+            "retransmit_events=%llu repeat_retransmit_events=%llu "
+            "retransmit_after_delivery_events=%llu "
+            "acked_segment_events=%llu "
             "sack_events=%llu sack_payload_bytes=%llu "
             "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
             "metadata_misses=%llu metadata_abandoned_slots=%llu "
@@ -134,6 +136,9 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "peak_capacity_slots_per_flow=%u\n",
             (unsigned long long)stats->delivery_first_tx_events,
             (unsigned long long)stats->delivery_retransmit_events,
+            (unsigned long long)stats->delivery_repeat_retransmit_events,
+            (unsigned long long)
+                stats->delivery_retransmit_after_delivery_events,
             (unsigned long long)stats->delivery_acked_segment_events,
             (unsigned long long)stats->delivery_sack_events,
             (unsigned long long)stats->delivery_sack_payload_bytes,
