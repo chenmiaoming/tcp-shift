@@ -36,7 +36,14 @@ struct tcp_shift_delivery_slot {
     uint16_t acked_payload_bytes;
     uint8_t app_limited;
     uint8_t retransmitted;
+    uint8_t in_flight;
 };
+
+static struct tcp_shift_delivery_slot *
+tcp_shift_delivery_find(struct tcp_shift_lwip_cc_adapter *adapter,
+                        const void *segment);
+static uint32_t tcp_shift_delivery_network_inflight_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter);
 
 struct tcp_shift_pacing_registry_entry {
     struct tcp_shift_lwip_cc_adapter *adapter;
@@ -310,6 +317,18 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
         payload_bytes == 0U || adapter->pacing_rate_bytes_per_sec == 0U) {
         return 1;
+    }
+
+    if (adapter->sack_delivery_policy != 0U &&
+        tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) != 0U &&
+        tcp_shift_delivery_find(adapter, pcb->unsent) == NULL) {
+        uint32_t inflight =
+            tcp_shift_delivery_network_inflight_payload(adapter);
+
+        if (inflight >= (uint32_t)pcb->cwnd ||
+            (uint32_t)payload_bytes > (uint32_t)pcb->cwnd - inflight) {
+            return 0;
+        }
     }
 
     now_ns = tcp_shift_delivery_now_ns(adapter);
@@ -608,6 +627,24 @@ static uint32_t tcp_shift_delivery_outstanding_payload(
     return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
 }
 
+static uint32_t tcp_shift_delivery_network_inflight_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    const struct tcp_shift_delivery_slot *slots =
+        (const struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+    uint64_t total = 0U;
+    uint16_t index;
+
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        if (slots[index].segment != NULL && slots[index].in_flight != 0U &&
+            slots[index].payload_bytes > slots[index].acked_payload_bytes) {
+            total += (uint32_t)(slots[index].payload_bytes -
+                                slots[index].acked_payload_bytes);
+        }
+    }
+    return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
 /* Outstanding windows are far below 2^31 bytes in the constrained profile,
  * so signed modular distance gives a wrap-safe position of ack_seq relative to
  * this slot's first payload byte. */
@@ -704,6 +741,7 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                                                : now_ns;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
         slot->retransmitted = 1U;
+        slot->in_flight = 1U;
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
         }
@@ -735,6 +773,7 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     slot->prior_inflight_bytes = prior_inflight;
     slot->payload_bytes = payload_bytes;
     slot->app_limited = adapter->app_limited_until_bytes != 0U;
+    slot->in_flight = 1U;
     if (adapter->stats != NULL) {
         adapter->stats->delivery_first_tx_events++;
     }
@@ -955,6 +994,9 @@ static uint32_t tcp_shift_delivery_build_rate_sample(
 
         newly_acked = (uint16_t)(acked_payload - slot->acked_payload_bytes);
         slot->acked_payload_bytes = acked_payload;
+        if (slot->acked_payload_bytes >= slot->payload_bytes) {
+            slot->in_flight = 0U;
+        }
         delivered_added += newly_acked;
         touched++;
         if (acked_payload < slot->payload_bytes) {
@@ -1031,6 +1073,7 @@ static uint32_t tcp_shift_delivery_build_sack_rate_sample(
         delivered_added +=
             (uint16_t)(slot->payload_bytes - slot->acked_payload_bytes);
         slot->acked_payload_bytes = slot->payload_bytes;
+        slot->in_flight = 0U;
         touched++;
         if (tcp_shift_delivery_candidate_newer(slot, candidate)) {
             candidate = slot;
