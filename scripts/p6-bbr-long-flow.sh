@@ -718,37 +718,47 @@ if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
     exit 1
 fi
 
-bbr=$(grep -m1 'tcp-shift-p2-bbr:' "$OUT/runtime.stderr")
-recovery_enter_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_enter_events=\([0-9][0-9]*\).*/\1/p')
-recovery_exit_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_exit_events=\([0-9][0-9]*\).*/\1/p')
-recovery_total_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_total_ns=\([0-9][0-9]*\).*/\1/p')
-recovery_max_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_max_ns=\([0-9][0-9]*\).*/\1/p')
-recovery_packet_conservation_acks=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_packet_conservation_acks=\([0-9][0-9]*\).*/\1/p')
-recovery_last_enter_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
-recovery_last_enter_inflight_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_inflight_bytes=\([0-9][0-9]*\).*/\1/p')
-recovery_min_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_min_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
-[ -n "$recovery_enter_events" ] && [ -n "$recovery_exit_events" ] &&
-[ -n "$recovery_total_ns" ] && [ -n "$recovery_max_ns" ] &&
-[ -n "$recovery_packet_conservation_acks" ] &&
-[ -n "$recovery_last_enter_cwnd_bytes" ] &&
-[ -n "$recovery_last_enter_inflight_bytes" ] &&
-[ -n "$recovery_min_cwnd_bytes" ] || {
-    echo "invalid BBR recovery diagnostic telemetry" >&2
-    exit 1
-}
-if [ "$LOSS_MODE" = none ]; then
-    [ "$recovery_enter_events" -eq 0 ] &&
-    [ "$recovery_exit_events" -eq 0 ] &&
-    [ "$recovery_total_ns" -eq 0 ] &&
-    [ "$recovery_max_ns" -eq 0 ] || {
-        echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
+recovery_enter_events=0
+recovery_exit_events=0
+recovery_total_ns=0
+recovery_max_ns=0
+recovery_packet_conservation_acks=0
+recovery_last_enter_cwnd_bytes=0
+recovery_last_enter_inflight_bytes=0
+recovery_min_cwnd_bytes=0
+if [ "$CC" = bbr-internal ]; then
+    bbr=$(grep -m1 'tcp-shift-p2-bbr:' "$OUT/runtime.stderr")
+    recovery_enter_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_enter_events=\([0-9][0-9]*\).*/\1/p')
+    recovery_exit_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_exit_events=\([0-9][0-9]*\).*/\1/p')
+    recovery_total_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_total_ns=\([0-9][0-9]*\).*/\1/p')
+    recovery_max_ns=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_max_ns=\([0-9][0-9]*\).*/\1/p')
+    recovery_packet_conservation_acks=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_packet_conservation_acks=\([0-9][0-9]*\).*/\1/p')
+    recovery_last_enter_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
+    recovery_last_enter_inflight_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_last_enter_inflight_bytes=\([0-9][0-9]*\).*/\1/p')
+    recovery_min_cwnd_bytes=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_min_cwnd_bytes=\([0-9][0-9]*\).*/\1/p')
+    [ -n "$recovery_enter_events" ] && [ -n "$recovery_exit_events" ] &&
+    [ -n "$recovery_total_ns" ] && [ -n "$recovery_max_ns" ] &&
+    [ -n "$recovery_packet_conservation_acks" ] &&
+    [ -n "$recovery_last_enter_cwnd_bytes" ] &&
+    [ -n "$recovery_last_enter_inflight_bytes" ] &&
+    [ -n "$recovery_min_cwnd_bytes" ] || {
+        echo "invalid BBR recovery diagnostic telemetry" >&2
         exit 1
     }
-else
-    [ "$recovery_enter_events" -ge 1 ] || {
-        echo "lossy BBR long-flow recorded no recovery entry" >&2
-        exit 1
-    }
+    if [ "$LOSS_MODE" = none ]; then
+        [ "$recovery_enter_events" -eq 0 ] &&
+        [ "$recovery_exit_events" -eq 0 ] &&
+        [ "$recovery_total_ns" -eq 0 ] &&
+        [ "$recovery_max_ns" -eq 0 ] || {
+            echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
+            exit 1
+        }
+    else
+        [ "$recovery_enter_events" -ge 1 ] || {
+            echo "lossy BBR long-flow recorded no recovery entry" >&2
+            exit 1
+        }
+    fi
 fi
 
 client_sha=$(sed -n 's/.* sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' "$OUT/client.stdout")
