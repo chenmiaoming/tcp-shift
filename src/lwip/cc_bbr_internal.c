@@ -466,6 +466,20 @@ static int tcp_shift_lwip_bbr_hook_recovery_exit(void *arg,
     return 1;
 }
 
+static int tcp_shift_lwip_bbr_hook_separate_cwnd_window(
+    void *arg,
+    struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_lwip_bbr_binding *binding =
+        tcp_shift_lwip_bbr_binding_from_adapter(adapter, pcb);
+
+    return binding != NULL && adapter->sack_delivery_policy != 0U &&
+                   adapter->hook.recovery_controller_owned != 0U
+               ? 1
+               : 0;
+}
+
 static int tcp_shift_lwip_bbr_hook_send_eligible(void *arg,
                                                   struct tcp_pcb *pcb,
                                                   u16_t payload_bytes)
@@ -522,6 +536,8 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_bbr_hook_ops = {
     .on_loss = tcp_shift_lwip_bbr_hook_loss,
     .on_timeout = tcp_shift_lwip_bbr_hook_timeout,
     .on_recovery_exit = tcp_shift_lwip_bbr_hook_recovery_exit,
+    .on_separate_cwnd_window =
+        tcp_shift_lwip_bbr_hook_separate_cwnd_window,
     .on_segment_send_eligible = tcp_shift_lwip_bbr_hook_send_eligible,
     .on_segment_tx = tcp_shift_lwip_bbr_hook_segment_tx,
     .on_segment_acked = tcp_shift_lwip_bbr_hook_segment_acked,
