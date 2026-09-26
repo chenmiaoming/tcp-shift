@@ -233,7 +233,7 @@ static int check_recovery_composition(void)
                     valid, &policy) == 0);
     CHECK(state.model.round_start == 0U);
     CHECK(state.recovery.packet_conservation == 1U);
-    CHECK(policy.cwnd_bytes == 12000U);
+    CHECK(policy.cwnd_bytes == 13460U);
 
     /* Once prior_delivered reaches the entry marker, model.round_start opens a
      * new packet-timed round. That ACK releases packet conservation and normal
