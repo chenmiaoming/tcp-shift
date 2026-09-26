@@ -21,7 +21,9 @@ struct tcp_shift_lwip_bbr_binding {
     uint64_t packet_conservation_enter_delivered_bytes;
     uint64_t packet_conservation_boundary_bytes;
     uint64_t packet_conservation_prior_below_boundary_bytes;
+    uint64_t packet_conservation_enter_sack_ack_age_ns;
     uint32_t packet_conservation_enter_round_count;
+    uint32_t packet_conservation_enter_sack_acked_bytes;
     uint32_t cycle_seed;
 };
 
@@ -100,6 +102,10 @@ static void tcp_shift_lwip_bbr_note_packet_conservation_clear(
                 binding->packet_conservation_prior_below_boundary_bytes;
             stats->bbr_recovery_max_conservation_enter_round_count =
                 binding->packet_conservation_enter_round_count;
+            stats->bbr_recovery_max_conservation_enter_sack_acked_bytes =
+                binding->packet_conservation_enter_sack_acked_bytes;
+            stats->bbr_recovery_max_conservation_enter_sack_ack_age_ns =
+                binding->packet_conservation_enter_sack_ack_age_ns;
             stats->bbr_recovery_max_conservation_clear_round_count =
                 binding->controller.model.round_count;
             stats->bbr_recovery_max_conservation_clear_prior_delivered_bytes =
@@ -117,7 +123,9 @@ static void tcp_shift_lwip_bbr_note_packet_conservation_clear(
     binding->packet_conservation_enter_delivered_bytes = 0U;
     binding->packet_conservation_boundary_bytes = 0U;
     binding->packet_conservation_prior_below_boundary_bytes = 0U;
+    binding->packet_conservation_enter_sack_ack_age_ns = 0U;
     binding->packet_conservation_enter_round_count = 0U;
+    binding->packet_conservation_enter_sack_acked_bytes = 0U;
 }
 
 static void tcp_shift_lwip_bbr_record_stats(
@@ -318,6 +326,18 @@ static int tcp_shift_lwip_bbr_on_loss(
             binding->packet_conservation_prior_below_boundary_bytes = 0U;
             binding->packet_conservation_enter_round_count =
                 binding->controller.model.round_count;
+            if (binding->adapter != NULL) {
+                binding->packet_conservation_enter_sack_acked_bytes =
+                    binding->adapter->last_sack_policy_acked_bytes;
+                if (binding->adapter->last_sack_policy_ack_time_ns != 0U &&
+                    now_ns >= binding->adapter->last_sack_policy_ack_time_ns) {
+                    binding->packet_conservation_enter_sack_ack_age_ns =
+                        now_ns -
+                        binding->adapter->last_sack_policy_ack_time_ns;
+                } else {
+                    binding->packet_conservation_enter_sack_ack_age_ns = 0U;
+                }
+            }
             if (binding->adapter != NULL && binding->adapter->stats != NULL) {
                 struct tcp_shift_lwip_cc_stats *stats =
                     binding->adapter->stats;
@@ -334,6 +354,10 @@ static int tcp_shift_lwip_bbr_on_loss(
                     binding->controller.model.next_round_delivered;
                 stats->bbr_recovery_last_enter_round_count =
                     binding->controller.model.round_count;
+                stats->bbr_recovery_last_enter_sack_acked_bytes =
+                    binding->packet_conservation_enter_sack_acked_bytes;
+                stats->bbr_recovery_last_enter_sack_ack_age_ns =
+                    binding->packet_conservation_enter_sack_ack_age_ns;
             }
             tcp_shift_lwip_bbr_note_recovery_cwnd(binding);
             tcp_shift_lwip_bbr_record_stats(binding);
