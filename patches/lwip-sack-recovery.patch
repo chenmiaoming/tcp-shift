@@ -156,7 +156,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
-@@ -1262,7 +1267,12 @@ tcp_output(struct tcp_pcb *pcb)
+@@ -1262,8 +1267,13 @@ tcp_output(struct tcp_pcb *pcb)
    if (tcp_input_pcb == pcb) {
      return ERR_OK;
    }
