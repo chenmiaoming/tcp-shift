@@ -343,11 +343,23 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "recovery_packet_conservation_max_ns=%llu "
             "recovery_last_packet_conservation_clear_ns=%llu "
             "recovery_last_enter_ns=%llu recovery_last_exit_ns=%llu "
+            "recovery_last_enter_delivered_bytes=%llu "
+            "recovery_last_enter_round_boundary_bytes=%llu "
+            "recovery_max_conservation_enter_delivered_bytes=%llu "
+            "recovery_max_conservation_round_boundary_bytes=%llu "
+            "recovery_max_conservation_prior_below_boundary_bytes=%llu "
+            "recovery_max_conservation_clear_prior_delivered_bytes=%llu "
+            "recovery_max_conservation_clear_delivered_total_bytes=%llu "
             "recovery_last_enter_cwnd_bytes=%u "
             "recovery_last_enter_inflight_bytes=%u "
             "recovery_min_cwnd_bytes=%u "
             "recovery_last_packet_conservation_cwnd_bytes=%u "
             "recovery_last_packet_conservation_inflight_bytes=%u "
+            "recovery_last_enter_round_count=%u "
+            "recovery_max_conservation_enter_round_count=%u "
+            "recovery_max_conservation_clear_round_count=%u "
+            "recovery_max_conservation_clear_acked_bytes=%u "
+            "recovery_max_conservation_clear_rate_flags=%u "
             "timeout_observations=%llu "
             "timeout_last_mode=%u timeout_last_cycle_index=%u "
             "timeout_last_round_count=%u timeout_last_cwnd_bytes=%u "
@@ -389,11 +401,30 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
                 stats->bbr_recovery_last_packet_conservation_clear_ns,
             (unsigned long long)stats->bbr_recovery_last_enter_ns,
             (unsigned long long)stats->bbr_recovery_last_exit_ns,
+            (unsigned long long)
+                stats->bbr_recovery_last_enter_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_last_enter_round_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_enter_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_round_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_prior_below_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_clear_prior_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_clear_delivered_total_bytes,
             stats->bbr_recovery_last_enter_cwnd_bytes,
             stats->bbr_recovery_last_enter_inflight_bytes,
             stats->bbr_recovery_min_cwnd_bytes,
             stats->bbr_recovery_last_packet_conservation_cwnd_bytes,
             stats->bbr_recovery_last_packet_conservation_inflight_bytes,
+            stats->bbr_recovery_last_enter_round_count,
+            stats->bbr_recovery_max_conservation_enter_round_count,
+            stats->bbr_recovery_max_conservation_clear_round_count,
+            stats->bbr_recovery_max_conservation_clear_acked_bytes,
+            stats->bbr_recovery_max_conservation_clear_rate_flags,
             (unsigned long long)stats->bbr_timeout_observations,
             stats->bbr_timeout_last_mode,
             stats->bbr_timeout_last_cycle_index,
