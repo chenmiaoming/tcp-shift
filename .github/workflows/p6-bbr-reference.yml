@@ -797,3 +797,325 @@ jobs:
           if-no-files-found: warn
           include-hidden-files: true
 
+  deterministic-first-send-cubic-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install deterministic-loss dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate CUBIC first-send control harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-cubic-first-send-loss-evaluate.py
+
+      - name: Build tcp-shift with sender SACK
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-cubic-first-send \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
+          cmake --build .build-p6-cubic-first-send --target tcp-shift-p2 --parallel
+
+      - name: Run tcp-shift CUBIC deterministic first-send loss
+        run: |
+          out="$PWD/.build/p6-cubic-first-send-loss/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-cubic-first-send/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run Linux CUBIC deterministic first-send loss
+        run: |
+          out="$PWD/.build/p6-cubic-first-send-loss/linux-cubic"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=cubic \
+            TCP_SHIFT_LINUX_PACING_CASE=first-send-loss-260ms-cubic \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_LINUX_PACING_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare CUBIC deterministic first-send loss
+        run: |
+          root="$PWD/.build/p6-cubic-first-send-loss"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-cubic-first-send-loss-evaluate.py \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish CUBIC first-send control evidence
+        if: always()
+        run: |
+          root=.build/p6-cubic-first-send-loss
+          {
+            echo "## CUBIC control on deterministic first-send loss"
+            echo
+            echo "RTT=260ms rate=10Mbit payload=4MiB markers=28 gap=96 MSS sender-SACK=ON"
+            for file in "$root/tcp-shift/summary.txt" "$root/linux-cubic/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CUBIC first-send control diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-cubic-first-send-loss
+          path: .build/p6-cubic-first-send-loss
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  clean-long-rtt-cubic-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install clean CUBIC control dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate clean CUBIC control harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-cubic-clean-control-evaluate.py
+
+      - name: Build tcp-shift with sender SACK
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-cubic-clean \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
+          cmake --build .build-p6-cubic-clean --target tcp-shift-p2 --parallel
+
+      - name: Run tcp-shift CUBIC clean long-RTT flow
+        run: |
+          out="$PWD/.build/p6-cubic-clean-control/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-cubic-clean/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=none \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run Linux CUBIC clean long-RTT flow
+        run: |
+          out="$PWD/.build/p6-cubic-clean-control/linux-cubic"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=cubic \
+            TCP_SHIFT_LINUX_PACING_CASE=clean-260ms-cubic \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS=1 \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare clean long-RTT CUBIC
+        run: |
+          root="$PWD/.build/p6-cubic-clean-control"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-cubic-clean-control-evaluate.py \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish clean long-RTT CUBIC evidence
+        if: always()
+        run: |
+          root=.build/p6-cubic-clean-control
+          {
+            echo "## Clean long-RTT CUBIC control"
+            echo
+            echo "RTT=260ms rate=10Mbit payload=4MiB queue=1784 sender-SACK=ON"
+            for file in "$root/tcp-shift/summary.txt" "$root/linux-cubic/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload clean long-RTT CUBIC diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-cubic-clean-control
+          path: .build/p6-cubic-clean-control
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  clean-long-rtt-bbr-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install clean BBR control dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate clean BBR control harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-bbr-reference-evaluate.py
+
+      - name: Build internal BBR with sender SACK
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-bbr-clean-260 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
+          cmake --build .build-p6-bbr-clean-260 --target tcp-shift-p6-bbr --parallel
+
+      - name: Run tcp-shift BBR clean long-RTT flow
+        run: |
+          out="$PWD/.build/p6-bbr-clean-control/tcp-shift"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-clean-260/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=none \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run Linux BBR clean long-RTT flow
+        run: |
+          out="$PWD/.build/p6-bbr-clean-control/linux-bbr"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=bbr \
+            TCP_SHIFT_LINUX_PACING_CASE=clean-260ms-bbr \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS=1 \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
+      - name: Compare clean long-RTT BBR
+        run: |
+          root="$PWD/.build/p6-bbr-clean-control"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-bbr-reference-evaluate.py \
+            clean-260ms \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-bbr/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish clean long-RTT BBR evidence
+        if: always()
+        run: |
+          root=.build/p6-bbr-clean-control
+          {
+            echo "## Clean long-RTT BBR control"
+            echo
+            echo "RTT=260ms rate=10Mbit payload=4MiB queue=1784 sender-SACK=ON"
+            for file in "$root/tcp-shift/summary.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload clean long-RTT BBR diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-bbr-clean-260ms
+          path: .build/p6-bbr-clean-control
+          if-no-files-found: warn
+          include-hidden-files: true
+

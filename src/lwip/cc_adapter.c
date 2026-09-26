@@ -68,18 +68,15 @@ static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 #endif
 }
 
-/* Keep this calculation mechanically equivalent to pinned lwIP's
- * LWIP_TCP_CALC_INITIAL_CWND(). On passive open, lwIP invokes the raw accept
- * callback while pcb->cwnd is still its allocation sentinel (1 byte), then
- * assigns this initial cwnd immediately after the callback returns. Binding the
- * controller at accept therefore needs the value lwIP is about to publish. */
+/* Keep this calculation mechanically equivalent to the controlled lwIP
+ * initial-cwnd patch on this diagnostic branch. Passive-open binding happens
+ * before lwIP publishes cwnd, so controller and transport must agree exactly. */
 static uint32_t tcp_shift_lwip_cc_initial_cwnd(uint32_t mss_bytes)
 {
-    uint32_t twice_mss = 2U * mss_bytes;
-    uint32_t four_mss = 4U * mss_bytes;
-    uint32_t floor = twice_mss > 4380U ? twice_mss : 4380U;
-
-    return four_mss < floor ? four_mss : floor;
+    if (mss_bytes > UINT32_MAX / 10U) {
+        return UINT32_MAX;
+    }
+    return 10U * mss_bytes;
 }
 
 static void tcp_shift_lwip_cc_transport_from_pcb(

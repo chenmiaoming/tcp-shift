@@ -27,6 +27,17 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
+@@ -65,7 +65,8 @@
+ #include LWIP_HOOK_FILENAME
+ #endif
+ 
+-/** Initial CWND calculation as defined RFC 2581 */
+-#define LWIP_TCP_CALC_INITIAL_CWND(mss) ((tcpwnd_size_t)LWIP_MIN((4U * (mss)), LWIP_MAX((2U * (mss)), 4380U)))
++/** Diagnostic Linux/RFC 6928 initial window parity experiment. */
++#define LWIP_TCP_CALC_INITIAL_CWND(mss) \
++  ((tcpwnd_size_t)(10U * (mss)))
+ 
+ /* These variables are global to all functions involved in the input
 @@ -850,6 +850,9 @@ tcp_process(struct tcp_pcb *pcb)
    pcb->keep_cnt_sent = 0;
    pcb->persist_probe = 0;

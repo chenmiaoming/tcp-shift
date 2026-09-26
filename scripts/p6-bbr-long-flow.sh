@@ -702,17 +702,25 @@ pacing_max_tx_gap_ns=$(printf '%s\n' "$pacing" | sed -n 's/.* max_tx_gap_ns=\([0
 pacing_rate=$(printf '%s\n' "$pacing" | sed -n 's/.* last_rate_bytes_per_sec=\([0-9][0-9]*\).*/\1/p')
 loop_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* loop_callback_errors=\([0-9][0-9]*\).*/\1/p')
 heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*\).*/\1/p')
-[ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
-[ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
+[ -n "$pacing_deferrals" ] &&
+[ -n "$pacing_resumes" ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
 [ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -ge "$PAYLOAD_BYTES" ] &&
 [ -n "$pacing_max_tx_gap_ns" ] &&
-[ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
+[ -n "$pacing_rate" ] &&
 [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
 [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
-    echo "invalid BBR long-flow shared-pacer telemetry" >&2
+    echo "invalid long-flow shared-pacer telemetry" >&2
     exit 1
 }
+if [ "$CC" = bbr-internal ]; then
+    [ "$pacing_deferrals" -ge 1 ] &&
+    [ "$pacing_resumes" -ge 1 ] &&
+    [ "$pacing_rate" -ge 1 ] || {
+        echo "internal BBR long-flow did not exercise shared pacing" >&2
+        exit 1
+    }
+fi
 if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
     echo "clean BBR long-flow paced unexpected bytes: $pacing_tx_bytes" >&2
     exit 1
