@@ -661,6 +661,15 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     }
     tcp_shift_pacing_note_tx(adapter, payload_bytes, now_ns);
     if (adapter->stats != NULL) {
+        if (adapter->stats->delivery_last_tx_ns != 0U &&
+            now_ns >= adapter->stats->delivery_last_tx_ns) {
+            uint64_t tx_gap_ns =
+                now_ns - adapter->stats->delivery_last_tx_ns;
+
+            if (tx_gap_ns > adapter->stats->pacing_max_tx_gap_ns) {
+                adapter->stats->pacing_max_tx_gap_ns = tx_gap_ns;
+            }
+        }
         adapter->stats->delivery_last_tx_ns = now_ns;
     }
 
