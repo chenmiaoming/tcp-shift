@@ -706,7 +706,39 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                 now_ns - adapter->stats->delivery_last_tx_ns;
 
             if (tx_gap_ns > adapter->stats->pacing_max_tx_gap_ns) {
+                uint32_t raw_inflight = pcb->snd_nxt - pcb->lastack;
+                uint32_t actual_inflight =
+                    adapter->sack_delivery_policy != 0U
+                        ? tcp_shift_delivery_outstanding_payload(adapter)
+                        : raw_inflight;
+
                 adapter->stats->pacing_max_tx_gap_ns = tx_gap_ns;
+                adapter->stats->pacing_max_tx_gap_last_ack_age_ns =
+                    adapter->stats->delivery_last_ack_ns != 0U &&
+                            now_ns >= adapter->stats->delivery_last_ack_ns
+                        ? now_ns - adapter->stats->delivery_last_ack_ns
+                        : 0U;
+                adapter->stats->pacing_max_tx_gap_last_release_age_ns =
+                    adapter->stats->pacing_last_actual_release_ns != 0U &&
+                            now_ns >=
+                                adapter->stats->pacing_last_actual_release_ns
+                        ? now_ns -
+                              adapter->stats->pacing_last_actual_release_ns
+                        : 0U;
+                adapter->stats->pacing_max_tx_gap_cwnd_bytes =
+                    (uint32_t)pcb->cwnd;
+                adapter->stats->pacing_max_tx_gap_effective_cwnd_bytes =
+                    tcp_shift_lwip_cc_effective_cwnd(adapter, pcb);
+                adapter->stats->pacing_max_tx_gap_raw_inflight_bytes =
+                    raw_inflight;
+                adapter->stats->pacing_max_tx_gap_actual_inflight_bytes =
+                    actual_inflight;
+                adapter->stats->pacing_max_tx_gap_send_window_bytes =
+                    (uint32_t)pcb->snd_wnd;
+                adapter->stats->pacing_max_tx_gap_recovery_owned =
+                    adapter->hook.recovery_controller_owned != 0U;
+                adapter->stats->pacing_max_tx_gap_tf_infr =
+                    (pcb->flags & TF_INFR) != 0U;
             }
         }
         adapter->stats->delivery_last_tx_ns = now_ns;
