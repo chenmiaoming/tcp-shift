@@ -1274,6 +1274,9 @@ static int tcp_shift_lwip_cc_on_sack(
     memset(&ack, 0, sizeof(ack));
     newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
         adapter, ranges, range_count, &ack.rate);
+    adapter->last_sack_policy_acked_bytes = newly_delivered;
+    adapter->last_sack_policy_ack_time_ns =
+        adapter->delivery_last_clock_read_ns;
     if (adapter->stats != NULL) {
         adapter->stats->delivery_sack_events++;
         adapter->stats->delivery_sack_payload_bytes += newly_delivered;
