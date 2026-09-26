@@ -119,7 +119,22 @@ int main(void)
             &bbr_flow, &bbr_pcb, bbr_flow.sndbuf_expand_num,
             bbr_flow.sndbuf_expand_den) != 1 ||
         expect(bbr_flow.capacity_bytes == KIB(192),
-               "3xcwnd controller-hint growth") < 0 ||
+               "3xcwnd controller-hint growth") < 0) {
+        return 1;
+    }
+
+    /* Bridge used to check tcp_sndbuf() before entering the wrapped write
+     * path. Once the current sndbuf hit zero, a later cwnd increase could not
+     * trigger memory autotuning, so the flow had to wait for cumulative ACK
+     * credit even when the controller had room to send. The availability
+     * helper must grow first and recover write headroom from a zero sndbuf. */
+    bbr_pcb.snd_buf = 0U;
+    bbr_pcb.cwnd = KIB(80);
+    if (expect(tcp_shift_tcp_memory_flow_available_bytes(
+                   &bbr_flow, &bbr_pcb) == KIB(48),
+               "zero-sndbuf autotune headroom") < 0 ||
+        expect(bbr_flow.capacity_bytes == KIB(240),
+               "zero-sndbuf capacity growth") < 0 ||
         tcp_shift_tcp_memory_flow_set_sndbuf_expand(&bbr_flow, 0U, 1U) == 0 ||
         tcp_shift_tcp_memory_flow_set_sndbuf_expand(&bbr_flow, 3U, 0U) == 0) {
         return 1;
@@ -166,7 +181,7 @@ int main(void)
     printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
            "tcp_mem=25165824,33554432,50331648 "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
-           "accounting=queued_payload\n");
+           "zero_sndbuf_growth=ok accounting=queued_payload\n");
     printf("tcp_memory_layout=ok sack_out=%u pcb_bytes=%zu seg_bytes=%zu\n",
            (unsigned)LWIP_TCP_SACK_OUT,
            sizeof(struct tcp_pcb),
