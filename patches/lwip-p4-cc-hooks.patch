@@ -27,7 +27,7 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -850,7 +850,10 @@ tcp_process(struct tcp_pcb *pcb)
+@@ -850,6 +850,9 @@ tcp_process(struct tcp_pcb *pcb)
    pcb->keep_cnt_sent = 0;
    pcb->persist_probe = 0;
  
