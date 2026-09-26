@@ -11,6 +11,7 @@
 #include "lwip/priv/tcp_priv.h"
 
 #define TCP_SHIFT_LWIP_BBR_EXT_ARG_ID 2U
+#define TCP_SHIFT_LWIP_BBR_EXPERIMENT_SNDBUF_EXPAND_NUM 4U
 
 struct tcp_shift_lwip_bbr_binding {
     struct tcp_shift_bbr_controller_state controller;
@@ -734,7 +735,8 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
         /* Qualification A/B: keep all BBR control semantics fixed and
          * vary only sender-buffer headroom above the normal 3x hint. */
         tcp_shift_lwip_tcp_memory_set_sndbuf_expand(
-            adapter->pcb, 4U, TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN) != 0) {
+            adapter->pcb, TCP_SHIFT_LWIP_BBR_EXPERIMENT_SNDBUF_EXPAND_NUM,
+            TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN) != 0) {
         free(binding);
         return -1;
     }
