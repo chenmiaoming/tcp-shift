@@ -477,8 +477,12 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model)
 
     model->next_round_delivered = 0U;
     model->full_bw_bytes_per_sec = 0U;
+    model->ack_epoch_mstamp_ns = 0U;
 
     model->bw_filter_round = 0U;
+    model->ack_epoch_acked_bytes = 0U;
+    model->extra_acked_bytes[0] = 0U;
+    model->extra_acked_bytes[1] = 0U;
     model->round_count = 0U;
     model->full_bw_count = 0U;
     model->mode = TCP_SHIFT_BBR_MODE_STARTUP;
@@ -492,6 +496,8 @@ void tcp_shift_bbr_model_init(struct tcp_shift_bbr_model *model)
     model->round_start = 0U;
     model->full_bw_now = 0U;
     model->full_bw_reached = 0U;
+    model->extra_acked_win_rtts = 0U;
+    model->extra_acked_win_idx = 0U;
 }
 
 int tcp_shift_bbr_model_on_ack(struct tcp_shift_bbr_model *model,
@@ -514,4 +520,106 @@ int tcp_shift_bbr_model_on_ack(struct tcp_shift_bbr_model *model,
     tcp_shift_bbr_check_startup_full_bw(model, sample);
     tcp_shift_bbr_update_min_rtt(model, sample, now_ns);
     return 0;
+}
+
+int tcp_shift_bbr_model_update_ack_aggregation(
+    struct tcp_shift_bbr_model *model,
+    const struct tcp_shift_cc_rate_sample *sample,
+    uint32_t acked_bytes,
+    uint32_t current_cwnd_bytes,
+    uint64_t now_ns)
+{
+    uint64_t elapsed_ns;
+    uint64_t expected_acked;
+    uint64_t epoch_sum;
+    uint32_t extra_acked;
+
+    if (model == NULL || sample == NULL || current_cwnd_bytes == 0U) {
+        return -1;
+    }
+    if (acked_bytes == 0U ||
+        (sample->flags & TCP_SHIFT_CC_RATE_SAMPLE_VALID) == 0U ||
+        sample->interval_ns == 0U) {
+        return 0;
+    }
+
+    if (model->round_start != 0U) {
+        if (model->extra_acked_win_rtts < 0x1FU) {
+            model->extra_acked_win_rtts++;
+        }
+        if (model->extra_acked_win_rtts >=
+            TCP_SHIFT_BBR_EXTRA_ACKED_WIN_RTTS) {
+            model->extra_acked_win_rtts = 0U;
+            model->extra_acked_win_idx =
+                model->extra_acked_win_idx == 0U ? 1U : 0U;
+            model->extra_acked_bytes[model->extra_acked_win_idx] = 0U;
+        }
+    }
+
+    if (model->ack_epoch_mstamp_ns == 0U ||
+        now_ns < model->ack_epoch_mstamp_ns) {
+        model->ack_epoch_mstamp_ns = now_ns;
+        model->ack_epoch_acked_bytes = 0U;
+    }
+
+    elapsed_ns = now_ns - model->ack_epoch_mstamp_ns;
+    expected_acked = tcp_shift_bbr_sat_mul_u64(
+                         model->max_bw_bytes_per_sec, elapsed_ns) /
+                     UINT64_C(1000000000);
+    epoch_sum = (uint64_t)model->ack_epoch_acked_bytes + acked_bytes;
+
+    if ((uint64_t)model->ack_epoch_acked_bytes <= expected_acked ||
+        epoch_sum >= TCP_SHIFT_BBR_ACK_EPOCH_RESET_BYTES) {
+        model->ack_epoch_acked_bytes = 0U;
+        model->ack_epoch_mstamp_ns = now_ns;
+        expected_acked = 0U;
+    }
+
+    epoch_sum = (uint64_t)model->ack_epoch_acked_bytes + acked_bytes;
+    if (epoch_sum > TCP_SHIFT_BBR_ACK_EPOCH_MAX_BYTES) {
+        epoch_sum = TCP_SHIFT_BBR_ACK_EPOCH_MAX_BYTES;
+    }
+    model->ack_epoch_acked_bytes = (uint32_t)epoch_sum;
+
+    if (expected_acked >= model->ack_epoch_acked_bytes) {
+        extra_acked = 0U;
+    } else {
+        uint64_t extra =
+            (uint64_t)model->ack_epoch_acked_bytes - expected_acked;
+
+        if (extra > current_cwnd_bytes) {
+            extra = current_cwnd_bytes;
+        }
+        extra_acked = (uint32_t)extra;
+    }
+
+    if (extra_acked >
+        model->extra_acked_bytes[model->extra_acked_win_idx]) {
+        model->extra_acked_bytes[model->extra_acked_win_idx] = extra_acked;
+    }
+    return 0;
+}
+
+uint32_t tcp_shift_bbr_ack_aggregation_cwnd_bytes(
+    const struct tcp_shift_bbr_model *model)
+{
+    uint64_t max_aggr;
+    uint32_t extra;
+
+    if (model == NULL || model->full_bw_reached == 0U ||
+        model->max_bw_bytes_per_sec == 0U) {
+        return 0U;
+    }
+
+    extra = model->extra_acked_bytes[0] > model->extra_acked_bytes[1]
+                ? model->extra_acked_bytes[0]
+                : model->extra_acked_bytes[1];
+    max_aggr = tcp_shift_bbr_sat_mul_u64(
+                   model->max_bw_bytes_per_sec,
+                   TCP_SHIFT_BBR_EXTRA_ACKED_MAX_NS) /
+               UINT64_C(1000000000);
+    if ((uint64_t)extra > max_aggr) {
+        extra = max_aggr > UINT32_MAX ? UINT32_MAX : (uint32_t)max_aggr;
+    }
+    return extra;
 }
