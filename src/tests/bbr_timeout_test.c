@@ -52,7 +52,7 @@ static int check_timeout_loss_state(void)
     /* Make fast-recovery state active first: an RTO must supersede stale packet
      * conservation ownership before publishing its Loss-state cwnd. */
     CHECK(tcp_shift_bbr_controller_recovery_enter(
-              &state, &transport, transport.mss_bytes, &policy) == 0);
+              &state, &transport, 0U, transport.mss_bytes, &policy) == 0);
     CHECK(state.recovery.in_recovery == 1U);
     pacing_before = state.pacing_rate_bytes_per_sec;
 
