@@ -159,16 +159,17 @@ tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
 }
 
 static inline u32_t
-tcp_shift_lwip_cc_hook_effective_cwnd(struct tcp_pcb *pcb)
+tcp_shift_lwip_cc_hook_effective_cwnd(struct tcp_pcb *pcb,
+                                      u32_t native_cwnd)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
 
     if (pcb == NULL) {
-        return 0U;
+        return native_cwnd;
     }
     if (hook == NULL || hook->ops == NULL ||
         hook->ops->effective_cwnd == NULL) {
-        return (u32_t)pcb->cwnd;
+        return native_cwnd;
     }
     return hook->ops->effective_cwnd(hook->arg, pcb);
 }
