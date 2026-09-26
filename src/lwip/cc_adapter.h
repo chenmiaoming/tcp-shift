@@ -76,6 +76,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t pacing_tx_events;
     uint64_t pacing_tx_bytes;
     uint64_t pacing_max_tx_gap_ns;
+    uint64_t pacing_max_tx_gap_last_ack_age_ns;
+    uint64_t pacing_max_tx_gap_last_release_age_ns;
     uint64_t pacing_last_rate_bytes_per_sec;
     uint64_t pacing_last_deadline_ns;
     uint64_t pacing_last_actual_release_ns;
@@ -89,6 +91,21 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t delivery_peak_capacity_slots_per_flow;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
+    uint32_t pacing_max_tx_gap_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_effective_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_raw_inflight_bytes;
+    uint32_t pacing_max_tx_gap_actual_inflight_bytes;
+    uint32_t pacing_max_tx_gap_send_window_bytes;
+    uint32_t pacing_max_tx_gap_recovery_owned;
+    uint32_t pacing_max_tx_gap_tf_infr;
+    uint32_t pacing_max_tx_gap_start_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_start_effective_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_start_raw_inflight_bytes;
+    uint32_t pacing_max_tx_gap_start_actual_inflight_bytes;
+    uint32_t pacing_max_tx_gap_start_send_window_bytes;
+    uint32_t pacing_max_tx_gap_start_snd_buf_bytes;
+    uint32_t pacing_max_tx_gap_start_recovery_owned;
+    uint32_t pacing_max_tx_gap_start_tf_infr;
 
     /* Internal-BBR qualification telemetry. These remain zero for Reno/CUBIC
      * and record the latest compact-controller state for single-flow P6 runs. */
@@ -113,11 +130,33 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t bbr_recovery_total_ns;
     uint64_t bbr_recovery_max_ns;
     uint64_t bbr_recovery_packet_conservation_acks;
+    uint64_t bbr_recovery_packet_conservation_clear_events;
+    uint64_t bbr_recovery_packet_conservation_total_ns;
+    uint64_t bbr_recovery_packet_conservation_max_ns;
+    uint64_t bbr_recovery_last_packet_conservation_clear_ns;
     uint64_t bbr_recovery_last_enter_ns;
+    uint64_t bbr_recovery_last_enter_delivered_bytes;
+    uint64_t bbr_recovery_last_enter_round_boundary_bytes;
+    uint64_t bbr_recovery_last_enter_sack_ack_age_ns;
+    uint64_t bbr_recovery_max_conservation_enter_sack_ack_age_ns;
+    uint64_t bbr_recovery_max_conservation_enter_delivered_bytes;
+    uint64_t bbr_recovery_max_conservation_round_boundary_bytes;
+    uint64_t bbr_recovery_max_conservation_prior_below_boundary_bytes;
+    uint64_t bbr_recovery_max_conservation_clear_prior_delivered_bytes;
+    uint64_t bbr_recovery_max_conservation_clear_delivered_total_bytes;
     uint64_t bbr_recovery_last_exit_ns;
     uint32_t bbr_recovery_last_enter_cwnd_bytes;
     uint32_t bbr_recovery_last_enter_inflight_bytes;
     uint32_t bbr_recovery_min_cwnd_bytes;
+    uint32_t bbr_recovery_last_packet_conservation_cwnd_bytes;
+    uint32_t bbr_recovery_last_packet_conservation_inflight_bytes;
+    uint32_t bbr_recovery_last_enter_round_count;
+    uint32_t bbr_recovery_last_enter_sack_acked_bytes;
+    uint32_t bbr_recovery_max_conservation_enter_round_count;
+    uint32_t bbr_recovery_max_conservation_enter_sack_acked_bytes;
+    uint32_t bbr_recovery_max_conservation_clear_round_count;
+    uint32_t bbr_recovery_max_conservation_clear_acked_bytes;
+    uint32_t bbr_recovery_max_conservation_clear_rate_flags;
 
     uint64_t bbr_timeout_observations;
     uint64_t bbr_timeout_last_max_bw_bytes_per_sec;
@@ -162,7 +201,17 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t pacing_rate_bytes_per_sec;
     uint64_t pacing_next_send_ns;
     uint64_t pacing_flow_id;
+    uint64_t last_sack_policy_ack_time_ns;
     uint32_t pacing_generation;
+    uint32_t last_sack_policy_acked_bytes;
+    uint32_t last_tx_cwnd_bytes;
+    uint32_t last_tx_effective_cwnd_bytes;
+    uint32_t last_tx_raw_inflight_bytes;
+    uint32_t last_tx_actual_inflight_bytes;
+    uint32_t last_tx_send_window_bytes;
+    uint32_t last_tx_snd_buf_bytes;
+    unsigned last_tx_recovery_owned;
+    unsigned last_tx_tf_infr;
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned pacing_scheduled;

@@ -26,6 +26,8 @@ struct tcp_shift_bridge {
     uint64_t peak_pending_public_bytes;
     uint64_t backend_write_blocked_events;
     uint64_t backend_read_blocked_events;
+    uint64_t backend_read_blocked_sndbuf_zero_events;
+    uint64_t backend_read_blocked_tcp_write_mem_events;
     uint64_t backend_failures;
     uint64_t public_errors;
     uint32_t backend_socket_sndbuf_bytes;

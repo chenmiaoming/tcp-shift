@@ -322,6 +322,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
         err_t err;
 
         if (sndbuf == 0U) {
+            flow->bridge->backend_read_blocked_sndbuf_zero_events++;
             tcp_shift_bridge_mark_backend_read_blocked(flow);
             return 0;
         }
@@ -350,6 +351,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
         err = tcp_write(flow->pcb, buffer, (u16_t)available,
                         TCP_WRITE_FLAG_COPY);
         if (err == ERR_MEM) {
+            flow->bridge->backend_read_blocked_tcp_write_mem_events++;
             tcp_shift_bridge_mark_backend_read_blocked(flow);
             return 0;
         }

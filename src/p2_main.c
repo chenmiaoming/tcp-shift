@@ -11,6 +11,7 @@
 #include "lwip/init.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/l3_tun.h"
+#include "lwip/tcp_memory.h"
 #include "runtime/lwip_loop.h"
 
 #define TCP_SHIFT_P2_MTU 1500U
@@ -199,7 +200,23 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
     fprintf(stderr,
             "tcp-shift-p2-pacing: deferrals=%llu resume_events=%llu "
             "stale_releases=%llu scheduler_errors=%llu tx_events=%llu "
-            "tx_bytes=%llu max_tx_gap_ns=%llu last_rate_bytes_per_sec=%llu "
+            "tx_bytes=%llu max_tx_gap_ns=%llu "
+            "max_tx_gap_last_ack_age_ns=%llu "
+            "max_tx_gap_last_release_age_ns=%llu "
+            "max_tx_gap_cwnd_bytes=%u max_tx_gap_effective_cwnd_bytes=%u "
+            "max_tx_gap_raw_inflight_bytes=%u "
+            "max_tx_gap_actual_inflight_bytes=%u "
+            "max_tx_gap_send_window_bytes=%u "
+            "max_tx_gap_recovery_owned=%u max_tx_gap_tf_infr=%u "
+            "max_tx_gap_start_cwnd_bytes=%u "
+            "max_tx_gap_start_effective_cwnd_bytes=%u "
+            "max_tx_gap_start_raw_inflight_bytes=%u "
+            "max_tx_gap_start_actual_inflight_bytes=%u "
+            "max_tx_gap_start_send_window_bytes=%u "
+            "max_tx_gap_start_snd_buf_bytes=%u "
+            "max_tx_gap_start_recovery_owned=%u "
+            "max_tx_gap_start_tf_infr=%u "
+            "last_rate_bytes_per_sec=%llu "
             "last_deadline_ns=%llu last_actual_release_ns=%llu "
             "loop_pacing_wakeups=%llu loop_release_callbacks=%llu "
             "loop_callback_errors=%llu timerfd_creates=%llu "
@@ -215,6 +232,23 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             (unsigned long long)stats->pacing_tx_events,
             (unsigned long long)stats->pacing_tx_bytes,
             (unsigned long long)stats->pacing_max_tx_gap_ns,
+            (unsigned long long)stats->pacing_max_tx_gap_last_ack_age_ns,
+            (unsigned long long)stats->pacing_max_tx_gap_last_release_age_ns,
+            stats->pacing_max_tx_gap_cwnd_bytes,
+            stats->pacing_max_tx_gap_effective_cwnd_bytes,
+            stats->pacing_max_tx_gap_raw_inflight_bytes,
+            stats->pacing_max_tx_gap_actual_inflight_bytes,
+            stats->pacing_max_tx_gap_send_window_bytes,
+            stats->pacing_max_tx_gap_recovery_owned,
+            stats->pacing_max_tx_gap_tf_infr,
+            stats->pacing_max_tx_gap_start_cwnd_bytes,
+            stats->pacing_max_tx_gap_start_effective_cwnd_bytes,
+            stats->pacing_max_tx_gap_start_raw_inflight_bytes,
+            stats->pacing_max_tx_gap_start_actual_inflight_bytes,
+            stats->pacing_max_tx_gap_start_send_window_bytes,
+            stats->pacing_max_tx_gap_start_snd_buf_bytes,
+            stats->pacing_max_tx_gap_start_recovery_owned,
+            stats->pacing_max_tx_gap_start_tf_infr,
             (unsigned long long)stats->pacing_last_rate_bytes_per_sec,
             (unsigned long long)stats->pacing_last_deadline_ns,
             (unsigned long long)stats->pacing_last_actual_release_ns,
@@ -236,6 +270,59 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             (unsigned long long)pacer->max_lateness_ns);
 }
 
+static void print_tcp_memory_stats(void)
+{
+    const struct tcp_shift_tcp_memory_config *config =
+        tcp_shift_lwip_tcp_memory_process_config();
+    const struct tcp_shift_tcp_memory_stats *stats =
+        tcp_shift_lwip_tcp_memory_process_stats();
+
+    if (config == NULL || stats == NULL) {
+        return;
+    }
+
+    fprintf(stderr,
+            "tcp-shift-p2-tcp-memory: wmem_min=%u wmem_initial=%u "
+            "wmem_max=%u compile_ceiling=%u mem_low=%llu "
+            "mem_pressure=%llu mem_high=%llu flow_inits=%llu "
+            "write_events=%llu write_bytes=%llu ack_events=%llu "
+            "ack_bytes=%llu charged_bytes=%llu peak_charged_bytes=%llu "
+            "pressure_enters=%llu pressure_exits=%llu high_blocks=%llu "
+            "sndbuf_blocks=%llu upstream_write_mem_errors=%llu "
+            "growth_events=%llu growth_bytes=%llu growth_suppressed=%llu "
+            "last_block_snd_buf_bytes=%u last_block_requested_bytes=%u "
+            "last_block_capacity_bytes=%u last_block_queued_bytes=%llu "
+            "last_block_snd_queuelen=%u accounting_underflows=%llu\n",
+            config->wmem.min_bytes,
+            config->wmem.initial_bytes,
+            config->wmem.max_bytes,
+            config->compile_ceiling_bytes,
+            (unsigned long long)config->mem.low_bytes,
+            (unsigned long long)config->mem.pressure_bytes,
+            (unsigned long long)config->mem.high_bytes,
+            (unsigned long long)stats->flow_inits,
+            (unsigned long long)stats->write_events,
+            (unsigned long long)stats->write_bytes,
+            (unsigned long long)stats->ack_events,
+            (unsigned long long)stats->ack_bytes,
+            (unsigned long long)stats->charged_bytes,
+            (unsigned long long)stats->peak_charged_bytes,
+            (unsigned long long)stats->pressure_enters,
+            (unsigned long long)stats->pressure_exits,
+            (unsigned long long)stats->high_blocks,
+            (unsigned long long)stats->sndbuf_blocks,
+            (unsigned long long)stats->upstream_write_mem_errors,
+            (unsigned long long)stats->growth_events,
+            (unsigned long long)stats->growth_bytes,
+            (unsigned long long)stats->growth_suppressed,
+            stats->last_block_snd_buf_bytes,
+            stats->last_block_requested_bytes,
+            stats->last_block_capacity_bytes,
+            (unsigned long long)stats->last_block_queued_bytes,
+            stats->last_block_snd_queuelen,
+            (unsigned long long)stats->accounting_underflows);
+}
+
 static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
 {
     if (stats->bbr_model_observations == 0U) {
@@ -251,10 +338,33 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "recovery_in_progress=%u recovery_enter_events=%llu "
             "recovery_exit_events=%llu recovery_total_ns=%llu "
             "recovery_max_ns=%llu recovery_packet_conservation_acks=%llu "
+            "recovery_packet_conservation_clear_events=%llu "
+            "recovery_packet_conservation_total_ns=%llu "
+            "recovery_packet_conservation_max_ns=%llu "
+            "recovery_last_packet_conservation_clear_ns=%llu "
             "recovery_last_enter_ns=%llu recovery_last_exit_ns=%llu "
+            "recovery_last_enter_delivered_bytes=%llu "
+            "recovery_last_enter_round_boundary_bytes=%llu "
+            "recovery_last_enter_sack_ack_age_ns=%llu "
+            "recovery_max_conservation_enter_delivered_bytes=%llu "
+            "recovery_max_conservation_round_boundary_bytes=%llu "
+            "recovery_max_conservation_prior_below_boundary_bytes=%llu "
+            "recovery_max_conservation_clear_prior_delivered_bytes=%llu "
+            "recovery_max_conservation_clear_delivered_total_bytes=%llu "
             "recovery_last_enter_cwnd_bytes=%u "
             "recovery_last_enter_inflight_bytes=%u "
-            "recovery_min_cwnd_bytes=%u timeout_observations=%llu "
+            "recovery_min_cwnd_bytes=%u "
+            "recovery_last_packet_conservation_cwnd_bytes=%u "
+            "recovery_last_packet_conservation_inflight_bytes=%u "
+            "recovery_last_enter_round_count=%u "
+            "recovery_last_enter_sack_acked_bytes=%u "
+            "recovery_max_conservation_enter_round_count=%u "
+            "recovery_max_conservation_enter_sack_acked_bytes=%u "
+            "recovery_max_conservation_enter_sack_ack_age_ns=%llu "
+            "recovery_max_conservation_clear_round_count=%u "
+            "recovery_max_conservation_clear_acked_bytes=%u "
+            "recovery_max_conservation_clear_rate_flags=%u "
+            "timeout_observations=%llu "
             "timeout_last_mode=%u timeout_last_cycle_index=%u "
             "timeout_last_round_count=%u timeout_last_cwnd_bytes=%u "
             "timeout_last_transport_inflight_bytes=%u "
@@ -285,11 +395,46 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)stats->bbr_recovery_total_ns,
             (unsigned long long)stats->bbr_recovery_max_ns,
             (unsigned long long)stats->bbr_recovery_packet_conservation_acks,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_clear_events,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_total_ns,
+            (unsigned long long)
+                stats->bbr_recovery_packet_conservation_max_ns,
+            (unsigned long long)
+                stats->bbr_recovery_last_packet_conservation_clear_ns,
             (unsigned long long)stats->bbr_recovery_last_enter_ns,
             (unsigned long long)stats->bbr_recovery_last_exit_ns,
+            (unsigned long long)
+                stats->bbr_recovery_last_enter_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_last_enter_round_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_last_enter_sack_ack_age_ns,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_enter_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_round_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_prior_below_boundary_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_clear_prior_delivered_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_clear_delivered_total_bytes,
             stats->bbr_recovery_last_enter_cwnd_bytes,
             stats->bbr_recovery_last_enter_inflight_bytes,
             stats->bbr_recovery_min_cwnd_bytes,
+            stats->bbr_recovery_last_packet_conservation_cwnd_bytes,
+            stats->bbr_recovery_last_packet_conservation_inflight_bytes,
+            stats->bbr_recovery_last_enter_round_count,
+            stats->bbr_recovery_last_enter_sack_acked_bytes,
+            stats->bbr_recovery_max_conservation_enter_round_count,
+            stats->bbr_recovery_max_conservation_enter_sack_acked_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_enter_sack_ack_age_ns,
+            stats->bbr_recovery_max_conservation_clear_round_count,
+            stats->bbr_recovery_max_conservation_clear_acked_bytes,
+            stats->bbr_recovery_max_conservation_clear_rate_flags,
             (unsigned long long)stats->bbr_timeout_observations,
             stats->bbr_timeout_last_mode,
             stats->bbr_timeout_last_cycle_index,
@@ -441,6 +586,8 @@ int main(int argc, char **argv)
             "bridge_peak_pending_public_bytes=%llu "
             "bridge_backend_write_blocked_events=%llu "
             "bridge_backend_read_blocked_events=%llu "
+            "bridge_backend_read_blocked_sndbuf_zero_events=%llu "
+            "bridge_backend_read_blocked_tcp_write_mem_events=%llu "
             "bridge_backend_socket_sndbuf_bytes=%u "
             "bridge_backend_socket_rcvbuf_bytes=%u loop_wait_calls=%llu "
             "loop_ready_wakeups=%llu loop_timeout_wakeups=%llu "
@@ -468,6 +615,10 @@ int main(int argc, char **argv)
             (unsigned long long)bridge.peak_pending_public_bytes,
             (unsigned long long)bridge.backend_write_blocked_events,
             (unsigned long long)bridge.backend_read_blocked_events,
+            (unsigned long long)
+                bridge.backend_read_blocked_sndbuf_zero_events,
+            (unsigned long long)
+                bridge.backend_read_blocked_tcp_write_mem_events,
             bridge.backend_socket_sndbuf_bytes,
             bridge.backend_socket_rcvbuf_bytes,
             (unsigned long long)loop.wait_calls,
@@ -489,6 +640,7 @@ int main(int argc, char **argv)
     print_rate_stats(cc_stats);
     print_pacing_stats(cc_stats, &loop);
     print_bbr_stats(cc_stats);
+    print_tcp_memory_stats();
 
 out:
     if (bridge_started != 0) {
