@@ -27,6 +27,16 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
+@@ -850,6 +850,9 @@ tcp_process(struct tcp_pcb *pcb)
+   pcb->keep_cnt_sent = 0;
+   pcb->persist_probe = 0;
+ 
++  if (flags & TCP_ACK) {
++    tcp_shift_lwip_cc_hook_ack_begin(pcb);
++  }
+   tcp_parseopt(pcb);
+ 
+   if (flags & TCP_SYN) {
 @@ -1121,4 +1121,5 @@ tcp_free_acked_segments(struct tcp_pcb *pcb, struct tcp_seg *seg_list, const cha
      pcb->snd_queuelen = (u16_t)(pcb->snd_queuelen - clen);
      recv_acked = (tcpwnd_size_t)(recv_acked + next->len);

@@ -186,6 +186,7 @@ int tcp_shift_bbr_controller_on_ack(
 int tcp_shift_bbr_controller_recovery_enter(
     struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
+    uint32_t acked_bytes,
     uint32_t lost_bytes,
     struct tcp_shift_cc_policy *policy)
 {
@@ -208,7 +209,7 @@ int tcp_shift_bbr_controller_recovery_enter(
 
     if (tcp_shift_bbr_recovery_enter(
             &state->recovery, state->cwnd_bytes,
-            transport->inflight_bytes, 0U, lost_bytes,
+            transport->inflight_bytes, acked_bytes, lost_bytes,
             transport->mss_bytes, transport->cwnd_limit_bytes, &cwnd) < 0) {
         return -1;
     }
