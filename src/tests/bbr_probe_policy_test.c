@@ -161,6 +161,14 @@ static int check_probe_bw_policy(void)
               &model, &probe, &tx, &ack, 100000U, &policy) == 0);
     CHECK(policy.cwnd_bytes == 101460U);
 
+    /* Once full pipe is reached, recent excess ACKed delivery augments the
+     * 2*BDP target. This mirrors Linux bbr_ack_aggregation_cwnd(). */
+    model.extra_acked_bytes[0] = 500000U;
+    CHECK(tcp_shift_bbr_probe_bw_policy(
+              &model, &probe, &tx, &ack, 5000000U, &policy) == 0);
+    CHECK(policy.cwnd_bytes == 4500000U);
+    model.extra_acked_bytes[0] = 0U;
+
     model.max_bw_bytes_per_sec = 1U;
     model.min_rtt_ns = 1U;
     CHECK(tcp_shift_bbr_probe_bw_policy(

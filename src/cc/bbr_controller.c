@@ -96,6 +96,12 @@ int tcp_shift_bbr_controller_on_ack(
     if (result < 0) {
         return -1;
     }
+    result = tcp_shift_bbr_model_update_ack_aggregation(
+        &state->model, &ack->rate, ack->acked_bytes,
+        state->cwnd_bytes, ack->ack_time_ns);
+    if (result < 0) {
+        return -1;
+    }
     if (ack->rate.delivered_total_bytes > state->delivered_bytes) {
         state->delivered_bytes = ack->rate.delivered_total_bytes;
     }
