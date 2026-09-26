@@ -54,6 +54,7 @@ struct tcp_shift_lwip_cc_hook_ops {
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
+    int (*on_separate_cwnd_window)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
                                     u16_t payload_bytes);
@@ -168,6 +169,18 @@ tcp_shift_lwip_cc_hook_take_recovery_exit(struct tcp_shift_lwip_cc_hook *hook)
     pending = hook->recovery_exit_pending != 0U ? 1U : 0U;
     hook->recovery_exit_pending = 0U;
     return pending;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_separate_cwnd_window(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_separate_cwnd_window == NULL) {
+        return 0;
+    }
+    return hook->ops->on_separate_cwnd_window(hook->arg, pcb) != 0;
 }
 
 static inline int
