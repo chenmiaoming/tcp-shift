@@ -73,6 +73,7 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t pacing_scheduler_errors;
     uint64_t pacing_tx_events;
     uint64_t pacing_tx_bytes;
+    uint64_t pacing_max_tx_gap_ns;
     uint64_t pacing_last_rate_bytes_per_sec;
     uint64_t pacing_last_deadline_ns;
     uint64_t pacing_last_actual_release_ns;
@@ -101,6 +102,20 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t bbr_cycle_index;
     uint32_t bbr_full_bw_reached;
     uint32_t bbr_recovery_in_progress;
+
+    /* Loss-path diagnostics for distinguishing recovery stalls from steady
+     * BBR model/pacing limits. Times use CLOCK_MONOTONIC and are populated
+     * only by the internal BBR qualification binding. */
+    uint64_t bbr_recovery_enter_events;
+    uint64_t bbr_recovery_exit_events;
+    uint64_t bbr_recovery_total_ns;
+    uint64_t bbr_recovery_max_ns;
+    uint64_t bbr_recovery_packet_conservation_acks;
+    uint64_t bbr_recovery_last_enter_ns;
+    uint64_t bbr_recovery_last_exit_ns;
+    uint32_t bbr_recovery_last_enter_cwnd_bytes;
+    uint32_t bbr_recovery_last_enter_inflight_bytes;
+    uint32_t bbr_recovery_min_cwnd_bytes;
 
     uint64_t bbr_timeout_observations;
     uint64_t bbr_timeout_last_max_bw_bytes_per_sec;
