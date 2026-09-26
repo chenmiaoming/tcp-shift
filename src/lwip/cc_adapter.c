@@ -298,6 +298,42 @@ static void tcp_shift_pacing_note_tx(struct tcp_shift_lwip_cc_adapter *adapter,
     }
 }
 
+static u32_t tcp_shift_lwip_cc_effective_cwnd(void *arg,
+                                                    struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    uint32_t raw_inflight;
+    uint32_t actual_inflight;
+    uint32_t credit;
+    uint32_t cwnd;
+
+    if (pcb == NULL) {
+        return 0U;
+    }
+    cwnd = (uint32_t)pcb->cwnd;
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        adapter->sack_delivery_policy == 0U) {
+        return cwnd;
+    }
+
+    raw_inflight = pcb->snd_nxt - pcb->lastack;
+    actual_inflight = tcp_shift_delivery_outstanding_payload(adapter);
+    if (actual_inflight >= raw_inflight) {
+        return cwnd;
+    }
+
+    /* lwIP gates new sends with seq-lastack against cwnd. Linux SACK-aware
+     * in-flight accounting removes already-SACKed data from packets_in_flight.
+     * Add exactly that released sequence-space as temporary cwnd credit so the
+     * existing tcp_output() inequality becomes equivalent to
+     * actual_unsacked_inflight + new_bytes <= controller_cwnd. */
+    credit = raw_inflight - actual_inflight;
+    if (cwnd > UINT32_MAX - credit) {
+        return UINT32_MAX;
+    }
+    return cwnd + credit;
+}
+
 static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
                                                        struct tcp_pcb *pcb,
                                                        u16_t payload_bytes)
@@ -1271,6 +1307,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+    .effective_cwnd = tcp_shift_lwip_cc_effective_cwnd,
     .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,
     .on_segment_tx = tcp_shift_lwip_cc_on_segment_tx,
     .on_segment_acked = tcp_shift_lwip_cc_on_segment_acked,
