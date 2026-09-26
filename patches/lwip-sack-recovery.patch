@@ -261,7 +261,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,6 +1837,94 @@
+@@ -1787,5 +1837,93 @@
    return ERR_OK;
  }
  
