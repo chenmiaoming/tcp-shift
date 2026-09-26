@@ -126,6 +126,16 @@ int tcp_shift_bbr_drain_policy(
     if (cwnd_target == 0U) {
         return -1;
     }
+    if (cwnd_target < transport->cwnd_limit_bytes) {
+        uint32_t aggregation =
+            tcp_shift_bbr_ack_aggregation_cwnd_bytes(model);
+
+        if (aggregation > transport->cwnd_limit_bytes - cwnd_target) {
+            cwnd_target = transport->cwnd_limit_bytes;
+        } else {
+            cwnd_target += aggregation;
+        }
+    }
 
     cwnd = current_cwnd_bytes;
     if (ack->acked_bytes != 0U) {
