@@ -112,6 +112,10 @@ int tcp_shift_tcp_memory_flow_maybe_grow(
     uint32_t expand_num,
     uint32_t expand_den);
 
+uint32_t tcp_shift_tcp_memory_flow_available_bytes(
+    struct tcp_shift_tcp_memory_flow *flow,
+    struct tcp_pcb *pcb);
+
 int tcp_shift_tcp_memory_flow_can_write(
     struct tcp_shift_tcp_memory_flow *flow,
     const struct tcp_pcb *pcb,
@@ -131,6 +135,7 @@ void tcp_shift_tcp_memory_flow_release(
 /* Production raw-lwIP wrappers. The bridge target rewrites tcp_write/tcp_sent
  * to these symbols at compile time; this translation unit itself calls the
  * unwrapped lwIP APIs. */
+u16_t tcp_shift_lwip_tcp_memory_sndbuf(struct tcp_pcb *pcb);
 err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
                                       const void *arg,
                                       u16_t len,
