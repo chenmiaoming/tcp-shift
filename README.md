@@ -173,11 +173,13 @@ Current qualification includes:
 - explicit-loss ProbeBW semantics instead of treating retransmission metadata as new loss;
 - a bounded sender-SACK transport experiment, compile-time OFF by default;
 - deterministic first-transmission-only ~1% loss reference at 260 ms / 10 Mbit/s;
-- SACKed out-of-order delivery accounting into the internal-BBR rate sampler without later cumulative-ACK double credit.
+- SACKed out-of-order delivery accounting into the internal-BBR rate sampler without later cumulative-ACK double credit;
+- SACK-aware send-window credit so already-SACKed payload no longer occupies BBR's effective congestion window until cumulative ACK repair;
+- a consistent three-later-SACK loss proof for the initial and subsequent selective fast retransmissions.
 
-The merged sequence is now PR #40 (ProbeBW loss semantics), PR #41 (bounded sender SACK), PR #44 (deterministic first-send-loss reference), and PR #45 (SACK delivery accounting). PRs #42/#43 were controlled batching/baseline experiments and were closed without merge after showing no material benefit.
+The merged sequence is now PR #40 (ProbeBW loss semantics), PR #41 (bounded sender SACK), PR #44 (deterministic first-send-loss reference), PR #45 (SACK delivery accounting), and PR #49 (SACK-aware send-window recovery). PRs #42/#43 were controlled batching/baseline experiments and were closed without merge after showing no material benefit.
 
-On the stable first-send-loss case, #45 improved tcp-shift BBR from 2.625210 to 4.092568 Mbit/s while Linux BBR measured 5.490912 Mbit/s, moving the goodput ratio from about 0.478 to about 0.745 with 28 explicit drops, 28 retransmissions, and zero RTOs. Sender SACK remains experimental/default-OFF, and public `bbr` selection remains disabled pending provider/OpenVZ qualification and an explicit exposure decision.
+On the stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss case, #49 raises tcp-shift BBR to 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio. The strict correctness gate remains exact: 28 explicit drops, 28 tcp-shift retransmissions, 28 Linux retransmissions, zero tcp-shift RTOs, zero unrelated qdisc drops, and exact payload delivery. This materially reduces the remaining deterministic-loss gap without establishing Linux-BBR parity. Sender SACK remains experimental/default-OFF, and public `bbr` selection remains disabled pending provider/OpenVZ qualification and an explicit exposure decision.
 
 ## Project state
 
@@ -191,4 +193,4 @@ Start here:
 - [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
 
-> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR plus the default-OFF sender-SACK/rate-sampling path are runner-qualified through merged PR #45 (`ed3507be835a6066d33e840d68f1d3287f7e024b`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
+> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR plus the default-OFF sender-SACK/rate-sampling/send-window path are runner-qualified through merged PR #49 (`90e2c973cc5b72dc0a2ae9296b566fee1b7e3291`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
