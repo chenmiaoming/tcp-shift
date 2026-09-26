@@ -190,6 +190,34 @@ The observed rate sample is about `43682 B/s`, consistent with a 32 KiB window a
 
 The gate does not enable window scaling and does not claim full utilization of arbitrary high-BDP links; it qualifies pacer correctness and wakeup efficiency under the current transport limits.
 
+## P6 BBR qualification
+
+P6 keeps the compact `bbr` controller internal and treats Linux BBR as a behavioral reference, not an identity claim. The workflow combines pure-C model/controller contracts with live lwIP/TUN qualification so controller policy cannot pass while transport recovery is broken.
+
+The sender-SACK path is compile-time experimental/default-OFF. Dedicated P6 jobs enable it and require all of the following to remain fail-closed:
+
+- exact controlled-patch provenance on the same three lwIP TCP core files;
+- deterministic first-send-loss injection with an exact fault count;
+- exact tcp-shift retransmission count matching the injected loss count;
+- zero unrelated qdisc drops and zero tcp-shift RTO fallback;
+- exact payload hash and delivery-ledger accounting with zero live metadata at teardown;
+- SACK layout/sidecar contracts, repeated-burst no-amplification gates, moderate-loss recovery, multi-flow, app-limited, and clean low/edge/high-BDP Linux-reference cases;
+- all production Reno/CUBIC and earlier P0-P5 regressions on the same PR head.
+
+PR #49 adds recovery-duration, maximum TX-gap, and retransmission-classification diagnostics without weakening the correctness gates. On the retained 260 ms / 10 Mbit/s / 4 MiB / 28-drop case, the merged checkpoint measured:
+
+```text
+tcp-shift BBR goodput:   5.052860 Mbit/s
+Linux BBR goodput:       5.491376 Mbit/s
+diagnostic ratio:        0.920145
+tcp-shift drops/retrans: 28 / 28
+Linux retransmissions:   28
+tcp-shift RTO:           0
+unrelated qdisc drops:   0
+```
+
+Goodput remains diagnostic rather than a parity threshold. The strict pass/fail contract is recovery correctness plus retained regression coverage. PR #49 head `4e77cbf71efaa11ee6e2133de96c79e8cc2061c2` passed all 15 workflows and was squash-merged as `90e2c973cc5b72dc0a2ae9296b566fee1b7e3291`.
+
 ## Gate policy
 
 A failure must identify the violated contract. Threshold changes require evidence explaining whether the implementation legitimately grew or the previous threshold was wrong. Do not weaken a gate solely to make CI green.
