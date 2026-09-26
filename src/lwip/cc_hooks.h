@@ -43,6 +43,7 @@ struct tcp_shift_lwip_sack_range {
 };
 
 struct tcp_shift_lwip_cc_hook_ops {
+    void (*on_ack_begin)(void *arg, struct tcp_pcb *pcb);
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
     int (*on_ack_observe)(void *arg,
                           struct tcp_pcb *pcb,
@@ -185,6 +186,18 @@ tcp_shift_lwip_cc_hook_take_recovery_exit(struct tcp_shift_lwip_cc_hook *hook)
     pending = hook->recovery_exit_pending != 0U ? 1U : 0U;
     hook->recovery_exit_pending = 0U;
     return pending;
+}
+
+static inline void
+tcp_shift_lwip_cc_hook_ack_begin(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_ack_begin == NULL) {
+        return;
+    }
+    hook->ops->on_ack_begin(hook->arg, pcb);
 }
 
 static inline int
