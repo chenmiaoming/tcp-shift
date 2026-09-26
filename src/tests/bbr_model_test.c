@@ -289,6 +289,58 @@ static int check_round_and_startup_contract(struct tcp_shift_bbr_model *model)
     return 0;
 }
 
+static int check_ack_aggregation_contract(void)
+{
+    struct tcp_shift_bbr_model model;
+    struct tcp_shift_cc_rate_sample rate;
+    const uint32_t valid = TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+
+    tcp_shift_bbr_model_init(&model);
+    model.max_bw_bytes_per_sec = 1000U;
+
+    rate = round_sample(1000U, 0U, 100U, valid);
+    rate.interval_ns = UINT64_C(100000000);
+    model.round_start = 1U;
+    CHECK(tcp_shift_bbr_model_update_ack_aggregation(
+              &model, &rate, 100U, 10000U, UINT64_C(1000000000)) == 0);
+    CHECK(model.ack_epoch_acked_bytes == 100U);
+    CHECK(model.extra_acked_bytes[0] == 100U);
+    CHECK(model.extra_acked_win_rtts == 1U);
+
+    /* Before full pipe the estimator runs, but the cwnd budget is gated. */
+    CHECK(tcp_shift_bbr_ack_aggregation_cwnd_bytes(&model) == 0U);
+    model.full_bw_reached = 1U;
+    CHECK(tcp_shift_bbr_ack_aggregation_cwnd_bytes(&model) == 100U);
+
+    /* 50 ms later the path would normally deliver 50 bytes. ACKing another
+     * 60 bytes raises the epoch excess to 110 bytes, but Linux caps the cwnd
+     * increment at max_bw*100ms = 100 bytes. */
+    model.round_start = 0U;
+    CHECK(tcp_shift_bbr_model_update_ack_aggregation(
+              &model, &rate, 60U, 10000U, UINT64_C(1050000000)) == 0);
+    CHECK(model.ack_epoch_acked_bytes == 160U);
+    CHECK(model.extra_acked_bytes[0] == 110U);
+    CHECK(tcp_shift_bbr_ack_aggregation_cwnd_bytes(&model) == 100U);
+
+    /* If expected delivery catches the existing epoch ACK count, start a new
+     * aggregation epoch at this ACK, matching Linux BBRv1. */
+    CHECK(tcp_shift_bbr_model_update_ack_aggregation(
+              &model, &rate, 20U, 10000U, UINT64_C(1200000000)) == 0);
+    CHECK(model.ack_epoch_acked_bytes == 20U);
+    CHECK(model.ack_epoch_mstamp_ns == UINT64_C(1200000000));
+
+    /* Five packet-timed rounds rotate to the alternate max slot. */
+    for (unsigned i = 0U; i < TCP_SHIFT_BBR_EXTRA_ACKED_WIN_RTTS - 1U; i++) {
+        model.round_start = 1U;
+        CHECK(tcp_shift_bbr_model_update_ack_aggregation(
+                  &model, &rate, 1U, 10000U,
+                  UINT64_C(1201000000) + (uint64_t)i * UINT64_C(1000000)) == 0);
+    }
+    CHECK(model.extra_acked_win_idx == 1U);
+    CHECK(model.extra_acked_bytes[1] != 0U);
+    return 0;
+}
+
 int main(void)
 {
     struct tcp_shift_bbr_model round_model;
@@ -297,7 +349,8 @@ int main(void)
     CHECK(check_round_filter_contract() == 0);
     CHECK(check_startup_uses_filtered_bw_contract() == 0);
     CHECK(check_round_and_startup_contract(&round_model) == 0);
-    CHECK(sizeof(round_model) <= 224U);
+    CHECK(check_ack_aggregation_contract() == 0);
+    CHECK(sizeof(round_model) <= 248U);
 
     printf("bbr_model_contract=ok mode=startup state_bytes=%zu "
            "filter_rounds=%u round_count=%u full_bw_bytes_per_sec=%llu "
