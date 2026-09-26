@@ -203,7 +203,8 @@ static int check_recovery_composition(void)
               &state, &transport, &init, 0U, &policy) == 0);
 
     /* Establish a cumulative-delivered marker. Recovery entry must reset the
-     * next packet-timed round boundary to exactly this snapshot. */
+     * next packet-timed round boundary to exactly this snapshot and preserve
+     * the current ACK/SACK credit in the first conservation window. */
     CHECK(drive_ack(&state, &transport, UINT64_C(1000000000),
                     UINT64_C(10000000), 0U, 10000U, 12000U,
                     valid, &policy) == 0);
@@ -212,13 +213,14 @@ static int check_recovery_composition(void)
     pacing_before_recovery = state.pacing_rate_bytes_per_sec;
 
     CHECK(tcp_shift_bbr_controller_recovery_enter(
-              &state, &transport, transport.mss_bytes, &policy) == 0);
+              &state, &transport, transport.mss_bytes,
+              transport.mss_bytes, &policy) == 0);
     CHECK(state.recovery.in_recovery == 1U);
     CHECK(state.recovery.packet_conservation == 1U);
     CHECK(state.recovery.prior_cwnd_bytes == 20000U);
     CHECK(state.model.next_round_delivered == 10000U);
     CHECK(state.model.round_start == 0U);
-    CHECK(policy.cwnd_bytes == 12000U);
+    CHECK(policy.cwnd_bytes == 13460U);
     CHECK(policy.pacing_rate_bytes_per_sec == pacing_before_recovery);
     CHECK(state.pending_probe_loss_bytes == transport.mss_bytes);
 
@@ -281,7 +283,7 @@ static int check_invalid_inputs(void)
     CHECK(tcp_shift_bbr_controller_on_ack(
               &state, &transport, &ack, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_enter(
-              &state, &transport, 0U, &policy) < 0);
+              &state, &transport, 0U, 0U, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_exit(
               &state, &transport, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_init(
