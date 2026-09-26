@@ -740,11 +740,17 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
             adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
                                                : now_ns;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
-        slot->retransmitted = 1U;
-        slot->in_flight = 1U;
         if (adapter->stats != NULL) {
+            if (slot->retransmitted != 0U) {
+                adapter->stats->delivery_repeat_retransmit_events++;
+            }
+            if (slot->acked_payload_bytes >= slot->payload_bytes) {
+                adapter->stats->delivery_retransmit_after_delivery_events++;
+            }
             adapter->stats->delivery_retransmit_events++;
         }
+        slot->retransmitted = 1U;
+        slot->in_flight = 1U;
         return;
     }
 
