@@ -167,21 +167,23 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: provider/OpenVZ BBR qualification before exposure
+## Active next milestone: close the residual BBR gap and qualify provider/OpenVZ before exposure
 
-The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. The merged path now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery (#41), deterministic first-send-loss qualification (#44), and SACK-aware delivery/rate accounting (#45). Sender SACK remains compile-time experimental/default-OFF; production `tcp-shift-p2` still exposes only `reno|cubic`.
+The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. The merged path now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery (#41), deterministic first-send-loss qualification (#44), SACK-aware delivery/rate accounting (#45), and SACK-aware effective-cwnd send gating (#49). Sender SACK remains compile-time experimental/default-OFF; production `tcp-shift-p2` still exposes only `reno|cubic`.
 
-The next development increment is evidence-first rather than another broad controller rewrite:
+PR #49 proved that the previous residual loss-path gap was partly transport send-window accounting rather than BBR gain tuning. On the stable 260 ms / 10 Mbit/s / 4 MiB / 28-drop reference, tcp-shift now measures 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio with exact 28/28 retransmission accounting and zero RTO fallback.
+
+The next development increment remains evidence-first:
 
 1. qualify `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON` on the target provider/OpenVZ environment with real RTT/loss/memory/TUN behavior;
-2. reproduce the 260 ms / 10 Mbit/s deterministic first-send-loss case outside GitHub runners where practical;
-3. confirm the constrained-host memory budget with sender SACK enabled, keeping the existing P3 gate rather than widening it;
-4. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
-5. only after provider evidence, decide whether to register `bbr` behind an explicit experimental production selector; Reno remains the default;
-6. use real failures to decide whether compact `bbr` needs another bounded mechanism (for example pacing-aware inflight or ACK aggregation) rather than adding machinery preemptively;
+2. reproduce the deterministic first-send-loss case outside GitHub runners where practical and verify the SACK-aware send-window behavior on the target path;
+3. keep the existing P3 memory gate and measure sender-SACK-enabled constrained-host cost rather than widening thresholds;
+4. investigate the remaining roughly 8% deterministic goodput gap using retained recovery/TX-gap telemetry, with ACK aggregation, packet-conservation duration, rate-sample timing, and residual send-idle behavior as hypotheses rather than preselected fixes;
+5. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
+6. only after provider evidence and another explicit review, decide whether to register `bbr` behind an experimental production selector; Reno remains the default;
 7. keep `bbrv3` separate if full current-draft semantics are ever implemented.
 
-Do not call the compact controller Linux BBR. The current stable first-send-loss reference is about 0.745x Linux BBR goodput after #45, which is a material improvement but still explicitly not parity.
+Do not call the compact controller Linux BBR. The current stable first-send-loss reference is about 0.920x Linux BBR goodput after #49; that is substantially closer but still explicitly not parity.
 
 ## Merge discipline
 

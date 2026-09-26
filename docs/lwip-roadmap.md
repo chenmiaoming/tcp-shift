@@ -138,13 +138,13 @@ The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 
 
 The compact `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
 
-Merged P6 work now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` (#41), a deterministic first-transmission-only ~1% long-RTT loss reference (#44), and SACK-aware out-of-order delivery accounting for internal BBR (#45). The sender-SACK option remains compile-time OFF by default, so legacy/production Reno/CUBIC behavior is unchanged.
+Merged P6 work now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` (#41), a deterministic first-transmission-only ~1% long-RTT loss reference (#44), SACK-aware out-of-order delivery accounting for internal BBR (#45), and SACK-aware effective-cwnd send gating (#49). The sender-SACK option remains compile-time OFF by default, so legacy/production Reno/CUBIC behavior is unchanged.
 
-The stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss reference injects exactly 28 first-transmission drops. After #45, tcp-shift BBR measured 4.092568 Mbit/s versus Linux BBR at 5.490912 Mbit/s, a ~0.745 diagnostic ratio, with exact 28/28 drop/retransmission accounting and zero RTO fallback. This materially improves the previous ~0.478 ratio but still does not establish Linux-BBR parity.
+The stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss reference injects exactly 28 first-transmission drops. After #49, tcp-shift BBR measures 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio, with exact 28/28 tcp-shift drop/retransmission accounting, Linux also at 28 retransmissions, zero tcp-shift RTO fallback, zero unrelated qdisc drops, and exact payload delivery. This materially improves the #45 ~0.745 ratio but still does not establish Linux-BBR parity.
 
-PRs #42/#43 tested multi-hole batching and a matching baseline; both were closed without merge because batching added complexity without material benefit.
+PR #49 fixes a transport accounting mismatch rather than tuning BBR gains: when the sender-SACK experiment is active, already-SACKed payload releases equivalent effective-cwnd credit for native `tcp_output()`, while the peer `snd_wnd` limit remains unchanged. Initial and later selective retransmissions now require the same three-later-SACK proof. PRs #42/#43 remain closed batching/baseline experiments with no material benefit.
 
-The next milestone is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination, including memory, loss, TUN/netfilter and runtime behavior. Only after that evidence should the project decide whether to expose `bbr` publicly. Reno remains the production default.
+The next milestone is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination plus measurement-led investigation of the remaining deterministic-loss gap. Only after that evidence should the project decide whether to expose `bbr` publicly. Reno remains the production default.
 
 ## Milestone state
 

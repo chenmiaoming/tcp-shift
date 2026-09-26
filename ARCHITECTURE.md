@@ -219,17 +219,17 @@ Runner-qualified:
 - P5a: high-resolution delivery ledger and retransmission-safe metadata;
 - P5b: ACK delivery-rate sampling and event-driven app-limited classification;
 - P5c: one process-wide event-driven pacer, deterministic teardown safety, multi-flow scheduling, paced loss/RTO recovery, and high-BDP/window-pressure qualification;
-- P6: compact internal BBR runtime with live cwnd/pacing publication, clean Linux BBR reference comparison, multi-flow/app-limited qualification, explicit-loss ProbeBW semantics, NewReno recovery, bounded sender-SACK selective recovery, deterministic first-send-loss qualification, and SACK-aware delivery/rate accounting.
+- P6: compact internal BBR runtime with live cwnd/pacing publication, clean Linux BBR reference comparison, multi-flow/app-limited qualification, explicit-loss ProbeBW semantics, NewReno recovery, bounded sender-SACK selective recovery, deterministic first-send-loss qualification, SACK-aware delivery/rate accounting, and SACK-aware effective-cwnd send gating.
 
 Current merged behavior head:
 
 ```text
-ed3507be835a6066d33e840d68f1d3287f7e024b
+90e2c973cc5b72dc0a2ae9296b566fee1b7e3291
 ```
 
-The sender-SACK extension remains compile-time experimental and OFF by default. When enabled for qualification, it still lives inside the transport-owned lwIP recovery surface: inbound SACK blocks mark existing outstanding segments, selective requeue remains bounded, and sequence space / queues / retransmission execution / RTO stay in lwIP. PR #45 additionally lets the generic delivery sidecar charge newly SACKed out-of-order payload exactly once so internal BBR sees delivery progress before cumulative ACK repair; Reno/CUBIC native policy remains unchanged.
+The sender-SACK extension remains compile-time experimental and OFF by default. When enabled for qualification, it still lives inside the transport-owned lwIP recovery surface: inbound SACK blocks mark existing outstanding segments, selective requeue remains bounded, and sequence space / queues / retransmission execution / RTO stay in lwIP. PR #45 lets the generic delivery sidecar charge newly SACKed out-of-order payload exactly once so internal BBR sees delivery progress before cumulative ACK repair. PR #49 closes the remaining accounting mismatch between that BBR inflight view and native `tcp_output()`: in the SACK experiment only, the hook supplies an effective cwnd that credits bytes already proven delivered by SACK while preserving the peer `snd_wnd` limit. The initial fast retransmit and later selective holes now use the same three-later-SACK loss proof, preventing the temporary SACK-block ambiguity exposed by the larger flight. Reno/CUBIC native policy and default SACK-OFF builds remain unchanged.
 
-Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The next product boundary is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination, followed by an explicit decision on public `bbr` exposure.
+Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The current product boundary is to qualify the experimental BBR + sender-SACK combination on the target provider/OpenVZ class and continue measurement-led work on the remaining deterministic-loss gap. Public `bbr` exposure remains a separate explicit decision after that evidence.
 
 This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, loss behavior, and memory on the target VPS class.
 

@@ -1,6 +1,6 @@
 # P4: generic congestion-control boundary
 
-Status: **runner-qualified; NewReno multiple-loss/burst recovery is merged through PR #37, and PR #41 adds a default-OFF sender-SACK transport experiment without changing the production recovery default**.
+Status: **runner-qualified; NewReno multiple-loss/burst recovery is merged, and the default-OFF sender-SACK transport experiment now includes SACK delivery accounting and SACK-aware effective-cwnd send gating through PR #49 without changing the production recovery default**.
 
 ## Goal
 
@@ -12,7 +12,7 @@ Establish a platform-independent congestion-control policy boundary and prove th
 
 The generic transport observation contains MSS, inflight bytes, peer send window, and a transport-representable cwnd limit. Events are init, ACK, loss, and RTO. Policy output contains cwnd, ssthresh, and optional pacing rate.
 
-The conventional byte-counting Reno baseline uses 16 bytes of caller-owned state and always requests zero pacing rate. `cwnd_limit_bytes` prevents its 32-bit state from silently diverging from the current unscaled 16-bit lwIP cwnd representation.
+The conventional byte-counting Reno baseline uses 16 bytes of caller-owned state and always requests zero pacing rate. `cwnd_limit_bytes` bounds controller output to the transport-representable cwnd range. The current qualified lwIP profile has `LWIP_WND_SCALE=1`, so sender-side cwnd/window accounting is 32-bit even though the local receive-window profile remains 32 KiB with scale 0.
 
 The standalone contract covers slow start, congestion avoidance, loss, timeout, MSS changes, cwnd limits, saturation, invalid arguments, failed-init handle safety, explicit cwnd/ssthresh publication, and no pacing request.
 
@@ -34,9 +34,9 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`.
 
-The controlled patch chain remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 extends the sender ACK/recovery path with bounded NewReno-style partial-ACK handling. PR #41 adds inbound SACK parsing and a minimal sender scoreboard/selective requeue path. That second path is compile-time gated by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` and remains OFF in all legacy/production qualification builds. PR #45 extends the hook boundary so newly SACKed delivery can be charged to the project delivery sidecar exactly once for internal-BBR sampling; Reno/CUBIC recovery policy remains native.
+The controlled patch chain remains confined to the same three TCP core files: `tcp_in.c`, `tcp_out.c`, and `tcp.c`. Original P4 policy delegation covers ACK cwnd growth, fast-retransmit loss cwnd/ssthresh policy, and RTO cwnd/ssthresh policy. PR #35 extends the sender ACK/recovery path with bounded NewReno-style partial-ACK handling. PR #41 adds inbound SACK parsing and a minimal sender scoreboard/selective requeue path. That second path is compile-time gated by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` and remains OFF in all legacy/production qualification builds. PR #45 extends the hook boundary so newly SACKed delivery can be charged to the project delivery sidecar exactly once for internal-BBR sampling. PR #49 adds an effective-cwnd hook used only by the SACK experiment so native `tcp_output()` can release cwnd credit for already-SACKed payload while preserving the peer `snd_wnd`; it also makes the initial fast retransmit use the same three-later-SACK proof as subsequent selective holes. Reno/CUBIC recovery policy remains native.
 
-Unbound PCBs retain native pinned-lwIP behavior. For bound tcp-shift PCBs, the patched lwIP transport still owns duplicate-ACK processing, retransmission execution, `TF_INFR`, recovery-window mechanics, RTT/RTO calculation, queues, sequence space, packet construction, and `tcp_output()`. The congestion controller receives observations and may own only its published recovery cwnd when explicitly declared (internal BBR); sender recovery itself is not moved into `src/cc/`.
+Unbound PCBs retain native pinned-lwIP behavior. For bound tcp-shift PCBs, the patched lwIP transport still owns duplicate-ACK processing, retransmission execution, `TF_INFR`, recovery-window mechanics, RTT/RTO calculation, queues, sequence space, packet construction, and the `tcp_output()` send loop. The hook may influence policy inputs such as the effective cwnd for internal BBR, but sender recovery execution itself is not moved into `src/cc/`.
 
 One PCB ext-arg slot stores a project hook. `src/lwip/cc_adapter.c` translates lwIP state/events into generic observations and applies returned cwnd/ssthresh policy. The adapter may depend on lwIP; `src/cc/` may not.
 
@@ -184,7 +184,7 @@ P4 is complete because CI now retains all of the following:
 
 - pure-C standalone controller library with no lwIP/Linux dependency;
 - conventional state-machine contract and explicit cwnd/ssthresh policy;
-- narrow three-site lwIP policy hook instead of a TCP recovery fork;
+- narrow three-file controlled lwIP hook surface instead of a TCP recovery fork;
 - exact controlled-patch provenance;
 - real ACK ownership across P2 workloads;
 - real fast-loss and RTO controller events on the integrated packet path;
