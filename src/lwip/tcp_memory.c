@@ -412,6 +412,21 @@ int tcp_shift_tcp_memory_flow_maybe_grow(
     return 1;
 }
 
+uint32_t tcp_shift_tcp_memory_flow_available_bytes(
+    struct tcp_shift_tcp_memory_flow *flow,
+    struct tcp_pcb *pcb)
+{
+    if (flow == NULL || pcb == NULL || flow->manager == NULL) {
+        return 0U;
+    }
+    if (tcp_shift_tcp_memory_flow_maybe_grow(
+            flow, pcb, flow->sndbuf_expand_num,
+            flow->sndbuf_expand_den) < 0) {
+        return 0U;
+    }
+    return (uint32_t)pcb->snd_buf;
+}
+
 int tcp_shift_tcp_memory_flow_can_write(
     struct tcp_shift_tcp_memory_flow *flow,
     const struct tcp_pcb *pcb,
@@ -677,6 +692,23 @@ static err_t tcp_shift_lwip_tcp_memory_sent_dispatch(void *arg,
     tcp_shift_tcp_memory_flow_note_acked(&ext->flow, len);
     app_sent = ext->app_sent;
     return app_sent == NULL ? ERR_OK : app_sent(arg, pcb, len);
+}
+
+u16_t tcp_shift_lwip_tcp_memory_sndbuf(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_tcp_memory_ext *ext;
+    uint32_t available;
+
+    if (pcb == NULL) {
+        return 0U;
+    }
+    ext = tcp_shift_lwip_tcp_memory_get(pcb);
+    if (ext == NULL || ext->flow.manager == NULL) {
+        return tcp_sndbuf(pcb);
+    }
+
+    available = tcp_shift_tcp_memory_flow_available_bytes(&ext->flow, pcb);
+    return available > UINT16_MAX ? UINT16_MAX : (u16_t)available;
 }
 
 err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
