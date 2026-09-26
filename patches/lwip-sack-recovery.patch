@@ -203,13 +203,14 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,31 @@
+@@ -1738,14 +1759,56 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
    struct tcp_seg **cur_seg;
 +#if LWIP_TCP_SACK_OUT
 +  struct tcp_seg **unacked_link;
++  u16_t sacked_after = 0U;
 +#endif
  
    LWIP_ASSERT("tcp_rexmit: invalid pcb", pcb != NULL);
@@ -222,11 +223,35 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +  unacked_link = &pcb->unacked;
 +  if ((pcb->flags & TF_SACK) != 0U) {
-+    while (seg != NULL &&
-+           (seg->flags & (TCP_SHIFT_TF_SEG_SACKED |
-+                          TCP_SHIFT_TF_SEG_SACK_REXMIT)) != 0U) {
-+      unacked_link = &seg->next;
-+      seg = seg->next;
++    /* The initial fast retransmit must use the same SACK loss proof as
++       later selective hole retransmits. Merely choosing the first segment
++       without a SACK tag is unsafe once several discontiguous SACK ranges
++       coexist: a delivered segment can temporarily lack a retained block. */
++    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
++          sacked_after != 0xFFFFU) {
++        sacked_after++;
++      }
++    }
++    if (sacked_after < 3U) {
++      return ERR_VAL;
++    }
++
++    unacked_link = &pcb->unacked;
++    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
++        if (sacked_after != 0U) {
++          sacked_after--;
++        }
++        unacked_link = &seg->next;
++        continue;
++      }
++      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
++          sacked_after < 3U) {
++        unacked_link = &seg->next;
++        continue;
++      }
++      break;
 +    }
 +    if (seg == NULL) {
 +      return ERR_VAL;
