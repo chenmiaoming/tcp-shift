@@ -76,6 +76,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t pacing_tx_events;
     uint64_t pacing_tx_bytes;
     uint64_t pacing_max_tx_gap_ns;
+    uint64_t pacing_max_tx_gap_last_ack_age_ns;
+    uint64_t pacing_max_tx_gap_last_release_age_ns;
     uint64_t pacing_last_rate_bytes_per_sec;
     uint64_t pacing_last_deadline_ns;
     uint64_t pacing_last_actual_release_ns;
@@ -89,6 +91,13 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t delivery_peak_capacity_slots_per_flow;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
+    uint32_t pacing_max_tx_gap_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_effective_cwnd_bytes;
+    uint32_t pacing_max_tx_gap_raw_inflight_bytes;
+    uint32_t pacing_max_tx_gap_actual_inflight_bytes;
+    uint32_t pacing_max_tx_gap_send_window_bytes;
+    uint32_t pacing_max_tx_gap_recovery_owned;
+    uint32_t pacing_max_tx_gap_tf_infr;
 
     /* Internal-BBR qualification telemetry. These remain zero for Reno/CUBIC
      * and record the latest compact-controller state for single-flow P6 runs. */
@@ -113,11 +122,17 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t bbr_recovery_total_ns;
     uint64_t bbr_recovery_max_ns;
     uint64_t bbr_recovery_packet_conservation_acks;
+    uint64_t bbr_recovery_packet_conservation_clear_events;
+    uint64_t bbr_recovery_packet_conservation_total_ns;
+    uint64_t bbr_recovery_packet_conservation_max_ns;
+    uint64_t bbr_recovery_last_packet_conservation_clear_ns;
     uint64_t bbr_recovery_last_enter_ns;
     uint64_t bbr_recovery_last_exit_ns;
     uint32_t bbr_recovery_last_enter_cwnd_bytes;
     uint32_t bbr_recovery_last_enter_inflight_bytes;
     uint32_t bbr_recovery_min_cwnd_bytes;
+    uint32_t bbr_recovery_last_packet_conservation_cwnd_bytes;
+    uint32_t bbr_recovery_last_packet_conservation_inflight_bytes;
 
     uint64_t bbr_timeout_observations;
     uint64_t bbr_timeout_last_max_bw_bytes_per_sec;
