@@ -27,7 +27,7 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -65,8 +65,10 @@
+@@ -65,7 +65,8 @@
  #include LWIP_HOOK_FILENAME
  #endif
  
