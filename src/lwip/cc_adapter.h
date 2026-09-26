@@ -135,12 +135,24 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t bbr_recovery_packet_conservation_max_ns;
     uint64_t bbr_recovery_last_packet_conservation_clear_ns;
     uint64_t bbr_recovery_last_enter_ns;
+    uint64_t bbr_recovery_last_enter_delivered_bytes;
+    uint64_t bbr_recovery_last_enter_round_boundary_bytes;
+    uint64_t bbr_recovery_max_conservation_enter_delivered_bytes;
+    uint64_t bbr_recovery_max_conservation_round_boundary_bytes;
+    uint64_t bbr_recovery_max_conservation_prior_below_boundary_bytes;
+    uint64_t bbr_recovery_max_conservation_clear_prior_delivered_bytes;
+    uint64_t bbr_recovery_max_conservation_clear_delivered_total_bytes;
     uint64_t bbr_recovery_last_exit_ns;
     uint32_t bbr_recovery_last_enter_cwnd_bytes;
     uint32_t bbr_recovery_last_enter_inflight_bytes;
     uint32_t bbr_recovery_min_cwnd_bytes;
     uint32_t bbr_recovery_last_packet_conservation_cwnd_bytes;
     uint32_t bbr_recovery_last_packet_conservation_inflight_bytes;
+    uint32_t bbr_recovery_last_enter_round_count;
+    uint32_t bbr_recovery_max_conservation_enter_round_count;
+    uint32_t bbr_recovery_max_conservation_clear_round_count;
+    uint32_t bbr_recovery_max_conservation_clear_acked_bytes;
+    uint32_t bbr_recovery_max_conservation_clear_rate_flags;
 
     uint64_t bbr_timeout_observations;
     uint64_t bbr_timeout_last_max_bw_bytes_per_sec;
