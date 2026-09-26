@@ -234,6 +234,17 @@ int tcp_shift_bbr_probe_bw_policy(
                                   model->min_rtt_ns);
     target = tcp_shift_bbr_probe_scale_ceil_u64(
         bdp, TCP_SHIFT_BBR_CWND_GAIN_NUM, TCP_SHIFT_BBR_GAIN_DEN);
+    if (target < transport->cwnd_limit_bytes) {
+        uint32_t aggregation =
+            tcp_shift_bbr_ack_aggregation_cwnd_bytes(model);
+
+        if ((uint64_t)aggregation >
+            (uint64_t)transport->cwnd_limit_bytes - target) {
+            target = transport->cwnd_limit_bytes;
+        } else {
+            target += aggregation;
+        }
+    }
     if (target < minimum) {
         target = minimum;
     }
