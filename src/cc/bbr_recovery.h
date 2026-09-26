@@ -7,10 +7,10 @@
 extern "C" {
 #endif
 
-/* Linux BBR provisions 3*cwnd because it can slow-start during recovery.
- * The transport memory manager owns allocation/accounting; BBR only publishes
- * this controller-specific expansion requirement. */
-#define TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM 3U
+/* Qualification A/B: provision extra sender headroom while diagnosing
+ * long-RTT SACK recovery. Transport memory policy still owns allocation,
+ * wmem.max and pressure limits; only the internal BBR hint changes here. */
+#define TCP_SHIFT_BBR_SNDBUF_EXPAND_NUM 6U
 #define TCP_SHIFT_BBR_SNDBUF_EXPAND_DEN 1U
 
 /* Transport-neutral BBRv1-style loss-recovery state. This deliberately does
