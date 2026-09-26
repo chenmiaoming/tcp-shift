@@ -739,10 +739,40 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                     adapter->hook.recovery_controller_owned != 0U;
                 adapter->stats->pacing_max_tx_gap_tf_infr =
                     (pcb->flags & TF_INFR) != 0U;
+                adapter->stats->pacing_max_tx_gap_start_cwnd_bytes =
+                    adapter->last_tx_cwnd_bytes;
+                adapter->stats->pacing_max_tx_gap_start_effective_cwnd_bytes =
+                    adapter->last_tx_effective_cwnd_bytes;
+                adapter->stats->pacing_max_tx_gap_start_raw_inflight_bytes =
+                    adapter->last_tx_raw_inflight_bytes;
+                adapter->stats->pacing_max_tx_gap_start_actual_inflight_bytes =
+                    adapter->last_tx_actual_inflight_bytes;
+                adapter->stats->pacing_max_tx_gap_start_send_window_bytes =
+                    adapter->last_tx_send_window_bytes;
+                adapter->stats->pacing_max_tx_gap_start_snd_buf_bytes =
+                    adapter->last_tx_snd_buf_bytes;
+                adapter->stats->pacing_max_tx_gap_start_recovery_owned =
+                    adapter->last_tx_recovery_owned;
+                adapter->stats->pacing_max_tx_gap_start_tf_infr =
+                    adapter->last_tx_tf_infr;
             }
         }
         adapter->stats->delivery_last_tx_ns = now_ns;
     }
+
+    adapter->last_tx_cwnd_bytes = (uint32_t)pcb->cwnd;
+    adapter->last_tx_effective_cwnd_bytes =
+        tcp_shift_lwip_cc_effective_cwnd(adapter, pcb);
+    adapter->last_tx_raw_inflight_bytes = pcb->snd_nxt - pcb->lastack;
+    adapter->last_tx_actual_inflight_bytes =
+        adapter->sack_delivery_policy != 0U
+            ? tcp_shift_delivery_outstanding_payload(adapter)
+            : adapter->last_tx_raw_inflight_bytes;
+    adapter->last_tx_send_window_bytes = (uint32_t)pcb->snd_wnd;
+    adapter->last_tx_snd_buf_bytes = (uint32_t)pcb->snd_buf;
+    adapter->last_tx_recovery_owned =
+        adapter->hook.recovery_controller_owned != 0U;
+    adapter->last_tx_tf_infr = (pcb->flags & TF_INFR) != 0U;
 
     /* Match Linux tcp_rate_skb_sent(): start a new send phase when there
      * were no packets outstanding before this successful transmission. The
