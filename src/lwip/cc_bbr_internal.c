@@ -17,6 +17,7 @@ struct tcp_shift_lwip_bbr_binding {
     struct tcp_shift_lwip_cc_adapter *adapter;
     const struct tcp_shift_lwip_cc_hook_ops *base_hook_ops;
     uint64_t recovery_enter_ns;
+    uint32_t recovery_entry_acked_bytes;
     uint32_t cycle_seed;
 };
 
@@ -217,8 +218,13 @@ static int tcp_shift_lwip_bbr_on_loss(
             ? 0U
             : transport->inflight_bytes - loss->lost_bytes;
     {
-        int result = tcp_shift_bbr_controller_recovery_enter(
-            &binding->controller, &post_loss, loss->lost_bytes, policy);
+        uint32_t entry_acked_bytes = binding->recovery_entry_acked_bytes;
+        int result;
+
+        binding->recovery_entry_acked_bytes = 0U;
+        result = tcp_shift_bbr_controller_recovery_enter(
+            &binding->controller, &post_loss, entry_acked_bytes,
+            loss->lost_bytes, policy);
         if (result == 0) {
             uint64_t now_ns = tcp_shift_lwip_bbr_now_ns();
 
@@ -337,6 +343,23 @@ tcp_shift_lwip_bbr_binding_from_adapter(
                : NULL;
 }
 
+static void tcp_shift_lwip_bbr_hook_ack_begin(void *arg,
+                                                struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_lwip_bbr_binding *binding =
+        tcp_shift_lwip_bbr_binding_from_adapter(adapter, pcb);
+
+    if (binding == NULL) {
+        return;
+    }
+    binding->recovery_entry_acked_bytes = 0U;
+    if (binding->base_hook_ops != NULL &&
+        binding->base_hook_ops->on_ack_begin != NULL) {
+        binding->base_hook_ops->on_ack_begin(arg, pcb);
+    }
+}
+
 static int tcp_shift_lwip_bbr_hook_ack(void *arg,
                                         struct tcp_pcb *pcb,
                                         tcpwnd_size_t acked_bytes)
@@ -377,13 +400,31 @@ static int tcp_shift_lwip_bbr_hook_sack(
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_lwip_bbr_binding *binding =
         tcp_shift_lwip_bbr_binding_from_adapter(adapter, pcb);
+    uint64_t delivered_before;
+    uint64_t delivered_after;
+    uint64_t newly_delivered;
+    int handled;
 
     if (binding == NULL || binding->base_hook_ops == NULL ||
         binding->base_hook_ops->on_sack == NULL) {
         return 0;
     }
-    return binding->base_hook_ops->on_sack(
+
+    delivered_before = adapter->delivered_bytes;
+    handled = binding->base_hook_ops->on_sack(
         arg, pcb, ranges, range_count);
+    delivered_after = adapter->delivered_bytes;
+    if (handled != 0 && delivered_after >= delivered_before) {
+        newly_delivered = delivered_after - delivered_before;
+        if (newly_delivered > UINT32_MAX -
+                                  binding->recovery_entry_acked_bytes) {
+            binding->recovery_entry_acked_bytes = UINT32_MAX;
+        } else {
+            binding->recovery_entry_acked_bytes +=
+                (uint32_t)newly_delivered;
+        }
+    }
+    return handled;
 }
 
 static int tcp_shift_lwip_bbr_hook_loss(void *arg,
@@ -530,6 +571,7 @@ static void tcp_shift_lwip_bbr_hook_segment_acked(void *arg,
 }
 
 static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_bbr_hook_ops = {
+    .on_ack_begin = tcp_shift_lwip_bbr_hook_ack_begin,
     .on_ack = tcp_shift_lwip_bbr_hook_ack,
     .on_ack_observe = tcp_shift_lwip_bbr_hook_ack_observe,
     .on_sack = tcp_shift_lwip_bbr_hook_sack,
