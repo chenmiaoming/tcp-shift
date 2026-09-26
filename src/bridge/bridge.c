@@ -16,6 +16,7 @@
 #include "lwip/ip_addr.h"
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
+#include "lwip/tcp_memory.h"
 
 #define TCP_SHIFT_BRIDGE_BACKEND_READ_CHUNK 4096U
 #define TCP_SHIFT_BRIDGE_BACKEND_READ_BUDGET 16U
@@ -316,7 +317,7 @@ static int tcp_shift_bridge_pump_backend_to_public(
 
     for (budget = 0; budget < TCP_SHIFT_BRIDGE_BACKEND_READ_BUDGET; budget++) {
         unsigned char buffer[TCP_SHIFT_BRIDGE_BACKEND_READ_CHUNK];
-        u16_t sndbuf = tcp_sndbuf(flow->pcb);
+        u16_t sndbuf = tcp_shift_lwip_tcp_memory_sndbuf(flow->pcb);
         size_t wanted;
         ssize_t available;
         err_t err;
