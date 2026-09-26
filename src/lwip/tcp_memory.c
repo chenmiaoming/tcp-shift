@@ -427,6 +427,14 @@ int tcp_shift_tcp_memory_flow_can_write(
         return 1;
     }
     if (bytes > pcb->snd_buf) {
+        manager = flow->manager;
+        manager->stats.sndbuf_blocks++;
+        manager->stats.last_block_snd_buf_bytes = (uint32_t)pcb->snd_buf;
+        manager->stats.last_block_requested_bytes =
+            bytes > UINT32_MAX ? UINT32_MAX : (uint32_t)bytes;
+        manager->stats.last_block_capacity_bytes = flow->capacity_bytes;
+        manager->stats.last_block_queued_bytes = flow->queued_bytes;
+        manager->stats.last_block_snd_queuelen = pcb->snd_queuelen;
         return 0;
     }
     manager = flow->manager;
@@ -708,6 +716,15 @@ err_t tcp_shift_lwip_tcp_memory_write(struct tcp_pcb *pcb,
     err = tcp_write(pcb, arg, len, apiflags);
     if (err == ERR_OK) {
         tcp_shift_tcp_memory_flow_note_write(&ext->flow, len);
+    } else if (err == ERR_MEM && ext->flow.manager != NULL) {
+        struct tcp_shift_tcp_memory_manager *manager = ext->flow.manager;
+
+        manager->stats.upstream_write_mem_errors++;
+        manager->stats.last_block_snd_buf_bytes = (uint32_t)pcb->snd_buf;
+        manager->stats.last_block_requested_bytes = (uint32_t)len;
+        manager->stats.last_block_capacity_bytes = ext->flow.capacity_bytes;
+        manager->stats.last_block_queued_bytes = ext->flow.queued_bytes;
+        manager->stats.last_block_snd_queuelen = pcb->snd_queuelen;
     }
     return err;
 }
