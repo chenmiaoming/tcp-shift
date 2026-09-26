@@ -56,6 +56,9 @@ static struct tcp_shift_lwip_cc_listener_binding
 static struct tcp_shift_lwip_cc_stats tcp_shift_lwip_cc_stats;
 static struct tcp_shift_pacing_service tcp_shift_pacing_service;
 
+static uint32_t tcp_shift_delivery_outstanding_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter);
+
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 {
 #if LWIP_WND_SCALE
