@@ -261,7 +261,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,81 @@
+@@ -1787,6 +1837,94 @@
    return ERR_OK;
  }
  
@@ -272,14 +272,23 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  struct tcp_seg *seg;
 +  struct tcp_seg **unacked_link;
 +  struct tcp_seg **cur_seg;
++  u32_t recovery_end_seq;
 +  u16_t sacked_after = 0U;
 +
 +  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
-+      pcb->unacked == NULL) {
++      pcb->unacked == NULL ||
++      !tcp_shift_lwip_cc_hook_recovery_end_seq(pcb, &recovery_end_seq)) {
 +    return ERR_VAL;
 +  }
 +
++  /* Keep selective recovery bounded to the flight that existed when this
++     fast-recovery episode began. New data sent while BBR refills SACKed
++     inflight must not become evidence for, or a candidate hole in, the
++     current episode. */
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    if (!TCP_SEQ_LT(lwip_ntohl(seg->tcphdr->seqno), recovery_end_seq)) {
++      break;
++    }
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
 +        sacked_after != 0xFFFFU) {
 +      sacked_after++;
@@ -291,6 +300,9 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +
 +  unacked_link = &pcb->unacked;
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    if (!TCP_SEQ_LT(lwip_ntohl(seg->tcphdr->seqno), recovery_end_seq)) {
++      break;
++    }
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
 +      if (sacked_after != 0U) {
 +        sacked_after--;
