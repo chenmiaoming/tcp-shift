@@ -208,6 +208,14 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             "max_tx_gap_actual_inflight_bytes=%u "
             "max_tx_gap_send_window_bytes=%u "
             "max_tx_gap_recovery_owned=%u max_tx_gap_tf_infr=%u "
+            "max_tx_gap_start_cwnd_bytes=%u "
+            "max_tx_gap_start_effective_cwnd_bytes=%u "
+            "max_tx_gap_start_raw_inflight_bytes=%u "
+            "max_tx_gap_start_actual_inflight_bytes=%u "
+            "max_tx_gap_start_send_window_bytes=%u "
+            "max_tx_gap_start_snd_buf_bytes=%u "
+            "max_tx_gap_start_recovery_owned=%u "
+            "max_tx_gap_start_tf_infr=%u "
             "last_rate_bytes_per_sec=%llu "
             "last_deadline_ns=%llu last_actual_release_ns=%llu "
             "loop_pacing_wakeups=%llu loop_release_callbacks=%llu "
@@ -233,6 +241,14 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             stats->pacing_max_tx_gap_send_window_bytes,
             stats->pacing_max_tx_gap_recovery_owned,
             stats->pacing_max_tx_gap_tf_infr,
+            stats->pacing_max_tx_gap_start_cwnd_bytes,
+            stats->pacing_max_tx_gap_start_effective_cwnd_bytes,
+            stats->pacing_max_tx_gap_start_raw_inflight_bytes,
+            stats->pacing_max_tx_gap_start_actual_inflight_bytes,
+            stats->pacing_max_tx_gap_start_send_window_bytes,
+            stats->pacing_max_tx_gap_start_snd_buf_bytes,
+            stats->pacing_max_tx_gap_start_recovery_owned,
+            stats->pacing_max_tx_gap_start_tf_infr,
             (unsigned long long)stats->pacing_last_rate_bytes_per_sec,
             (unsigned long long)stats->pacing_last_deadline_ns,
             (unsigned long long)stats->pacing_last_actual_release_ns,
