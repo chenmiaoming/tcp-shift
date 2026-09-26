@@ -150,7 +150,7 @@ The deterministic periodic-loss injector was intentionally excluded because it c
 
 The retained source checkpoint passed all 15 workflows with the existing P3 memory gate unchanged. PR #38 was replayed on top of #37 and squash-merged as `1c8b7b4477f71edde0f5961674f37de0a0dd9832`.
 
-Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through qualification targets. The sender-SACK transport extension remains compile-time experimental/default-OFF. The next product decision is provider/OpenVZ qualification of the combined BBR + sender-SACK path, followed by an explicit decision on public `bbr` exposure; Reno remains the default.
+Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through qualification targets. The sender-SACK transport extension remains compile-time experimental/default-OFF. The next product decision requires both provider/OpenVZ qualification of the combined BBR + sender-SACK path and a measurement-led review of the remaining deterministic-loss gap; only after those two evidence tracks should the project make a separate explicit decision on public `bbr` exposure. Reno remains the default.
 
 ## ProbeBW loss semantics — merged PR #40
 
