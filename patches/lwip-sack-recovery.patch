@@ -156,6 +156,17 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
+@@ -1262,7 +1267,8 @@ tcp_output(struct tcp_pcb *pcb)
+   if (tcp_input_pcb == pcb) {
+     return ERR_OK;
+   }
+ 
+-  wnd = LWIP_MIN(pcb->snd_wnd, pcb->cwnd);
++  wnd = LWIP_MIN(pcb->snd_wnd,
++                 tcp_shift_lwip_cc_hook_effective_cwnd(pcb));
+ 
+   seg = pcb->unsent;
+ 
 @@ -1637,13 +1643,16 @@
  /**
   * Requeue all unacked segments for retransmission
