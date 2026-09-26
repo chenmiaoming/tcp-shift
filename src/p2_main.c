@@ -345,6 +345,7 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "recovery_last_enter_ns=%llu recovery_last_exit_ns=%llu "
             "recovery_last_enter_delivered_bytes=%llu "
             "recovery_last_enter_round_boundary_bytes=%llu "
+            "recovery_last_enter_sack_ack_age_ns=%llu "
             "recovery_max_conservation_enter_delivered_bytes=%llu "
             "recovery_max_conservation_round_boundary_bytes=%llu "
             "recovery_max_conservation_prior_below_boundary_bytes=%llu "
@@ -356,7 +357,10 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "recovery_last_packet_conservation_cwnd_bytes=%u "
             "recovery_last_packet_conservation_inflight_bytes=%u "
             "recovery_last_enter_round_count=%u "
+            "recovery_last_enter_sack_acked_bytes=%u "
             "recovery_max_conservation_enter_round_count=%u "
+            "recovery_max_conservation_enter_sack_acked_bytes=%u "
+            "recovery_max_conservation_enter_sack_ack_age_ns=%llu "
             "recovery_max_conservation_clear_round_count=%u "
             "recovery_max_conservation_clear_acked_bytes=%u "
             "recovery_max_conservation_clear_rate_flags=%u "
@@ -406,6 +410,8 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)
                 stats->bbr_recovery_last_enter_round_boundary_bytes,
             (unsigned long long)
+                stats->bbr_recovery_last_enter_sack_ack_age_ns,
+            (unsigned long long)
                 stats->bbr_recovery_max_conservation_enter_delivered_bytes,
             (unsigned long long)
                 stats->bbr_recovery_max_conservation_round_boundary_bytes,
@@ -421,7 +427,11 @@ static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->bbr_recovery_last_packet_conservation_cwnd_bytes,
             stats->bbr_recovery_last_packet_conservation_inflight_bytes,
             stats->bbr_recovery_last_enter_round_count,
+            stats->bbr_recovery_last_enter_sack_acked_bytes,
             stats->bbr_recovery_max_conservation_enter_round_count,
+            stats->bbr_recovery_max_conservation_enter_sack_acked_bytes,
+            (unsigned long long)
+                stats->bbr_recovery_max_conservation_enter_sack_ack_age_ns,
             stats->bbr_recovery_max_conservation_clear_round_count,
             stats->bbr_recovery_max_conservation_clear_acked_bytes,
             stats->bbr_recovery_max_conservation_clear_rate_flags,
