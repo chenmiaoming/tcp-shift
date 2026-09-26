@@ -234,6 +234,8 @@ int main(void)
     CHECK(stats.delivery_sack_events == 1U);
     CHECK(stats.delivery_sack_payload_bytes == payload);
     CHECK(stats.rate_snapshot_samples == 6U);
+    CHECK(tcp_shift_lwip_cc_hook_effective_cwnd(pcb) ==
+          (uint32_t)pcb->cwnd + payload);
 
     /* Cumulative ACK spans both the hole and the already-SACKed segment. Only
      * segment7 is newly delivered here; segment8 must not be credited twice. */
@@ -244,6 +246,7 @@ int main(void)
     CHECK(stats.delivery_sack_payload_bytes == payload);
     CHECK(stats.rate_snapshot_samples == 7U);
     CHECK(stats.rate_last_delivered_total_bytes == (uint64_t)payload * 8U);
+    CHECK(tcp_shift_lwip_cc_hook_effective_cwnd(pcb) == (uint32_t)pcb->cwnd);
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment7, payload);
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment8, payload);
 
