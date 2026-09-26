@@ -52,10 +52,17 @@ struct tcp_shift_tcp_memory_stats {
     uint64_t pressure_enters;
     uint64_t pressure_exits;
     uint64_t high_blocks;
+    uint64_t sndbuf_blocks;
+    uint64_t upstream_write_mem_errors;
     uint64_t growth_events;
     uint64_t growth_bytes;
     uint64_t growth_suppressed;
     uint64_t accounting_underflows;
+    uint64_t last_block_queued_bytes;
+    uint32_t last_block_snd_buf_bytes;
+    uint32_t last_block_requested_bytes;
+    uint32_t last_block_capacity_bytes;
+    uint32_t last_block_snd_queuelen;
 };
 
 struct tcp_shift_tcp_memory_manager {
