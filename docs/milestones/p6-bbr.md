@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; compact internal BBR, explicit-loss ProbeBW, bounded sender-SACK recovery, deterministic first-send-loss qualification, and SACK-aware delivery accounting are merged through PR #45; public `bbr` selection remains intentionally disabled pending provider/OpenVZ qualification and an explicit exposure decision**.
+Status: **active; compact internal BBR, explicit-loss ProbeBW, bounded sender-SACK recovery, deterministic first-send-loss qualification, SACK-aware delivery accounting, and SACK-aware effective-cwnd send gating are merged through PR #49; public `bbr` selection remains intentionally disabled pending provider/OpenVZ qualification, residual-gap review, and an explicit exposure decision**.
 
 ## Congestion-control architecture
 
@@ -250,9 +250,39 @@ The delivery sidecar recorded 2,178 SACK-delivery events covering 3,308,360 payl
 
 PR #45 passed all 15 workflows at its retained code checkpoint and was squash-merged as `ed3507be835a6066d33e840d68f1d3287f7e024b`.
 
+## SACK-aware send-window recovery — merged PR #49
+
+After #45, the controller-side model was no longer the dominant mismatch: `max_bw` was already close to the 10 Mbit/s bottleneck and final cwnd was near the Linux BBR envelope, yet tcp-shift still spent substantial time stalled inside recovery. Diagnostic telemetry on the stable 260 ms reference measured roughly 4.7 s in fast recovery across 10 episodes and a maximum data-TX gap of about one RTT.
+
+The remaining mismatch was between two inflight definitions:
+
+- internal BBR's SACK-aware delivery sidecar removed newly SACKed out-of-order payload from controller inflight;
+- pinned lwIP `tcp_output()` still gated new sends using cumulative sequence space against `cwnd`, so already-SACKed bytes continued occupying the native congestion window until the hole was cumulatively repaired.
+
+PR #49 keeps send execution in lwIP but lets the SACK experiment supply an effective cwnd equal to the controller cwnd plus credit for payload already proven delivered by SACK. The peer `snd_wnd` limit remains unchanged. The change is compile-time dormant when sender SACK is OFF, so production/default Reno/CUBIC behavior is unchanged.
+
+The first implementation exposed another recovery edge: expanding the usable flight caused a few distinct, not repeated, segments to be spuriously retransmitted because initial fast retransmit used weaker evidence than later SACK-hole recovery. The final rule requires the same proof for both: a candidate hole must have at least three later SACKed segments. The strict first-send-loss gate therefore remains exact instead of being relaxed.
+
+Stable 260 ms / 10 Mbit/s / 4 MiB / 28-drop evidence after #49:
+
+- tcp-shift BBR: 5.052860 Mbit/s;
+- Linux BBR: 5.491376 Mbit/s;
+- diagnostic goodput ratio: 0.920145;
+- tcp-shift fault drops / retransmissions: 28 / 28;
+- Linux retransmissions: 28;
+- tcp-shift RTO: 0;
+- unrelated qdisc drops: 0;
+- final tcp-shift cwnd: 633008 bytes;
+- max bandwidth estimate: 1211429 B/s;
+- exact payload integrity and delivery-ledger teardown.
+
+This reduces the stable deterministic-loss gap from about 25% after #45 to about 8% after #49. It still does not establish Linux-BBR parity and does not justify public exposure by itself.
+
+PR #49 passed all 15 workflows on head `4e77cbf71efaa11ee6e2133de96c79e8cc2061c2` and was squash-merged as `90e2c973cc5b72dc0a2ae9296b566fee1b7e3291`.
+
 ## Original planned order from P6d
 
-Items 1–8 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, WAN-burst/repeated-burst, and sampling/Startup checkpoints. The next product step is controlled experimental `bbr` exposure plus real provider/OpenVZ qualification; frequent/high aggregate loss remains an evidence-gathering area rather than a reason to preemptively add a larger sender-recovery stack.
+Items 1–8 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, WAN-burst/repeated-burst, sampling/Startup, SACK-delivery, and SACK-aware send-window checkpoints. The next product step is provider/OpenVZ qualification plus measurement-led investigation of the remaining deterministic-loss gap; controlled public `bbr` exposure remains gated on that evidence and a separate explicit decision. Frequent/high aggregate loss remains an evidence-gathering area rather than a reason to preemptively add a larger sender-recovery stack.
 
 
 
