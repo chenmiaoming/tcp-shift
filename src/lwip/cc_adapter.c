@@ -900,7 +900,8 @@ static void tcp_shift_rack_slot_view(
 
 static void tcp_shift_rack_process_delivered_slots(
     struct tcp_shift_lwip_cc_adapter *adapter,
-    uint64_t ack_time_ns)
+    uint64_t ack_time_ns,
+    const char *delivery_source)
 {
     struct tcp_shift_delivery_slot *slots;
     uint16_t processed = 0U;
@@ -1008,12 +1009,43 @@ static void tcp_shift_rack_process_delivered_slots(
             struct tcp_shift_rack_segment segment;
             uint8_t reordering_before = adapter->rack_tlp.reordering_seen;
 
+            uint32_t fack_before = adapter->rack_tlp.fack;
+            uint32_t rack_end_before = adapter->rack_tlp.rack_end_seq;
+            uint64_t rack_xmit_before = adapter->rack_tlp.rack_xmit_ts_ns;
+
             tcp_shift_rack_slot_view(next, &segment);
             tcp_shift_rack_detect_reordering(&adapter->rack_tlp, &segment);
             if (reordering_before == 0U &&
-                adapter->rack_tlp.reordering_seen != 0U &&
-                adapter->stats != NULL) {
-                adapter->stats->rack_reordering_events++;
+                adapter->rack_tlp.reordering_seen != 0U) {
+                if (tcp_shift_rack_loss_trace_enabled() &&
+                    tcp_shift_rack_loss_trace_events < 128U) {
+                    fprintf(stderr,
+                            "tcp-shift-rack-loss-trace: event=reordering-first "
+                            "source=%s seq=%u end=%u retrans=%u tx_ns=%llu "
+                            "ack_ns=%llu lastack=%u snd_nxt=%u "
+                            "fack_before=%u fack_after=%u "
+                            "rack_end_before=%u rack_xmit_before=%llu "
+                            "rack_end_after=%u rack_xmit_after=%llu "
+                            "acked_payload=%u payload=%u\n",
+                            delivery_source != NULL ? delivery_source : "unknown",
+                            segment.seq_start, segment.end_seq,
+                            segment.retransmitted,
+                            (unsigned long long)segment.xmit_ts_ns,
+                            (unsigned long long)ack_time_ns,
+                            adapter->pcb != NULL ? adapter->pcb->lastack : 0U,
+                            adapter->pcb != NULL ? adapter->pcb->snd_nxt : 0U,
+                            fack_before, adapter->rack_tlp.fack,
+                            rack_end_before,
+                            (unsigned long long)rack_xmit_before,
+                            adapter->rack_tlp.rack_end_seq,
+                            (unsigned long long)adapter->rack_tlp.rack_xmit_ts_ns,
+                            (unsigned)next->acked_payload_bytes,
+                            (unsigned)next->payload_bytes);
+                    tcp_shift_rack_loss_trace_events++;
+                }
+                if (adapter->stats != NULL) {
+                    adapter->stats->rack_reordering_events++;
+                }
             }
             tcp_shift_rack_record_stats(adapter);
         }
@@ -1663,7 +1695,8 @@ static uint32_t tcp_shift_delivery_build_rate_sample(
     }
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    tcp_shift_rack_process_delivered_slots(adapter, now_ns);
+    tcp_shift_rack_process_delivered_slots(
+        adapter, now_ns, "cumulative");
 #endif
     tcp_shift_delivery_finalize_rate_sample(
         adapter, candidate, delivered_added, now_ns, touched, partial, rate);
@@ -1737,7 +1770,8 @@ static uint32_t tcp_shift_delivery_build_sack_rate_sample(
     }
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    tcp_shift_rack_process_delivered_slots(adapter, now_ns);
+    tcp_shift_rack_process_delivered_slots(
+        adapter, now_ns, "sack");
 #endif
     tcp_shift_delivery_finalize_rate_sample(
         adapter, candidate, delivered_added, now_ns, touched, 0U, rate);
