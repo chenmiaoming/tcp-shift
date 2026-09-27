@@ -49,6 +49,7 @@ struct tcp_shift_lwip_sack_range {
  * RACK time evidence is mature, enter one fast-recovery episode if necessary,
  * then drive ordinary tcp_output(). */
 err_t tcp_shift_tcp_rack_rexmit_due(struct tcp_pcb *pcb);
+err_t tcp_shift_tcp_tlp_probe(struct tcp_pcb *pcb, u32_t *end_seq);
 #endif
 
 struct tcp_shift_lwip_cc_hook_ops {
