@@ -1,6 +1,8 @@
 #ifndef TCP_SHIFT_LWIP_CC_HOOKS_H
 #define TCP_SHIFT_LWIP_CC_HOOKS_H
 
+#include <stdint.h>
+
 #include "lwip/opt.h"
 
 #if LWIP_TCP
@@ -58,7 +60,7 @@ struct tcp_shift_lwip_cc_hook_ops {
     int (*rack_loss_status)(void *arg,
                             struct tcp_pcb *pcb,
                             const void *segment,
-                            u64_t *remaining_ns);
+                            uint64_t *remaining_ns);
     u32_t (*effective_cwnd)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
@@ -170,7 +172,7 @@ tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
 static inline int
 tcp_shift_lwip_cc_hook_rack_loss_status(struct tcp_pcb *pcb,
                                          const void *segment,
-                                         u64_t *remaining_ns)
+                                         uint64_t *remaining_ns)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
 
