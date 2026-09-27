@@ -153,6 +153,26 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++
++static int
++tcp_shift_tcp_segment_loss_proven(struct tcp_pcb *pcb,
++                                  const struct tcp_seg *seg,
++                                  u16_t sacked_after)
++{
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  u64_t remaining_ns = 0U;
++  int rack_status =
++      tcp_shift_lwip_cc_hook_rack_loss_status(pcb, seg, &remaining_ns);
++
++  if (rack_status >= 0) {
++    return rack_status != 0;
++  }
++#else
++  LWIP_UNUSED_ARG(pcb);
++  LWIP_UNUSED_ARG(seg);
++#endif
++  return sacked_after >= 3U;
++}
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
@@ -233,10 +253,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        sacked_after++;
 +      }
 +    }
-+    if (sacked_after < 3U) {
-+      return ERR_VAL;
-+    }
-+
 +    unacked_link = &pcb->unacked;
 +    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
@@ -247,7 +263,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        continue;
 +      }
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
-+          sacked_after < 3U) {
++          !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +        unacked_link = &seg->next;
 +        continue;
 +      }
@@ -330,8 +346,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +       fallback if this retransmission itself is lost. Retrying on every new
 +       SACK block causes severe spurious retransmission before one RTT has
 +       elapsed on high-latency paths. */
-+    if (sacked_after < 3U ||
-+        (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
++        !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +      unacked_link = &seg->next;
 +      continue;
 +    }
