@@ -220,6 +220,38 @@ jobs:
           grep -F 'loss_events=2' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
 
+      - name: Prove deterministic 28-drop RACK recovery stays exact
+        run: |
+          out="$PWD/.build/rack-tlp-first-send-28"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=RACK28 \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrack28 \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifb28 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18183 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19183 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'loss_mode=deterministic-first-send' "$out/summary.txt"
+          grep -F 'fault_marker_count=28' "$out/summary.txt"
+          grep -F 'fault_drops=28' "$out/summary.txt"
+          grep -F 'retransmit_events=28' "$out/summary.txt"
+          grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+          grep -F 'qdisc_drops=0/0' "$out/summary.txt"
+          grep -F 'payload_integrity=ok' "$out/summary.txt"
+
       - name: Prove reordering below reo_wnd causes no recovery
         run: |
           out="$PWD/.build/rack-tlp-reorder-safe"
@@ -300,6 +332,9 @@ jobs:
             if [ -f .build/rack-tlp-lost-retransmission/summary.txt ]; then
               cat .build/rack-tlp-lost-retransmission/summary.txt
             fi
+            if [ -f .build/rack-tlp-first-send-28/summary.txt ]; then
+              cat .build/rack-tlp-first-send-28/summary.txt
+            fi
             if [ -f .build/rack-tlp-reorder-safe/summary.txt ]; then
               cat .build/rack-tlp-reorder-safe/summary.txt
             fi
@@ -308,7 +343,7 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending deterministic 28-drop, teardown, controller-matrix, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending teardown, controller-matrix, and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RACK-TLP diagnostics
@@ -322,6 +357,7 @@ jobs:
             .build/rack-tlp-app-limited-tail-loss
             .build/rack-tlp-clean-long-rtt
             .build/rack-tlp-lost-retransmission
+            .build/rack-tlp-first-send-28
             .build/rack-tlp-reorder-safe
             .build/rack-tlp-reorder-dsack
           if-no-files-found: warn
