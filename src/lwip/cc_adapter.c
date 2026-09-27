@@ -1909,6 +1909,25 @@ static int tcp_shift_lwip_cc_on_sack(
     return 1;
 }
 
+static void tcp_shift_lwip_cc_on_tlp_dupack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    unsigned sack_seen)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        sack_seen != 0U) {
+        return;
+    }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    (void)tcp_shift_tlp_process_ack(
+        &adapter->rack_tlp, pcb->lastack, 0U, 1U);
+#else
+    (void)sack_seen;
+#endif
+}
+
 static int tcp_shift_lwip_cc_on_tlp_loss(void *arg,
                                          struct tcp_pcb *pcb,
                                          tcpwnd_size_t lost_bytes)
@@ -2062,6 +2081,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_tlp_loss = tcp_shift_lwip_cc_on_tlp_loss,
+    .on_tlp_dupack = tcp_shift_lwip_cc_on_tlp_dupack,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     .rack_loss_status = tcp_shift_lwip_cc_rack_loss_status,
