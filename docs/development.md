@@ -38,7 +38,7 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 The repository-owned integration is a controlled two-patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. `scripts/fetch-lwip.sh` records pristine critical-source hashes before applying either patch. Provenance CI independently proves the modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the chained patch result for the pin.
 
-The sender-SACK patch is an experimental transport increment, default OFF behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY`. It must not silently become part of production builds. Both patches stay within the existing three-file upstream boundary; any new upstream file still requires an architectural reason, bounded surface, provenance coverage, and regression evidence.
+The SACK/RACK patch remains an experimental transport increment, but SACK evidence and retransmission policy are separate build concerns. `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE` enables the SACK negotiation/scoreboard/delivery substrate needed by RACK; `TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR` enables only the old fixed-count selective-retransmission compatibility path. `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` is a deprecated alias for non-RACK compatibility during migration. RACK builds must enable SACK evidence and must not enable the legacy selector. None of these options may silently become part of production/default builds. Both patches stay within the existing three-file upstream boundary; any new upstream file still requires an architectural reason, bounded surface, provenance coverage, and regression evidence.
 
 ## Current architecture
 
