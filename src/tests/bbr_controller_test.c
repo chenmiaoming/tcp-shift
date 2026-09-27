@@ -284,6 +284,18 @@ static int check_recovery_composition(void)
     CHECK(policy.pacing_rate_bytes_per_sec == pacing_before_recovery);
     CHECK(state.pending_probe_loss_bytes == transport.mss_bytes);
 
+    /* RFC 8985 can prove that a retransmission was itself lost while this
+     * Recovery episode is still active. Charge one additional MSS without
+     * overwriting the original prior-cwnd snapshot or starting a new episode. */
+    CHECK(tcp_shift_bbr_controller_recovery_note_loss(
+              &state, &transport, transport.mss_bytes, &policy) == 0);
+    CHECK(state.recovery.in_recovery == 1U);
+    CHECK(state.recovery.packet_conservation == 1U);
+    CHECK(state.recovery.prior_cwnd_bytes == 20000U);
+    CHECK(policy.cwnd_bytes == 12000U);
+    CHECK(state.cwnd_bytes == 12000U);
+    CHECK(state.pending_probe_loss_bytes == 2U * transport.mss_bytes);
+
     /* A recovery ACK whose prior-delivered snapshot predates the entry marker
      * is still in the first packet-timed recovery round. Normal STARTUP policy
      * would grow cwnd, but packet conservation must retain ownership. */
@@ -293,7 +305,7 @@ static int check_recovery_composition(void)
                     valid, &policy) == 0);
     CHECK(state.model.round_start == 0U);
     CHECK(state.recovery.packet_conservation == 1U);
-    CHECK(policy.cwnd_bytes == 13460U);
+    CHECK(policy.cwnd_bytes == 12000U);
 
     /* Once prior_delivered reaches the entry marker, model.round_start opens a
      * new packet-timed round. That ACK releases packet conservation and normal
@@ -344,6 +356,8 @@ static int check_invalid_inputs(void)
               &state, &transport, &ack, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_enter(
               &state, &transport, 0U, 0U, &policy) < 0);
+    CHECK(tcp_shift_bbr_controller_recovery_note_loss(
+              &state, &transport, transport.mss_bytes, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_recovery_exit(
               &state, &transport, &policy) < 0);
     CHECK(tcp_shift_bbr_controller_init(
@@ -365,6 +379,7 @@ int main(void)
            "first_rtt_pacing_rebootstrap=linux-shaped public_ops=disabled "
            "loss_timeout=pending cycle_seed=external\n");
     printf("bbr_controller_recovery=ok conservation=one-packet-round "
-           "round_marker=delivered restore=prior_cwnd public_ops=disabled\n");
+           "round_marker=delivered retrans_loss=additional-cwnd-response "
+           "restore=prior_cwnd public_ops=disabled\n");
     return 0;
 }

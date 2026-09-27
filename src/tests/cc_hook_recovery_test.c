@@ -69,6 +69,7 @@ int main(void)
     static const struct tcp_shift_lwip_cc_hook_ops ops = {
         .on_ack_observe = fake_ack_observe,
         .on_loss = fake_loss,
+        .on_rack_retrans_loss = fake_loss,
         .on_timeout = fake_timeout,
         .on_recovery_exit = fake_recovery_exit,
     };
@@ -101,6 +102,15 @@ int main(void)
     }
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
+    /* A lost retransmission is a second congestion signal inside the same
+     * recovery episode. It must reach policy without moving the transport's
+     * recovery end marker or creating a second entry event. */
+    CHECK(tcp_shift_lwip_cc_hook_rack_retrans_loss(&pcb, 1460U) == 1);
+    CHECK(state.loss_calls == 2U);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 1U);
+    CHECK(hook.recovery_enter_events == 1U);
+    CHECK(hook.recovery_end_seq == 9000U);
+
     /* A duplicate entry signal while the same recovery episode is active must
      * not create a second episode. Pinned lwIP normally suppresses this via
      * TF_INFR, but keep the observation layer idempotent as well. */
@@ -129,7 +139,7 @@ int main(void)
      * as controller-owned recovery. */
     state.handle_loss = 0U;
     CHECK(tcp_shift_lwip_cc_hook_loss(&pcb, 1460U) == 0);
-    CHECK(state.loss_calls == 2U);
+    CHECK(state.loss_calls == 3U);
     CHECK(hook.recovery_enter_events == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
 

@@ -78,6 +78,16 @@ int tcp_shift_bbr_controller_recovery_enter(
     uint32_t lost_bytes,
     struct tcp_shift_cc_policy *policy);
 
+/* Apply a newly proven loss while Recovery is already active. This is the
+ * controller-side counterpart of RFC 8985 lost-retransmission detection:
+ * preserve the current recovery episode/prior-cwnd snapshot, charge the new
+ * loss to ProbeBW accounting, and reduce the current recovery cwnd once. */
+int tcp_shift_bbr_controller_recovery_note_loss(
+    struct tcp_shift_bbr_controller_state *state,
+    const struct tcp_shift_cc_transport *transport,
+    uint32_t lost_bytes,
+    struct tcp_shift_cc_policy *policy);
+
 /* Restore the last known-good cwnd when the transport reports Recovery exit.
  * A following ACK observation then applies the current mode's normal BDP
  * target/caps, preserving Linux BBR's restore-before-normal-policy ordering. */

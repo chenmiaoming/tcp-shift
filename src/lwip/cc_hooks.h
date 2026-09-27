@@ -67,6 +67,9 @@ struct tcp_shift_lwip_cc_hook_ops {
                    const struct tcp_shift_lwip_sack_range *ranges,
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
+    int (*on_rack_retrans_loss)(void *arg,
+                                struct tcp_pcb *pcb,
+                                tcpwnd_size_t lost_bytes);
     int (*on_tlp_loss)(void *arg,
                        struct tcp_pcb *pcb,
                        tcpwnd_size_t lost_bytes);
@@ -299,6 +302,23 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
         tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
+}
+
+/* RFC 8985 can prove that a retransmission was itself lost while the
+ * transport is already in one fast-recovery episode. Deliver that additional
+ * congestion signal without creating or moving the recovery boundary. */
+static inline int
+tcp_shift_lwip_cc_hook_rack_retrans_loss(struct tcp_pcb *pcb,
+                                         tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_rack_retrans_loss == NULL || lost_bytes == 0U) {
+        return 0;
+    }
+    return hook->ops->on_rack_retrans_loss(
+        hook->arg, pcb, lost_bytes) != 0;
 }
 
 static inline int

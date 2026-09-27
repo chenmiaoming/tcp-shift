@@ -223,7 +223,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,52 @@
+@@ -1738,14 +1759,63 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
@@ -262,11 +262,22 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        unacked_link = &seg->next;
 +        continue;
 +      }
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++      /* Under RACK, SACK_REXMIT describes retransmission history, not a
++         permanent exclusion. The delivery sidecar refreshes Segment.xmit_ts
++         on every successful retransmission, so a retransmission that is later
++         proven lost by fresh RACK timing evidence must be eligible again. */
++      if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
++        unacked_link = &seg->next;
++        continue;
++      }
++#else
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
 +          !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +        unacked_link = &seg->next;
 +        continue;
 +      }
++#endif
 +      break;
 +    }
 +    if (seg == NULL) {
@@ -276,7 +287,12 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    /* Give up if the segment is still referenced by the netif driver
-@@ -1758,14 +1796,26 @@
+@@ -1758,14 +1807,31 @@
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++    (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
++  }
++#endif
    /* Move the first unacked segment to the unsent queue */
    /* Keep the unsent queue sorted. */
 -  pcb->unacked = seg->next;
@@ -304,7 +320,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,297 @@
+@@ -1787,5 +1853,313 @@
    return ERR_OK;
  }
  
@@ -342,14 +358,30 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +       fallback if this retransmission itself is lost. Retrying on every new
 +       SACK block causes severe spurious retransmission before one RTT has
 +       elapsed on high-latency paths. */
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++    /* RACK can declare a retransmission itself lost after its refreshed
++       transmit timestamp has aged behind a newer delivered transmission.
++       In that case allow another selective repair inside the same recovery
++       episode; the non-RACK path below retains the one-retransmission guard. */
++    if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
++      unacked_link = &seg->next;
++      continue;
++    }
++#else
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
 +        !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +      unacked_link = &seg->next;
 +      continue;
 +    }
++#endif
 +    if (tcp_output_segment_busy(seg)) {
 +      return ERR_VAL;
 +    }
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++      (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
++    }
++#endif
 +
 +    *unacked_link = seg->next;
 +    cur_seg = &pcb->unsent;

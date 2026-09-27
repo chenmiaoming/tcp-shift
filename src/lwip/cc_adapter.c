@@ -1954,6 +1954,40 @@ static int tcp_shift_lwip_cc_on_tlp_loss(void *arg,
     return 1;
 }
 
+static int tcp_shift_lwip_cc_on_rack_retrans_loss(
+    void *arg,
+    struct tcp_pcb *pcb,
+    tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_cc_transport transport;
+    struct tcp_shift_cc_loss loss;
+    struct tcp_shift_cc_policy policy;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        lost_bytes == 0U) {
+        return 0;
+    }
+
+    /* RFC 8985 treats a proven lost retransmission as an additional
+     * congestion indication. Apply the controller's loss response while the
+     * transport keeps the existing fast-recovery episode/end marker intact. */
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
+    loss.lost_bytes = lost_bytes;
+    if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
+                             &policy) != 0 ||
+        tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
+        tcp_shift_lwip_cc_disable_on_error(adapter);
+        return 0;
+    }
+
+    if (adapter->stats != NULL) {
+        adapter->stats->loss_events++;
+        adapter->stats->policy_updates++;
+    }
+    return 1;
+}
+
 static int tcp_shift_lwip_cc_on_loss(void *arg,
                                      struct tcp_pcb *pcb,
                                      tcpwnd_size_t lost_bytes)
@@ -2076,6 +2110,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack_observe = tcp_shift_lwip_cc_on_ack_observe,
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
+    .on_rack_retrans_loss = tcp_shift_lwip_cc_on_rack_retrans_loss,
     .on_tlp_loss = tcp_shift_lwip_cc_on_tlp_loss,
     .on_tlp_dupack = tcp_shift_lwip_cc_on_tlp_dupack,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
