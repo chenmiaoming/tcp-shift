@@ -1710,6 +1710,9 @@ static int tcp_shift_lwip_cc_prepare_ack(
         if (adapter->stats != NULL) {
             adapter->stats->srtt_updates++;
         }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        tcp_shift_tlp_note_rtt_sample(&adapter->rack_tlp);
+#endif
     }
     ack->smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
@@ -1718,6 +1721,7 @@ static int tcp_shift_lwip_cc_prepare_ack(
         adapter->rack_tlp.min_rtt_ns,
         adapter->srtt.smoothed_rtt_ns);
     tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
+    tcp_shift_tlp_arm_pto(adapter, pcb, ack_time_ns);
 #endif
     if (adapter->stats != NULL) {
         if (ack_time_ns != 0U) {
@@ -1816,6 +1820,9 @@ static int tcp_shift_lwip_cc_on_sack(
         if (adapter->stats != NULL) {
             adapter->stats->srtt_updates++;
         }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        tcp_shift_tlp_note_rtt_sample(&adapter->rack_tlp);
+#endif
     }
     ack.smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
@@ -1824,6 +1831,7 @@ static int tcp_shift_lwip_cc_on_sack(
         adapter->rack_tlp.min_rtt_ns,
         adapter->srtt.smoothed_rtt_ns);
     tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
+    tcp_shift_tlp_arm_pto(adapter, pcb, ack_time_ns);
 #endif
     if (adapter->stats != NULL) {
         adapter->stats->ack_observation_events++;
