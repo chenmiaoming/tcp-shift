@@ -512,6 +512,64 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
     return 0;
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
+                                            uint32_t generation,
+                                            uint32_t kind,
+                                            uint64_t actual_release_ns)
+{
+    struct tcp_shift_pacing_registry_entry *entry;
+    struct tcp_shift_lwip_cc_adapter *adapter;
+    uint64_t deadline_ns;
+    uint64_t now_ns;
+    size_t index;
+    err_t err;
+
+    if (flow_id == 0U || flow_id > tcp_shift_pacing_service.capacity) {
+        return 0;
+    }
+    index = (size_t)(flow_id - 1U);
+    entry = &tcp_shift_pacing_service.entries[index];
+    if (entry->adapter == NULL || entry->generation != generation) {
+        return 0;
+    }
+
+    adapter = entry->adapter;
+    adapter->rack_timer_scheduled = 0U;
+    adapter->rack_timer_deadline_ns = 0U;
+    if (adapter->bound == 0U || adapter->pcb == NULL ||
+        kind != TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK ||
+        actual_release_ns == 0U) {
+        return 0;
+    }
+
+    deadline_ns = tcp_shift_rack_detection_deadline(
+        adapter, adapter->pcb, actual_release_ns);
+    if (deadline_ns == 0U) {
+        return 0;
+    }
+    if (deadline_ns > actual_release_ns) {
+        tcp_shift_rack_arm_detection_timer(
+            adapter, adapter->pcb, actual_release_ns);
+        return 0;
+    }
+
+    err = tcp_shift_tcp_rack_rexmit_due(adapter->pcb);
+    if (err != ERR_OK) {
+        /* A transiently busy segment remains protected by the ordinary RTO
+         * fallback. Avoid an immediate timer spin; a later ACK can re-arm
+         * RACK with fresh evidence. */
+        return err == ERR_VAL ? 0 : -1;
+    }
+
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns != 0U) {
+        tcp_shift_rack_arm_detection_timer(adapter, adapter->pcb, now_ns);
+    }
+    return 0;
+}
+#endif
+
 static int tcp_shift_lwip_cc_apply_policy(
     struct tcp_shift_lwip_cc_adapter *adapter,
     const struct tcp_shift_cc_policy *policy)
