@@ -228,7 +228,7 @@ jobs:
             TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=256 \
             TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=reorder \
             TCP_SHIFT_P6_BBR_LONG_REORDER_DELAY_MS=30 \
-            TCP_SHIFT_P6_BBR_LONG_REORDER_GAP=4 \
+            TCP_SHIFT_P6_BBR_LONG_REORDER_GAP=2 \
             TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=dsack \
             TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrackdsack \
             TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifbdsack \
