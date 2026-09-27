@@ -538,6 +538,7 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     struct tcp_shift_lwip_cc_adapter *adapter;
     uint64_t deadline_ns;
     uint64_t now_ns;
+    uint32_t probe_end_seq = 0U;
     size_t index;
     err_t err;
 
@@ -555,8 +556,31 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     adapter->recovery_timer_deadline_ns = 0U;
     adapter->recovery_timer_kind = 0U;
     if (adapter->bound == 0U || adapter->pcb == NULL ||
-        kind != TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK ||
         actual_release_ns == 0U) {
+        return 0;
+    }
+
+    if (kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
+        if (!tcp_shift_tlp_probe_allowed(&adapter->rack_tlp) ||
+            tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) ||
+            adapter->rack_tlp.segs_sacked != 0U) {
+            return 0;
+        }
+
+        err = tcp_shift_tcp_tlp_probe(adapter->pcb, &probe_end_seq);
+        if (err != ERR_OK) {
+            /* PTO is only a probe opportunity. If it cannot transmit, leave
+             * the ordinary RTO as the conservative final fallback. */
+            return err == ERR_VAL ? 0 : -1;
+        }
+        if (probe_end_seq != 0U) {
+            tcp_shift_tlp_note_probe_sent(
+                &adapter->rack_tlp, probe_end_seq, 1U);
+        }
+        return 0;
+    }
+
+    if (kind != TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK) {
         return 0;
     }
 
@@ -585,6 +609,7 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     }
     return 0;
 }
+
 #endif
 
 static int tcp_shift_lwip_cc_apply_policy(
