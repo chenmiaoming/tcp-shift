@@ -254,6 +254,42 @@ int tcp_shift_bbr_controller_recovery_enter(
     return 0;
 }
 
+int tcp_shift_bbr_controller_recovery_note_loss(
+    struct tcp_shift_bbr_controller_state *state,
+    const struct tcp_shift_cc_transport *transport,
+    uint32_t lost_bytes,
+    struct tcp_shift_cc_policy *policy)
+{
+    uint32_t cwnd;
+
+    if (state == NULL || policy == NULL || state->initialized == 0U ||
+        state->recovery.in_recovery == 0U || lost_bytes == 0U ||
+        !tcp_shift_bbr_controller_valid_transport(transport) ||
+        state->cwnd_bytes < transport->mss_bytes ||
+        state->cwnd_bytes > transport->cwnd_limit_bytes) {
+        return -1;
+    }
+
+    /* Linux BBR charges newly lost packets while Recovery is already active
+     * without starting a second Recovery epoch. Preserve prior_cwnd and packet
+     * conservation state; only the current cwnd and pending loss observation
+     * change here. A following ACK may raise cwnd back to the conservation
+     * floor implied by current inflight + newly ACKed data. */
+    if (tcp_shift_bbr_controller_note_loss(state, lost_bytes) != 0) {
+        return -1;
+    }
+    cwnd = state->cwnd_bytes;
+    if (lost_bytes >= cwnd ||
+        cwnd - lost_bytes < transport->mss_bytes) {
+        cwnd = transport->mss_bytes;
+    } else {
+        cwnd -= lost_bytes;
+    }
+    state->cwnd_bytes = cwnd;
+    tcp_shift_bbr_controller_publish(state, transport, policy);
+    return 0;
+}
+
 int tcp_shift_bbr_controller_recovery_exit(
     struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
