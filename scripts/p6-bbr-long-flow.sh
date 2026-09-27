@@ -61,8 +61,8 @@ case "$FAULT_MODE" in
     *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst, lost-retransmission or first-send-loss" >&2; exit 1;;
 esac
 case "$RECOVERY_EXPECTATION" in
-    strict|diagnostic|tlp) ;;
-    *) echo "RECOVERY_EXPECTATION must be strict, diagnostic or tlp" >&2; exit 1;;
+    strict|diagnostic|tlp|rack) ;;
+    *) echo "RECOVERY_EXPECTATION must be strict, diagnostic, tlp or rack" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -602,10 +602,17 @@ case "$LOSS_MODE" in
         fi
         ;;
     deterministic-lost-retransmission)
-        [ "$loss_events" -ge 1 ] && [ "$timeout_events" -ge 1 ] || {
-            echo "lost retransmission did not exercise fast-loss plus RTO fallback: loss=$loss_events timeout=$timeout_events" >&2
-            exit 1
-        }
+        if [ "$RECOVERY_EXPECTATION" = rack ]; then
+            [ "$loss_events" -ge 1 ] && [ "$timeout_events" -eq 0 ] || {
+                echo "RACK lost-retransmission recovery fell back to RTO: loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        else
+            [ "$loss_events" -ge 1 ] && [ "$timeout_events" -ge 1 ] || {
+                echo "lost retransmission did not exercise fast-loss plus RTO fallback: loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        fi
         ;;
     deterministic-first-send)
         if [ "$RECOVERY_EXPECTATION" = tlp ]; then
@@ -679,10 +686,17 @@ case "$LOSS_MODE" in
         fi
         ;;
     deterministic-lost-retransmission)
-        [ "$retransmit_events" -ge 2 ] || {
-            echo "lost retransmission expected selective + timeout retransmission activity: $retransmit_events" >&2
-            exit 1
-        }
+        if [ "$RECOVERY_EXPECTATION" = rack ]; then
+            [ "$retransmit_events" -eq 2 ] || {
+                echo "RACK lost-retransmission repair amplified retransmissions: expected=2 actual=$retransmit_events" >&2
+                exit 1
+            }
+        else
+            [ "$retransmit_events" -ge 2 ] || {
+                echo "lost retransmission expected selective + timeout retransmission activity: $retransmit_events" >&2
+                exit 1
+            }
+        fi
         ;;
     deterministic-first-send)
         [ "$retransmit_events" -eq "$FAULT_MARKER_COUNT" ] || {
