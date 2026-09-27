@@ -47,6 +47,7 @@ struct tcp_shift_rack_tlp_state {
 
 struct tcp_shift_rack_segment {
     uint64_t xmit_ts_ns;
+    uint32_t seq_start;
     uint32_t end_seq;
     uint8_t retransmitted;
     uint8_t lost;
