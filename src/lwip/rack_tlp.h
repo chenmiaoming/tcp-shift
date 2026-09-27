@@ -34,6 +34,7 @@ struct tcp_shift_rack_tlp_state {
     uint32_t rack_end_seq;
     uint32_t fack;
     uint32_t dsack_round_end_seq;
+    uint32_t tlp_start_seq;
     uint32_t tlp_end_seq;
     uint32_t segs_sacked;
     uint32_t reo_wnd_mult;
@@ -108,6 +109,7 @@ uint64_t tcp_shift_tlp_calc_pto_ns(
 int tcp_shift_tlp_probe_allowed(const struct tcp_shift_rack_tlp_state *state);
 
 void tcp_shift_tlp_note_probe_sent(struct tcp_shift_rack_tlp_state *state,
+                                   uint32_t start_seq,
                                    uint32_t end_seq,
                                    unsigned is_retransmission);
 
