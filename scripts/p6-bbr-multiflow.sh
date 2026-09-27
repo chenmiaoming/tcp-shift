@@ -330,12 +330,13 @@ tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
 ifb_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/ifb-qdisc-after.txt" | head -n 1)
 tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.txt" | head -n 1)
+qdisc_failed=0
 [ -n "$ifb_drops" ] && [ "$ifb_drops" -eq 0 ] &&
 [ -n "$tun_drops" ] && [ "$tun_drops" -eq 0 ] || {
+    qdisc_failed=1
     cat "$OUT/ifb-qdisc-after.txt" >&2 || true
     cat "$OUT/tun-qdisc-after.txt" >&2 || true
     echo "P6 BBR multi-flow qdisc dropped packets: ifb=${ifb_drops:-missing} tun=${tun_drops:-missing}" >&2
-    exit 1
 }
 
 sleep 0.2
@@ -351,6 +352,11 @@ RUNTIME_PID=
 cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
+
+if [ "$qdisc_failed" -ne 0 ]; then
+    echo "P6 BBR multi-flow qdisc gate failed after runtime telemetry capture" >&2
+    exit 1
+fi
 
 grep -F "bridge_peak_active_flows=$FLOWS" "$OUT/runtime.stderr" >/dev/null
 grep -F 'bridge_active_flows=0' "$OUT/runtime.stderr" >/dev/null
