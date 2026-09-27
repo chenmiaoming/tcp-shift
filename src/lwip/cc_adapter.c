@@ -1884,6 +1884,36 @@ static int tcp_shift_lwip_cc_on_sack(
     return 1;
 }
 
+static int tcp_shift_lwip_cc_on_tlp_loss(void *arg,
+                                         struct tcp_pcb *pcb,
+                                         tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_cc_transport transport;
+    struct tcp_shift_cc_loss loss;
+    struct tcp_shift_cc_policy policy;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        lost_bytes == 0U) {
+        return 0;
+    }
+
+    tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
+    loss.lost_bytes = lost_bytes;
+    if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
+                             &policy) != 0 ||
+        tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
+        tcp_shift_lwip_cc_disable_on_error(adapter);
+        return 0;
+    }
+
+    if (adapter->stats != NULL) {
+        adapter->stats->loss_events++;
+        adapter->stats->policy_updates++;
+    }
+    return 1;
+}
+
 static int tcp_shift_lwip_cc_on_loss(void *arg,
                                      struct tcp_pcb *pcb,
                                      tcpwnd_size_t lost_bytes)
@@ -2006,6 +2036,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_ack_observe = tcp_shift_lwip_cc_on_ack_observe,
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
+    .on_tlp_loss = tcp_shift_lwip_cc_on_tlp_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     .rack_loss_status = tcp_shift_lwip_cc_rack_loss_status,
