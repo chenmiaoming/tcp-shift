@@ -1953,7 +1953,11 @@ static int tcp_shift_lwip_cc_on_sack(
      * over every segment newly ACKed or SACKed by the same ACK. If ACK advances
      * SND.UNA, mark the SACK delivery now but defer RACK_update/reordering
      * until the cumulative path has marked its lower sequence ranges too. */
-    defer_rack = (int32_t)(ack_seq - pcb->lastack) > 0 ? 1U : 0U;
+    defer_rack =
+        (int32_t)(ack_seq - pcb->lastack) > 0 &&
+                (int32_t)(pcb->snd_nxt - ack_seq) >= 0
+            ? 1U
+            : 0U;
 #endif
     newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
         adapter, ranges, range_count, defer_rack == 0U, &ack.rate);
