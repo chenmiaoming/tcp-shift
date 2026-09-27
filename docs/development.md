@@ -169,23 +169,56 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: close the residual BBR gap and qualify provider/OpenVZ before exposure
+## Active next milestone: replace legacy recovery heuristics with RFC-defined transport recovery
 
-The compact P6 BBR controller is implemented and runs on real lwIP PCBs through the existing generic observation/policy/pacing surfaces. The merged path now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery (#41), deterministic first-send-loss qualification (#44), SACK-aware delivery/rate accounting (#45), and SACK-aware effective-cwnd send gating (#49). Sender SACK remains compile-time experimental/default-OFF; production `tcp-shift-p2` still exposes only `reno|cubic`.
+The current development target is no longer "tune BBR until the deterministic-loss benchmark improves." Transport semantics come first.
 
-PR #49 proved that the previous residual loss-path gap was partly transport send-window accounting rather than BBR gain tuning. On the stable 260 ms / 10 Mbit/s / 4 MiB / 28-drop reference, tcp-shift now measures 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio with exact 28/28 retransmission accounting and zero RTO fallback.
+Merged 2026-09-27 recovery work establishes the new baseline:
 
-The next development increment remains evidence-first:
+- PR #67 fixed RFC 8985 mixed cumulative-ACK/SACK ordering and restored the deterministic 28-drop path from fragmented recovery to the same recovery-episode count as the sender-SACK reference;
+- PR #68 made RFC 8985 time evidence the sole fast-loss oracle whenever RACK-TLP is enabled. An unavailable RACK status now fails closed instead of falling back to the legacy fixed three-later-SACK detector;
+- PR #69 proved the same RACK transport path across Reno, CUBIC, and internal BBR and fixed a selector integration bug that had dropped `on_sack` / `on_recovery_exit` transport hooks for loss-based controllers.
 
-1. qualify `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON` on the target provider/OpenVZ environment with real RTT/loss/memory/TUN behavior;
-2. reproduce the deterministic first-send-loss case outside GitHub runners where practical and verify the SACK-aware send-window behavior on the target path;
-3. keep the existing P3 memory gate and measure sender-SACK-enabled constrained-host cost rather than widening thresholds;
-4. investigate the remaining roughly 8% deterministic goodput gap using retained recovery/TX-gap telemetry, with ACK aggregation, packet-conservation duration, rate-sample timing, and residual send-idle behavior as hypotheses rather than preselected fixes;
-5. make the IPv4 deployment path reproducible for a real VPS, including TUN/forwarding/nftables prerequisites and cleanup;
-6. only after provider evidence and another explicit review, decide whether to register `bbr` behind an experimental production selector; Reno remains the default;
-7. keep `bbrv3` separate if full current-draft semantics are ever implemented.
+The intended transport ownership is:
 
-Do not call the compact controller Linux BBR. The current stable first-send-loss reference is about 0.920x Linux BBR goodput after #49; that is substantially closer but still explicitly not parity.
+```text
+SACK parsing / scoreboard / delivery evidence
+        -> RFC 8985 RACK loss detection
+        -> RACK retransmission selection
+        -> RFC 8985 TLP/PTO tail probing
+        -> ordinary RTO only as conservative terminal fallback
+
+Reno / CUBIC / internal BBR
+        -> consume transport loss/recovery events
+        -> do not own loss detection or retransmission selection
+```
+
+Development therefore proceeds by replacement, not accumulation:
+
+1. **Separate required SACK evidence from the legacy selector.** Keep SACK parsing, scoreboard state, per-segment delivery evidence, D-SACK interpretation, and retransmission identity because RACK requires them. Move the old fixed-count selective-recovery policy behind an explicit compatibility boundary.
+2. **Delete the legacy fixed-count selector once coverage is equivalent.** The three-later-SACK proof may remain temporarily for non-RACK differential qualification, but it must not be reachable from an RFC 8985 build and should be removed when RACK teardown/resource gates and rollback evidence are complete.
+3. **Finish RACK lifecycle qualification.** Add fail-closed tests for recovery-timer cancellation, connection teardown, stale generation/release safety, and timer ownership with no per-flow timerfd/thread/polling.
+4. **Measure the incremental RACK cost.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
+5. **Only then consider exposure.** RACK-TLP remains experimental/default-OFF until lifecycle/resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
+6. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
+
+Current main checkpoint after PR #69:
+
+```text
+main: 7bd0e310b50ed8595e6e8abb77488d131f35fc77
+
+RACK-TLP:
+- RFC 8985 is the sole fast-loss oracle in RACK builds
+- mixed cumulative ACK + SACK ordering qualified
+- ordinary tail loss and application-limited tail loss qualified
+- lost retransmission qualified without RTO
+- below/above-reordering-window behavior + D-SACK adaptation qualified
+- 28-drop exact recovery qualified
+- Reno / CUBIC / internal BBR controller matrix qualified
+- remaining production blockers: teardown/stale-release lifecycle and incremental resource cost
+```
+
+The compact internal BBR controller remains an internal/experimental controller. The remaining deterministic performance delta is a measurement topic, not permission to reintroduce non-RFC transport shortcuts.
 
 ## Merge discipline
 

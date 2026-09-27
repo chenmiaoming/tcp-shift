@@ -159,27 +159,35 @@ heap final:              0
 
 The observed delivery rate becomes window-limited at about 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. P5c therefore proves scheduler correctness/efficiency under BDP pressure; it does not claim the current unscaled window can fully utilize arbitrary high-BDP links. Window scaling remains a later transport concern.
 
-### P6 BBR runtime — internal / experimental
+### P6 BBR runtime + RFC 8985 recovery — internal / experimental
 
-The compact `bbr` controller is implemented as a BBRv1-style core with selected BBRv3-informed fixes. It runs on real lwIP PCBs through the internal `tcp-shift-p6-bbr` qualification target; production `tcp-shift-p2` still exposes only `reno` and `cubic`.
+The compact `bbr` controller remains internal/experimental, but the transport-recovery direction has changed substantially from the earlier bounded sender-SACK experiment.
 
-Current qualification includes:
+Merged PRs #67-#69 establish the current RACK-TLP baseline:
 
-- clean Linux BBR + `sch_fq` reference cases across low-, edge-, and high-BDP paths;
-- four concurrent internal BBR flows sharing one bottleneck;
-- live app-limited enter/sample/exit behavior;
-- transport-owned RFC 6582/NewReno partial-ACK recovery for multiple losses;
-- strict deterministic repeated-burst recovery with exact drop/retransmission accounting and zero RTO fallback;
-- explicit-loss ProbeBW semantics instead of treating retransmission metadata as new loss;
-- a bounded sender-SACK transport experiment, compile-time OFF by default;
-- deterministic first-transmission-only ~1% loss reference at 260 ms / 10 Mbit/s;
-- SACKed out-of-order delivery accounting into the internal-BBR rate sampler without later cumulative-ACK double credit;
-- SACK-aware send-window credit so already-SACKed payload no longer occupies BBR's effective congestion window until cumulative ACK repair;
-- a consistent three-later-SACK loss proof for the initial and subsequent selective fast retransmissions.
+- RFC 8985 mixed cumulative-ACK/SACK ordering is enforced, including the 28-drop regression that exposed the old ordering bug;
+- RFC 8985 time evidence is the sole fast-loss oracle whenever RACK-TLP is enabled; the legacy fixed three-later-SACK detector is no longer a fallback in the RACK path;
+- ordinary tail loss, application-limited tail loss, lost retransmission, below/above-window reordering, D-SACK adaptation, and exact 28-drop recovery are live-qualified;
+- Reno, CUBIC, and internal BBR now receive the same RACK transport evidence. SACK delivery/timing observation is transport-owned and independent from whether a controller consumes selective delivery as ACK credit.
 
-The merged sequence is now PR #40 (ProbeBW loss semantics), PR #41 (bounded sender SACK), PR #44 (deterministic first-send-loss reference), PR #45 (SACK delivery accounting), and PR #49 (SACK-aware send-window recovery). PRs #42/#43 were controlled batching/baseline experiments and were closed without merge after showing no material benefit.
+The intended replacement architecture is:
 
-On the stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss case, #49 raises tcp-shift BBR to 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio. The strict correctness gate remains exact: 28 explicit drops, 28 tcp-shift retransmissions, 28 Linux retransmissions, zero tcp-shift RTOs, zero unrelated qdisc drops, and exact payload delivery. This materially reduces the remaining deterministic-loss gap without establishing Linux-BBR parity. Sender SACK remains experimental/default-OFF, and public `bbr` selection remains disabled pending provider/OpenVZ qualification and an explicit exposure decision.
+```text
+SACK scoreboard / delivery evidence
+    -> RFC 8985 RACK loss detector
+    -> RACK retransmission selection
+    -> TLP/PTO tail probe
+    -> ordinary RTO fallback
+
+Reno / CUBIC / internal BBR
+    -> congestion response only
+```
+
+The old fixed-count sender-SACK selector remains only as a temporary non-RACK compatibility/differential path. The next transport work is to separate the RFC-required SACK scoreboard/evidence from that legacy selector, then delete the selector once RACK teardown and resource-cost gates are complete.
+
+On the qualified 260 ms / 10 Mbit/s / 4 MiB / 28-drop RACK path, the transport invariants are exact: 28 injected first-send drops, 28 retransmissions, zero false reordering, zero RTO fallback, zero unrelated qdisc drops, and exact payload delivery. The same recovery path is qualified across Reno, CUBIC, and internal BBR.
+
+RACK-TLP remains experimental/default-OFF. Public `bbr` selection also remains disabled. Provider/OpenVZ qualification and an explicit exposure review are still required; BBR gains must not be tuned to mask transport/recovery defects.
 
 ## Project state
 
@@ -193,5 +201,6 @@ Start here:
 - [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — completed P5 evidence;
 - [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
+- [`docs/milestones/rack-tlp.md`](docs/milestones/rack-tlp.md) — RFC 8985 RACK-TLP implementation boundary, live gates, and remaining production blockers.
 
-> Status: P0-P5 are GitHub-runner-qualified; P6 internal BBR plus the default-OFF sender-SACK/rate-sampling/send-window path are runner-qualified through merged PR #49 (`90e2c973cc5b72dc0a2ae9296b566fee1b7e3291`). Public `bbr` selection, provider/OpenVZ qualification, and production packaging/operations remain separate.
+> Status: P0-P5 are GitHub-runner-qualified. Main `7bd0e310b50ed8595e6e8abb77488d131f35fc77` includes the RFC-first RACK-TLP path qualified across Reno/CUBIC/internal-BBR, while RACK-TLP and public `bbr` selection remain experimental/default-OFF. Remaining RACK production blockers are teardown/stale-release lifecycle and incremental memory/wakeup/timer cost; provider/OpenVZ qualification remains separate.
