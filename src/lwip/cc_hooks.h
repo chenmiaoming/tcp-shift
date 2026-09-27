@@ -8,6 +8,7 @@
 #if LWIP_TCP
 
 #include "lwip/tcp.h"
+#include "lwip/initial_window.h"
 
 #if LWIP_TCP_PCB_NUM_EXT_ARGS < 2
 #error tcp-shift requires PCB ext-arg slots for CC and transport memory integration
