@@ -634,8 +634,8 @@ case "$LOSS_MODE" in
         ;;
     deterministic-lost-retransmission)
         if [ "$RECOVERY_EXPECTATION" = rack ]; then
-            [ "$loss_events" -ge 1 ] && [ "$timeout_events" -eq 0 ] || {
-                echo "RACK lost-retransmission recovery fell back to RTO: loss=$loss_events timeout=$timeout_events" >&2
+            [ "$loss_events" -eq 2 ] && [ "$timeout_events" -eq 0 ] || {
+                echo "RACK lost-retransmission congestion response mismatch: expected_loss=2 loss=$loss_events timeout=$timeout_events" >&2
                 exit 1
             }
         else
