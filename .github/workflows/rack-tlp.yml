@@ -61,8 +61,14 @@ jobs:
           text = Path("patches/lwip-sack-recovery.patch").read_text()
           assert "tcp_shift_tcp_segment_loss_proven" not in text
 
+          selector_defs = text.index(
+              "+#if LWIP_TCP_SACK_OUT && (TCP_SHIFT_EXPERIMENTAL_RACK_TLP || "
+              "TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)",
+              text.index("@@ -1787"),
+          )
           rack_start = text.index(
-              "+tcp_shift_tcp_select_rack_loss(struct tcp_pcb *pcb,"
+              "+tcp_shift_tcp_select_rack_loss(struct tcp_pcb *pcb,",
+              selector_defs,
           )
           rack_end = text.index(
               "+#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR", rack_start
@@ -72,7 +78,8 @@ jobs:
           assert "sacked_after" not in rack_body
 
           legacy_start = text.index(
-              "+tcp_shift_tcp_select_legacy_sack_hole(struct tcp_pcb *pcb,"
+              "+tcp_shift_tcp_select_legacy_sack_hole(struct tcp_pcb *pcb,",
+              rack_end,
           )
           legacy_end = text.index(
               "+static err_t\n+tcp_shift_tcp_requeue_selected_sack_segment",
