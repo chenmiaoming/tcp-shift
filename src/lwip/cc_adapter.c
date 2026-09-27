@@ -4,7 +4,6 @@
 
 #include <limits.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -61,61 +60,6 @@ static uint32_t tcp_shift_delivery_outstanding_payload(
     const struct tcp_shift_lwip_cc_adapter *adapter);
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-static int tcp_shift_rack_tlp_trace_enabled(void)
-{
-    const char *value = getenv("TCP_SHIFT_RACK_TLP_TRACE");
-
-    return value != NULL && value[0] != '\0' &&
-                   !(value[0] == '0' && value[1] == '\0')
-               ? 1
-               : 0;
-}
-
-static unsigned tcp_shift_rack_tlp_trace_events;
-
-static void tcp_shift_rack_tlp_trace(
-    const char *event,
-    const struct tcp_shift_lwip_cc_adapter *adapter,
-    const struct tcp_pcb *pcb,
-    uint64_t now_ns,
-    uint64_t deadline_ns)
-{
-    if (!tcp_shift_rack_tlp_trace_enabled() ||
-        tcp_shift_rack_tlp_trace_events >= 512U) {
-        return;
-    }
-    fprintf(stderr,
-            "tcp-shift-rack-tlp-trace: event=%s now_ns=%llu deadline_ns=%llu "
-            "timer_scheduled=%u timer_kind=%u flow_id=%llu generation=%u "
-            "lastack=%u snd_nxt=%u unacked=%u unsent=%u segs_sacked=%u "
-            "probe_allowed=%d tlp_start=%u tlp_end=%u tlp_retrans=%u "
-            "rtt_sample_since_probe=%u srtt_ns=%llu min_rtt_ns=%llu "
-            "app_limited_until=%llu delivered=%llu outstanding=%u\n",
-            event != NULL ? event : "unknown",
-            (unsigned long long)now_ns,
-            (unsigned long long)deadline_ns,
-            adapter != NULL ? adapter->recovery_timer_scheduled : 0U,
-            adapter != NULL ? adapter->recovery_timer_kind : 0U,
-            (unsigned long long)(adapter != NULL ? adapter->pacing_flow_id : 0U),
-            adapter != NULL ? adapter->pacing_generation : 0U,
-            pcb != NULL ? pcb->lastack : 0U,
-            pcb != NULL ? pcb->snd_nxt : 0U,
-            pcb != NULL && pcb->unacked != NULL ? 1U : 0U,
-            pcb != NULL && pcb->unsent != NULL ? 1U : 0U,
-            adapter != NULL ? adapter->rack_tlp.segs_sacked : 0U,
-            adapter != NULL ? tcp_shift_tlp_probe_allowed(&adapter->rack_tlp) : 0,
-            adapter != NULL ? adapter->rack_tlp.tlp_start_seq : 0U,
-            adapter != NULL ? adapter->rack_tlp.tlp_end_seq : 0U,
-            adapter != NULL ? adapter->rack_tlp.tlp_is_retrans : 0U,
-            adapter != NULL ? adapter->rack_tlp.rtt_sample_since_probe : 0U,
-            (unsigned long long)(adapter != NULL ? adapter->rack_tlp.srtt_ns : 0U),
-            (unsigned long long)(adapter != NULL ? adapter->rack_tlp.min_rtt_ns : 0U),
-            (unsigned long long)(adapter != NULL ? adapter->app_limited_until_bytes : 0U),
-            (unsigned long long)(adapter != NULL ? adapter->delivered_bytes : 0U),
-            adapter != NULL ? tcp_shift_delivery_outstanding_payload(adapter) : 0U);
-    tcp_shift_rack_tlp_trace_events++;
-}
-
 struct tcp_shift_recovery_timer_service {
     const struct tcp_shift_lwip_recovery_timer_ops *ops;
     void *arg;
@@ -296,10 +240,6 @@ static void tcp_shift_recovery_timer_cancel(
     if (adapter == NULL || adapter->recovery_timer_scheduled == 0U) {
         return;
     }
-    tcp_shift_rack_tlp_trace(
-        "timer-cancel", adapter, adapter->pcb,
-        tcp_shift_delivery_now_ns(adapter),
-        adapter->recovery_timer_deadline_ns);
     if (tcp_shift_recovery_timer_service.ops != NULL &&
         tcp_shift_recovery_timer_service.ops->cancel != NULL &&
         adapter->pacing_flow_id != 0U) {
@@ -610,11 +550,6 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     }
 
     adapter = entry->adapter;
-    tcp_shift_rack_tlp_trace(
-        kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP ? "tlp-timer-fire"
-                                                  : "rack-timer-fire",
-        adapter, adapter->pcb, actual_release_ns,
-        adapter->recovery_timer_deadline_ns);
     adapter->recovery_timer_scheduled = 0U;
     adapter->recovery_timer_deadline_ns = 0U;
     adapter->recovery_timer_kind = 0U;
@@ -634,9 +569,6 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
             adapter->pcb, &probe_start_seq, &probe_end_seq,
             &probe_is_retrans);
         if (err != ERR_OK) {
-            tcp_shift_rack_tlp_trace(
-                "tlp-probe-failed", adapter, adapter->pcb,
-                actual_release_ns, 0U);
             /* PTO is only a probe opportunity. If it cannot transmit, leave
              * the ordinary RTO as the conservative final fallback. */
             return err == ERR_VAL ? 0 : -1;
@@ -645,10 +577,6 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
             tcp_shift_tlp_note_probe_sent(
                 &adapter->rack_tlp, probe_start_seq, probe_end_seq,
                 probe_is_retrans != 0U);
-            tcp_shift_rack_tlp_trace(
-                probe_is_retrans != 0U ? "tlp-probe-retrans"
-                                       : "tlp-probe-new-data",
-                adapter, adapter->pcb, actual_release_ns, 0U);
         }
         return 0;
     }
@@ -1284,11 +1212,9 @@ static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
     if (adapter == NULL || pcb == NULL || now_ns == 0U) {
         return;
     }
-    tcp_shift_rack_tlp_trace("tlp-arm-check", adapter, pcb, now_ns, 0U);
     if (tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) ||
         adapter->rack_tlp.segs_sacked != 0U ||
         !tcp_shift_tlp_probe_allowed(&adapter->rack_tlp)) {
-        tcp_shift_rack_tlp_trace("tlp-arm-blocked", adapter, pcb, now_ns, 0U);
         if (adapter->recovery_timer_scheduled != 0U &&
             adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
             tcp_shift_recovery_timer_cancel(adapter);
@@ -1298,7 +1224,6 @@ static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
 
     flight_segments = tcp_shift_tlp_flight_segments(adapter);
     if (flight_segments == 0U) {
-        tcp_shift_rack_tlp_trace("tlp-arm-no-flight", adapter, pcb, now_ns, 0U);
         if (adapter->recovery_timer_scheduled != 0U &&
             adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
             tcp_shift_recovery_timer_cancel(adapter);
@@ -1309,9 +1234,6 @@ static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
     /* RACK reordering evidence takes priority over TLP. */
     if (adapter->recovery_timer_scheduled != 0U &&
         adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK) {
-        tcp_shift_rack_tlp_trace(
-            "tlp-arm-rack-priority", adapter, pcb, now_ns,
-            adapter->recovery_timer_deadline_ns);
         return;
     }
 
@@ -1362,8 +1284,6 @@ static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
     adapter->recovery_timer_scheduled = 1U;
     adapter->recovery_timer_deadline_ns = deadline_ns;
     adapter->recovery_timer_kind = TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP;
-    tcp_shift_rack_tlp_trace(
-        "tlp-arm-scheduled", adapter, pcb, now_ns, deadline_ns);
 }
 
 #endif
@@ -2527,8 +2447,6 @@ void tcp_shift_lwip_cc_mark_app_limited(struct tcp_pcb *pcb)
     {
         uint64_t now_ns = tcp_shift_delivery_now_ns(adapter);
 
-        tcp_shift_rack_tlp_trace(
-            "app-limited-enter", adapter, pcb, now_ns, 0U);
         if (now_ns != 0U) {
             tcp_shift_tlp_arm_pto(adapter, pcb, now_ns);
         }
