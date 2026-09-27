@@ -214,11 +214,9 @@ fi
 ip netns exec "$NS_SERVER" python3 - "$SERVER_IP" "$PORT" "$PAYLOAD_BYTES" "$OUT/tcp-info.tsv" "$CC" \
     "$FAULT_MODE" "$FAULT_FIRST_PACKET" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
     > "$OUT/server.txt" 2> "$OUT/server.stderr" <<'PY' &
-import os
 import socket
 import struct
 import sys
-import threading
 import time
 
 host = sys.argv[1]
@@ -240,7 +238,6 @@ def tcp_info(sock):
     if len(info) < 168:
         raise RuntimeError(f"short TCP_INFO: {len(info)}")
     return {
-        "ca_state": info[1],
         "unacked": struct.unpack_from("=I", info, 24)[0],
         "rtt_us": struct.unpack_from("=I", info, 68)[0],
         "snd_ssthresh": struct.unpack_from("=I", info, 76)[0],
@@ -263,26 +260,6 @@ print(f"linux-pacing-ready cc={requested_cc.decode()}", flush=True)
 conn, _ = server.accept()
 conn.settimeout(60.0)
 cc = conn.getsockopt(socket.IPPROTO_TCP, TCP_CONGESTION, 16).rstrip(b"\0").decode()
-ca_trace = os.environ.get("TCP_SHIFT_LINUX_CA_TRACE", "") not in ("", "0")
-ca_stop = threading.Event()
-ca_recovery_entries = [0]
-ca_last_state = [None]
-
-def sample_ca_state():
-    while not ca_stop.is_set():
-        try:
-            state = tcp_info(conn)["ca_state"]
-        except OSError:
-            return
-        if state == 3 and ca_last_state[0] != 3:
-            ca_recovery_entries[0] += 1
-        ca_last_state[0] = state
-        ca_stop.wait(0.005)
-
-ca_thread = None
-if ca_trace:
-    ca_thread = threading.Thread(target=sample_ca_state, daemon=True)
-    ca_thread.start()
 chunk = b"x" * 65536
 payload = None
 if fault_mode == "first-send-loss":
@@ -332,17 +309,13 @@ conn.shutdown(socket.SHUT_WR)
 while conn.recv(4096):
     pass
 final = tcp_info(conn)
-ca_stop.set()
-if ca_thread is not None:
-    ca_thread.join(timeout=1.0)
 conn.close()
 server.close()
 print(
     f"linux-pacing-server cc={cc} bytes={sent} samples={sample_index} "
     f"final_pacing_rate_Bps={final['pacing_rate']} final_delivery_rate_Bps={final['delivery_rate']} "
     f"final_rtt_us={final['rtt_us']} final_cwnd={final['snd_cwnd']} "
-    f"total_retrans={final['total_retrans']} "
-    f"ca_recovery_entries={ca_recovery_entries[0] if ca_trace else -1}",
+    f"total_retrans={final['total_retrans']}",
     flush=True,
 )
 PY
