@@ -78,7 +78,9 @@ struct tcp_shift_lwip_cc_hook_ops {
                           struct tcp_pcb *pcb,
                           unsigned sack_seen);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
-    int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
+    int (*on_recovery_exit)(void *arg,
+                            struct tcp_pcb *pcb,
+                            u32_t ack_seq);
     int (*rack_loss_status)(void *arg,
                             struct tcp_pcb *pcb,
                             const void *segment,
@@ -353,7 +355,7 @@ tcp_shift_lwip_cc_hook_tlp_dupack(struct tcp_pcb *pcb,
 }
 
 static inline int
-tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb)
+tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb, u32_t ack_seq)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
     int handled = 0;
@@ -363,7 +365,8 @@ tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb)
     }
     if (hook->recovery_active != 0U &&
         hook->ops != NULL && hook->ops->on_recovery_exit != NULL) {
-        handled = hook->ops->on_recovery_exit(hook->arg, pcb) != 0;
+        handled = hook->ops->on_recovery_exit(
+            hook->arg, pcb, ack_seq) != 0;
     }
     tcp_shift_lwip_cc_hook_recovery_mark_exit(hook);
     return handled;
