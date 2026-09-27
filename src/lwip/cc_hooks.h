@@ -69,6 +69,9 @@ struct tcp_shift_lwip_cc_hook_ops {
     int (*on_tlp_loss)(void *arg,
                        struct tcp_pcb *pcb,
                        tcpwnd_size_t lost_bytes);
+    void (*on_tlp_dupack)(void *arg,
+                          struct tcp_pcb *pcb,
+                          unsigned sack_seen);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
     int (*rack_loss_status)(void *arg,
@@ -310,6 +313,19 @@ tcp_shift_lwip_cc_hook_tlp_loss(struct tcp_pcb *pcb,
     /* A retransmitted TLP that proves a real loss gets the congestion
      * response without creating a fast-recovery episode. */
     return hook->ops->on_tlp_loss(hook->arg, pcb, lost_bytes) != 0;
+}
+
+static inline void
+tcp_shift_lwip_cc_hook_tlp_dupack(struct tcp_pcb *pcb,
+                                  unsigned sack_seen)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_tlp_dupack == NULL) {
+        return;
+    }
+    hook->ops->on_tlp_dupack(hook->arg, pcb, sack_seen);
 }
 
 static inline int
