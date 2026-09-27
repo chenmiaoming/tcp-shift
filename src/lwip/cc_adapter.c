@@ -1838,6 +1838,20 @@ static int tcp_shift_lwip_cc_on_sack(
     newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
         adapter, ranges, range_count, &ack.rate);
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->rack_tlp.tlp_is_retrans != 0U &&
+        adapter->rack_tlp.tlp_end_seq != 0U) {
+        u8_t index;
+
+        for (index = 0U; index < range_count; index++) {
+            if (ranges[index].left == adapter->rack_tlp.tlp_start_seq &&
+                ranges[index].right == adapter->rack_tlp.tlp_end_seq &&
+                (int32_t)(pcb->lastack - ranges[index].right) >= 0) {
+                (void)tcp_shift_tlp_process_ack(
+                    &adapter->rack_tlp, pcb->lastack, 1U, 0U);
+                break;
+            }
+        }
+    }
     tcp_shift_rack_note_sacked_segments(
         &adapter->rack_tlp, tcp_shift_rack_count_sacked_slots(adapter, pcb));
 #endif
