@@ -162,6 +162,12 @@ int main(void)
     CHECK(stats.pacing_last_rate_bytes_per_sec ==
           adapter.pacing_rate_bytes_per_sec);
     CHECK(adapter.controller_state.cubic.hystart_pacing_active == 1U);
+    /* The production pacing wrapper is transport-transparent: selecting
+     * Reno/CUBIC must not drop RFC 8985 SACK or recovery-exit callbacks. */
+    CHECK(adapter.hook.ops != NULL);
+    CHECK(adapter.hook.ops->on_sack != NULL);
+    CHECK(adapter.hook.ops->rack_loss_status != NULL);
+    CHECK(adapter.hook.ops->on_recovery_exit != NULL);
     startup_pacing_rate = adapter.pacing_rate_bytes_per_sec;
 
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment, seq, payload);
