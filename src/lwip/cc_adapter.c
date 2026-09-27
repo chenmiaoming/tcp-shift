@@ -659,6 +659,17 @@ static int tcp_shift_rack_seq_before_u32(uint32_t left, uint32_t right)
     return (int32_t)(left - right) < 0;
 }
 
+static void tcp_shift_rack_slot_view(
+    const struct tcp_shift_delivery_slot *slot,
+    struct tcp_shift_rack_segment *segment)
+{
+    segment->xmit_ts_ns = slot->tx_ns;
+    segment->seq_start = slot->seq_start;
+    segment->end_seq = slot->seq_start + slot->payload_bytes;
+    segment->retransmitted = slot->retransmitted;
+    segment->lost = 0U;
+}
+
 static void tcp_shift_rack_process_delivered_slots(
     struct tcp_shift_lwip_cc_adapter *adapter,
     uint64_t ack_time_ns)
@@ -671,17 +682,17 @@ static void tcp_shift_rack_process_delivered_slots(
     }
     slots = tcp_shift_delivery_slots(adapter);
 
-    /* RFC 8985 step 3 specifies ascending Segment.end_seq order. The delivery
-     * sidecar is compact and bounded by TCP_SND_QUEUELEN; select the next
-     * smallest newly delivered segment without adding a second allocation. */
+    /* RFC 8985 section 6.2 step 2: update RACK.segment using newly delivered
+     * segments in ascending Segment.xmit_ts order, breaking timestamp ties
+     * with end_seq. rack_delivered=1 means the timing pass is complete. */
     for (;;) {
         struct tcp_shift_delivery_slot *next = NULL;
         uint16_t index;
 
         for (index = 0U; index < adapter->delivery_capacity; index++) {
             struct tcp_shift_delivery_slot *slot = &slots[index];
-            uint32_t end_seq;
-            uint32_t next_end_seq;
+            uint32_t slot_end;
+            uint32_t next_end;
 
             if (slot->segment == NULL || slot->rack_delivered != 0U ||
                 slot->payload_bytes == 0U ||
@@ -692,9 +703,10 @@ static void tcp_shift_rack_process_delivered_slots(
                 next = slot;
                 continue;
             }
-            end_seq = slot->seq_start + slot->payload_bytes;
-            next_end_seq = next->seq_start + next->payload_bytes;
-            if (tcp_shift_rack_seq_before_u32(end_seq, next_end_seq)) {
+            slot_end = slot->seq_start + slot->payload_bytes;
+            next_end = next->seq_start + next->payload_bytes;
+            if (tcp_shift_rack_sent_after(
+                    next->tx_ns, next_end, slot->tx_ns, slot_end)) {
                 next = slot;
             }
         }
@@ -704,14 +716,9 @@ static void tcp_shift_rack_process_delivered_slots(
         }
 
         {
-            struct tcp_shift_rack_segment segment = {
-                .xmit_ts_ns = next->tx_ns,
-                .seq_start = next->seq_start,
-                .end_seq = next->seq_start + next->payload_bytes,
-                .retransmitted = next->retransmitted,
-                .lost = 0U,
-            };
+            struct tcp_shift_rack_segment segment;
 
+            tcp_shift_rack_slot_view(next, &segment);
             if (next->retransmitted == 0U &&
                 ack_time_ns >= next->tx_ns) {
                 uint64_t sample = ack_time_ns - next->tx_ns;
@@ -730,6 +737,52 @@ static void tcp_shift_rack_process_delivered_slots(
                 &adapter->rack_tlp, &segment, ack_time_ns);
         }
         next->rack_delivered = 1U;
+        processed++;
+        if (processed >= adapter->delivery_capacity) {
+            break;
+        }
+    }
+
+    /* RFC 8985 section 6.2 step 3 is a second pass in ascending end_seq.
+     * This ordering prevents multiple ranges newly delivered by one ACK from
+     * being mistaken for network reordering. rack_delivered=2 is complete. */
+    processed = 0U;
+    for (;;) {
+        struct tcp_shift_delivery_slot *next = NULL;
+        uint16_t index;
+
+        for (index = 0U; index < adapter->delivery_capacity; index++) {
+            struct tcp_shift_delivery_slot *slot = &slots[index];
+            uint32_t slot_end;
+            uint32_t next_end;
+
+            if (slot->segment == NULL || slot->rack_delivered != 1U ||
+                slot->payload_bytes == 0U ||
+                slot->acked_payload_bytes < slot->payload_bytes) {
+                continue;
+            }
+            if (next == NULL) {
+                next = slot;
+                continue;
+            }
+            slot_end = slot->seq_start + slot->payload_bytes;
+            next_end = next->seq_start + next->payload_bytes;
+            if (tcp_shift_rack_seq_before_u32(slot_end, next_end)) {
+                next = slot;
+            }
+        }
+
+        if (next == NULL) {
+            break;
+        }
+
+        {
+            struct tcp_shift_rack_segment segment;
+
+            tcp_shift_rack_slot_view(next, &segment);
+            tcp_shift_rack_detect_reordering(&adapter->rack_tlp, &segment);
+        }
+        next->rack_delivered = 2U;
         processed++;
         if (processed >= adapter->delivery_capacity) {
             break;
