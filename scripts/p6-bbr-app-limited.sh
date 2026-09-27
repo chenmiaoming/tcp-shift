@@ -8,6 +8,9 @@ RTT_MS=${TCP_SHIFT_P6_BBR_APP_RTT_MS:-40}
 RATE_MBIT=${TCP_SHIFT_P6_BBR_APP_RATE_MBIT:-10}
 BURST_BYTES=${TCP_SHIFT_P6_BBR_APP_BURST_BYTES:-524288}
 IDLE_MS=${TCP_SHIFT_P6_BBR_APP_IDLE_MS:-1000}
+FAULT_MODE=${TCP_SHIFT_P6_BBR_APP_FAULT_MODE:-none}
+RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_APP_RECOVERY_EXPECTATION:-clean}
+FAULT_MARKER=${TCP_SHIFT_P6_BBR_APP_FAULT_MARKER:-TCP_SHIFT_RACK_APP_TAIL}
 OUT=${TCP_SHIFT_P6_BBR_APP_OUT:-"$BUILD/p6-bbr-app-limited"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_APP_TUN_NAME:-"tsp6al$$"}
@@ -17,9 +20,12 @@ HOST_IP=${TCP_SHIFT_P6_BBR_APP_HOST_IP:-10.249.0.1}
 NETMASK=${TCP_SHIFT_P6_BBR_APP_NETMASK:-255.255.255.252}
 PUBLIC_PORT=${TCP_SHIFT_P6_BBR_APP_PUBLIC_PORT:-18164}
 BACKEND_PORT=${TCP_SHIFT_P6_BBR_APP_BACKEND_PORT:-19164}
+FAULT_CHAIN="TSAL$"
 
 RUNTIME_PID=
 BACKEND_PID=
+FAULT_CHAIN_CREATED=0
+FAULT_JUMP_INSTALLED=0
 
 mkdir -p "$OUT"
 : > "$OUT/backend.stdout"
@@ -40,6 +46,30 @@ mkdir -p "$OUT"
 command -v ip >/dev/null 2>&1 || { echo "ip is required" >&2; exit 1; }
 command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+
+case "$FAULT_MODE" in
+    none|tail-loss) ;;
+    *) echo "FAULT_MODE must be none or tail-loss" >&2; exit 1;;
+esac
+case "$RECOVERY_EXPECTATION" in
+    clean|app-tail) ;;
+    *) echo "RECOVERY_EXPECTATION must be clean or app-tail" >&2; exit 1;;
+esac
+if [ "$FAULT_MODE" = tail-loss ]; then
+    [ "$RECOVERY_EXPECTATION" = app-tail ] || {
+        echo "tail-loss requires RECOVERY_EXPECTATION=app-tail" >&2
+        exit 1
+    }
+    command -v iptables >/dev/null 2>&1 || {
+        echo "iptables is required for deterministic app-limited loss" >&2
+        exit 1
+    }
+else
+    [ "$RECOVERY_EXPECTATION" = clean ] || {
+        echo "clean app-limited mode requires RECOVERY_EXPECTATION=clean" >&2
+        exit 1
+    }
+fi
 
 for value_name in RTT_MS RATE_MBIT BURST_BYTES IDLE_MS; do
     eval value=\$$value_name
@@ -74,6 +104,13 @@ cleanup()
     set +e
     stop_pid "${RUNTIME_PID:-}"
     stop_pid "${BACKEND_PID:-}"
+    if [ "${FAULT_JUMP_INSTALLED:-0}" -eq 1 ]; then
+        iptables -D INPUT -i "$TUN_NAME" -j "$FAULT_CHAIN" >/dev/null 2>&1 || true
+    fi
+    if [ "${FAULT_CHAIN_CREATED:-0}" -eq 1 ]; then
+        iptables -F "$FAULT_CHAIN" >/dev/null 2>&1 || true
+        iptables -X "$FAULT_CHAIN" >/dev/null 2>&1 || true
+    fi
     tc qdisc del dev "$TUN_NAME" root >/dev/null 2>&1 || true
     tc qdisc del dev "$TUN_NAME" ingress >/dev/null 2>&1 || true
     tc qdisc del dev "$IFB_NAME" root >/dev/null 2>&1 || true
@@ -84,7 +121,7 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-python3 - "$BACKEND_PORT" "$BURST_BYTES" "$IDLE_MS" \
+python3 - "$BACKEND_PORT" "$BURST_BYTES" "$IDLE_MS" "$FAULT_MODE" "$FAULT_MARKER" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -94,9 +131,22 @@ import time
 port = int(sys.argv[1])
 burst_bytes = int(sys.argv[2])
 idle_ms = int(sys.argv[3])
+fault_mode = sys.argv[4]
+fault_marker = sys.argv[5].encode("ascii")
 
-burst1 = bytes(((index * 73 + 19) & 0xFF) for index in range(burst_bytes))
+burst1 = bytearray(((index * 73 + 19) & 0xFF) for index in range(burst_bytes))
 burst2 = bytes(((index * 29 + 101) & 0xFF) for index in range(burst_bytes))
+if fault_mode == "tail-loss":
+    if len(fault_marker) > min(256, burst_bytes):
+        raise SystemExit("fault marker does not fit in the tail region")
+    marker_offset = burst_bytes - len(fault_marker)
+    burst1[marker_offset:] = fault_marker
+    print(
+        f"backend-tail-marker offset={marker_offset} bytes={len(fault_marker)} "
+        f"marker={sys.argv[5]}",
+        flush=True,
+    )
+burst1 = bytes(burst1)
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -180,7 +230,19 @@ tc qdisc replace dev "$IFB_NAME" root netem \
 tc qdisc replace dev "$TUN_NAME" root netem \
     delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
 
-python3 - "$LWIP_IP" "$PUBLIC_PORT" "$BURST_BYTES" \
+if [ "$FAULT_MODE" = tail-loss ]; then
+    iptables -N "$FAULT_CHAIN"
+    FAULT_CHAIN_CREATED=1
+    iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
+    FAULT_JUMP_INSTALLED=1
+    iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+        -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+        -m string --algo bm --string "$FAULT_MARKER" \
+        -m statistic --mode nth --every 10000 --packet 0 -j DROP
+    iptables -A "$FAULT_CHAIN" -j RETURN
+fi
+
+python3 - "$LWIP_IP" "$PUBLIC_PORT" "$BURST_BYTES" "$FAULT_MODE" "$FAULT_MARKER" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
 import hashlib
 import socket
@@ -190,9 +252,14 @@ import time
 host = sys.argv[1]
 port = int(sys.argv[2])
 burst_bytes = int(sys.argv[3])
+fault_mode = sys.argv[4]
+fault_marker = sys.argv[5].encode("ascii")
 
-expected1 = bytes(((index * 73 + 19) & 0xFF) for index in range(burst_bytes))
+expected1 = bytearray(((index * 73 + 19) & 0xFF) for index in range(burst_bytes))
 expected2 = bytes(((index * 29 + 101) & 0xFF) for index in range(burst_bytes))
+if fault_mode == "tail-loss":
+    expected1[burst_bytes - len(fault_marker):] = fault_marker
+expected1 = bytes(expected1)
 
 
 def recv_exact(sock, length):
@@ -235,6 +302,10 @@ print(
 )
 PY
 
+if [ "$FAULT_MODE" = tail-loss ]; then
+    iptables -nvxL "$FAULT_CHAIN" > "$OUT/iptables-fault.txt"
+fi
+
 if ! wait "$BACKEND_PID"; then
     BACKEND_PID=
     cat "$OUT/backend.stderr" >&2 || true
@@ -253,6 +324,16 @@ tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.
     echo "P6 BBR app-limited qdisc dropped packets: ifb=${ifb_drops:-missing} tun=${tun_drops:-missing}" >&2
     exit 1
 }
+fault_drops=0
+if [ "$FAULT_MODE" = tail-loss ]; then
+    fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
+        "$OUT/iptables-fault.txt")
+    [ "$fault_drops" -eq 1 ] || {
+        cat "$OUT/iptables-fault.txt" >&2 || true
+        echo "app-limited tail-loss expected exactly one injected drop: drops=$fault_drops" >&2
+        exit 1
+    }
+fi
 
 sleep 0.2
 kill -TERM "$RUNTIME_PID"
@@ -275,11 +356,19 @@ grep -F 'cc_controller_errors=0' "$OUT/runtime.stderr" >/dev/null
 events=$(grep -m1 ' cc_bindings=' "$OUT/runtime.stderr")
 loss_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_loss_events=\([0-9][0-9]*\).*/\1/p')
 timeout_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_timeout_events=\([0-9][0-9]*\).*/\1/p')
-[ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
-[ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
-    echo "app-limited clean path entered recovery" >&2
-    exit 1
-}
+if [ "$RECOVERY_EXPECTATION" = clean ]; then
+    [ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
+    [ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
+        echo "app-limited clean path entered recovery" >&2
+        exit 1
+    }
+else
+    [ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
+    [ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
+        echo "app-limited tail loss triggered congestion/RTO fallback: loss=$loss_events timeout=$timeout_events" >&2
+        exit 1
+    }
+fi
 
 rate=$(grep -m1 'tcp-shift-p2-rate:' "$OUT/runtime.stderr")
 app_samples=$(printf '%s\n' "$rate" | sed -n 's/.* app_limited_samples=\([0-9][0-9]*\).*/\1/p')
@@ -297,11 +386,21 @@ valid_samples=$(printf '%s\n' "$rate" | sed -n 's/.* valid_samples=\([0-9][0-9]*
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
 delivered_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* delivered_payload_bytes=\([0-9][0-9]*\).*/\1/p')
 retransmit_events=$(printf '%s\n' "$delivery" | sed -n 's/.* retransmit_events=\([0-9][0-9]*\).*/\1/p')
-[ -n "$delivered_bytes" ] && [ "$delivered_bytes" -eq "$TOTAL_BYTES" ] &&
-[ -n "$retransmit_events" ] && [ "$retransmit_events" -eq 0 ] || {
-    echo "invalid app-limited delivery telemetry" >&2
+[ -n "$delivered_bytes" ] && [ "$delivered_bytes" -eq "$TOTAL_BYTES" ] || {
+    echo "invalid app-limited delivered-byte telemetry" >&2
     exit 1
 }
+if [ "$RECOVERY_EXPECTATION" = clean ]; then
+    [ -n "$retransmit_events" ] && [ "$retransmit_events" -eq 0 ] || {
+        echo "clean app-limited flow retransmitted data: retrans=$retransmit_events" >&2
+        exit 1
+    }
+else
+    [ -n "$retransmit_events" ] && [ "$retransmit_events" -eq 1 ] || {
+        echo "app-limited tail loss was not repaired by exactly one probe: retrans=$retransmit_events" >&2
+        exit 1
+    }
+fi
 
 pacing=$(grep -m1 'tcp-shift-p2-pacing:' "$OUT/runtime.stderr")
 pacing_deferrals=$(printf '%s\n' "$pacing" | sed -n 's/.* deferrals=\([0-9][0-9]*\).*/\1/p')
@@ -322,9 +421,17 @@ backend_idle_ns=$(sed -n 's/.* backend_idle_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/bac
     echo "missing app-limited idle timing" >&2
     exit 1
 }
+if [ "$RECOVERY_EXPECTATION" = app-tail ]; then
+    min_receiver_gap_ns=$((IDLE_MS * 1000000 / 2))
+    [ "$receiver_gap_ns" -ge "$min_receiver_gap_ns" ] || {
+        echo "tail repair completed too late to prove app-limited recovery: receiver_gap_ns=$receiver_gap_ns minimum=$min_receiver_gap_ns" >&2
+        exit 1
+    }
+fi
 
-printf 'p6_bbr_app_limited=ok base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s burst_bytes=%s configured_idle_ms=%s backend_idle_ns=%s receiver_idle_gap_ns=%s app_limited_enters=%s app_limited_exits=%s app_limited_samples=%s valid_rate_samples=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" "$BURST_BYTES" "$IDLE_MS" \
+printf 'p6_bbr_app_limited=ok base_rtt_ms=%s rate_mbit=%s fault_mode=%s recovery_expectation=%s fault_drops=%s bdp_bytes=%s queue_pkts=%s burst_bytes=%s configured_idle_ms=%s backend_idle_ns=%s receiver_idle_gap_ns=%s app_limited_enters=%s app_limited_exits=%s app_limited_samples=%s valid_rate_samples=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+    "$RTT_MS" "$RATE_MBIT" "$FAULT_MODE" "$RECOVERY_EXPECTATION" "$fault_drops" \
+    "$BDP_BYTES" "$QUEUE_PKTS" "$BURST_BYTES" "$IDLE_MS" \
     "$backend_idle_ns" "$receiver_gap_ns" "$app_enters" "$app_exits" "$app_samples" \
     "$valid_samples" "$pacing_deferrals" "$pacing_resumes" "$ifb_drops" "$tun_drops" \
     "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
