@@ -888,6 +888,118 @@ static uint32_t tcp_shift_rack_count_sacked_slots(
     }
     return count;
 }
+
+static uint64_t tcp_shift_rack_add_sat_ns(uint64_t left, uint64_t right)
+{
+    return right > UINT64_MAX - left ? UINT64_MAX : left + right;
+}
+
+/* RFC 8985 RACK_detect_loss(): return an immediate deadline when any
+ * transmission is already mature for loss, otherwise return the deadline
+ * after the maximum positive remaining interval. The RFC deliberately uses
+ * max(remaining): one reordering timer wakes when all currently eligible
+ * older transmissions have aged through the reordering window. */
+static uint64_t tcp_shift_rack_detection_deadline(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    uint64_t now_ns)
+{
+    struct tcp_shift_delivery_slot *slots;
+    uint64_t max_remaining_ns = 0U;
+    uint16_t index;
+    unsigned in_recovery;
+    unsigned due = 0U;
+
+    if (adapter == NULL || pcb == NULL || now_ns == 0U ||
+        adapter->rack_tlp.rack_xmit_ts_ns == 0U ||
+        adapter->rack_tlp.rack_rtt_ns == 0U) {
+        return 0U;
+    }
+
+    slots = tcp_shift_delivery_slots(adapter);
+    in_recovery = tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        struct tcp_shift_delivery_slot *slot = &slots[index];
+        struct tcp_shift_rack_segment segment;
+        uint64_t remaining_ns = 0U;
+
+        if (slot->segment == NULL || slot->payload_bytes == 0U ||
+            slot->acked_payload_bytes >= slot->payload_bytes ||
+            slot->tx_ns == 0U) {
+            continue;
+        }
+
+        tcp_shift_rack_slot_view(slot, &segment);
+        if (tcp_shift_rack_loss_remaining(
+                &adapter->rack_tlp, &segment, now_ns, in_recovery,
+                &remaining_ns)) {
+            due = 1U;
+        } else if (remaining_ns > max_remaining_ns) {
+            max_remaining_ns = remaining_ns;
+        }
+    }
+
+    if (due != 0U) {
+        return now_ns;
+    }
+    return max_remaining_ns != 0U
+               ? tcp_shift_rack_add_sat_ns(now_ns, max_remaining_ns)
+               : 0U;
+}
+
+static void tcp_shift_rack_arm_detection_timer(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    uint64_t now_ns)
+{
+    uint64_t deadline_ns;
+    size_t cancelled = 0U;
+
+    if (adapter == NULL || pcb == NULL) {
+        return;
+    }
+
+    deadline_ns = tcp_shift_rack_detection_deadline(adapter, pcb, now_ns);
+    if (deadline_ns == 0U) {
+        tcp_shift_recovery_timer_cancel(adapter);
+        return;
+    }
+    if (adapter->rack_timer_scheduled != 0U &&
+        adapter->rack_timer_deadline_ns == deadline_ns) {
+        return;
+    }
+
+    if (adapter->rack_timer_scheduled != 0U) {
+        if (tcp_shift_recovery_timer_service.ops == NULL ||
+            tcp_shift_recovery_timer_service.ops->cancel == NULL ||
+            tcp_shift_recovery_timer_service.ops->cancel(
+                tcp_shift_recovery_timer_service.arg,
+                adapter->pacing_flow_id,
+                adapter->pacing_generation,
+                &cancelled) < 0) {
+            tcp_shift_recovery_timer_cancel(adapter);
+            return;
+        }
+        adapter->rack_timer_scheduled = 0U;
+        adapter->rack_timer_deadline_ns = 0U;
+    }
+
+    if (tcp_shift_recovery_timer_service.ops == NULL ||
+        tcp_shift_recovery_timer_service.ops->schedule == NULL ||
+        adapter->pacing_flow_id == 0U) {
+        return;
+    }
+    if (tcp_shift_recovery_timer_service.ops->schedule(
+            tcp_shift_recovery_timer_service.arg,
+            adapter->pacing_flow_id,
+            adapter->pacing_generation,
+            deadline_ns,
+            TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK) < 0) {
+        return;
+    }
+    adapter->rack_timer_scheduled = 1U;
+    adapter->rack_timer_deadline_ns = deadline_ns;
+}
 #endif
 
 static void tcp_shift_lwip_cc_transport_from_adapter(
