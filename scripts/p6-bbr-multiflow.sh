@@ -29,6 +29,7 @@ mkdir -p "$OUT"
 : > "$OUT/runtime.stderr"
 : > "$OUT/client.stdout"
 : > "$OUT/client.stderr"
+: > "$OUT/qdisc-sampler.stderr"
 
 [ "$(id -u)" -eq 0 ] || {
     echo "P6 BBR multi-flow harness must run as root for TUN, IFB and netem" >&2
@@ -211,7 +212,8 @@ tc qdisc replace dev "$TUN_NAME" root netem \
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-before.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-before.txt"
 
-python3 - "$IFB_NAME" "$OUT/ifb-qdisc-samples.tsv" <<'PY' &
+python3 - "$IFB_NAME" "$OUT/ifb-qdisc-samples.tsv" \
+    2> "$OUT/qdisc-sampler.stderr" <<'PY' &
 import re
 import signal
 import subprocess
@@ -222,7 +224,7 @@ device = sys.argv[1]
 path = sys.argv[2]
 running = True
 sent_re = re.compile(
-    r"Sent ([0-9]+) bytes ([0-9]+) pkt \\(dropped ([0-9]+),"
+    r"Sent ([0-9]+) bytes ([0-9]+) pkt \(dropped ([0-9]+),"
 )
 backlog_re = re.compile(r"backlog ([0-9]+)([KMG]?b) ([0-9]+)p")
 units = {"b": 1, "Kb": 1024, "Mb": 1024 * 1024, "Gb": 1024 * 1024 * 1024}
@@ -237,12 +239,12 @@ signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 started_ns = time.monotonic_ns()
 next_sample_ns = started_ns
-interval_ns = 5_000_000
+interval_ns = 10_000_000
 
 with open(path, "w", buffering=1) as out:
     out.write(
-        "elapsed_ms\tsent_bytes\tsent_packets\tdropped_packets"
-        "\tbacklog_bytes\tbacklog_packets\n"
+        "monotonic_ns\telapsed_ms\tsent_bytes\tsent_packets"
+        "\tdropped_packets\tbacklog_bytes\tbacklog_packets\n"
     )
     while running:
         sample = subprocess.run(
@@ -263,7 +265,7 @@ with open(path, "w", buffering=1) as out:
         )
         backlog_packets = int(backlog.group(3)) if backlog else -1
         out.write(
-            f"{(now_ns - started_ns) / 1_000_000.0:.3f}\t"
+            f"{now_ns}\t{(now_ns - started_ns) / 1_000_000.0:.3f}\t"
             f"{sent_bytes}\t{sent_packets}\t{dropped}\t"
             f"{backlog_bytes}\t{backlog_packets}\n"
         )
@@ -273,6 +275,9 @@ with open(path, "w", buffering=1) as out:
             time.sleep(sleep_ns / 1_000_000_000.0)
 PY
 QDISC_SAMPLER_PID=$!
+# Keep sampler stderr in the artifact without interleaving it into the runtime
+# trace; a premature sampler exit is treated as a qualification failure.
+exec 3>&2
 
 python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOWS" "$PAYLOAD_BYTES" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
@@ -391,8 +396,26 @@ if ! wait "$BACKEND_PID"; then
 fi
 BACKEND_PID=
 
-stop_pid "$QDISC_SAMPLER_PID"
+if ! kill -0 "$QDISC_SAMPLER_PID" 2>/dev/null; then
+    wait "$QDISC_SAMPLER_PID" >/dev/null 2>&1 || true
+    QDISC_SAMPLER_PID=
+    cat "$OUT/qdisc-sampler.stderr" >&3 || true
+    echo "P6 BBR multi-flow qdisc sampler exited early" >&3
+    exit 1
+fi
+kill -TERM "$QDISC_SAMPLER_PID"
+if ! wait "$QDISC_SAMPLER_PID"; then
+    QDISC_SAMPLER_PID=
+    cat "$OUT/qdisc-sampler.stderr" >&3 || true
+    echo "P6 BBR multi-flow qdisc sampler failed" >&3
+    exit 1
+fi
 QDISC_SAMPLER_PID=
+sample_lines=$(wc -l < "$OUT/ifb-qdisc-samples.tsv")
+[ "$sample_lines" -ge 2 ] || {
+    echo "P6 BBR multi-flow qdisc sampler produced no data" >&3
+    exit 1
+}
 
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
