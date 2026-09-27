@@ -399,3 +399,19 @@ target_compile_options(tcp-shift-rack-tlp-contract PRIVATE
     -Wall -Wextra -Wpedantic -Werror
 )
 target_link_libraries(tcp-shift-rack-tlp-contract PRIVATE tcp_shift_rack_tlp)
+
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
+    add_executable(tcp-shift-rack-tlp-adapter-contract
+        src/tests/rack_tlp_adapter_test.c
+    )
+    target_include_directories(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        ${LWIP_INCLUDE_DIRS}
+    )
+    target_compile_options(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        tcp_shift_lwip_cc_adapter
+        tcp_shift_lwip
+    )
+endif()
