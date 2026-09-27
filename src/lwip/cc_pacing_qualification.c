@@ -227,6 +227,16 @@ static int tcp_shift_pacing_qualification_quantum_on_loss(
     return result;
 }
 
+static void tcp_shift_pacing_qualification_quantum_on_tlp_dupack(
+    void *arg, struct tcp_pcb *pcb, unsigned sack_seen)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_tlp_dupack != NULL) {
+        tcp_shift_pacing_qualification_base_hook_ops->on_tlp_dupack(
+            arg, pcb, sack_seen);
+    }
+}
+
 static int tcp_shift_pacing_qualification_quantum_on_tlp_loss(
     void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
 {
@@ -349,6 +359,8 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
         .on_tlp_loss =
             tcp_shift_pacing_qualification_quantum_on_tlp_loss,
+        .on_tlp_dupack =
+            tcp_shift_pacing_qualification_quantum_on_tlp_dupack,
         .on_timeout = tcp_shift_pacing_qualification_quantum_on_timeout,
         .rack_loss_status =
             tcp_shift_pacing_qualification_quantum_rack_loss_status,
