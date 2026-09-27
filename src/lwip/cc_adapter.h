@@ -186,14 +186,17 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t pacing_next_send_ns;
     uint64_t pacing_flow_id;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    uint64_t rack_timer_deadline_ns;
+    uint64_t recovery_timer_deadline_ns;
 #endif
     uint32_t pacing_generation;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    uint32_t recovery_timer_kind;
+#endif
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned pacing_scheduled;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    unsigned rack_timer_scheduled;
+    unsigned recovery_timer_scheduled;
 #endif
     unsigned bound;
     unsigned heap_owned;
