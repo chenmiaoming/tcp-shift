@@ -675,8 +675,10 @@ case "$LOSS_MODE" in
                 exit 1
             }
         else
-            [ "$loss_events" -ge 1 ] && [ "$timeout_events" -eq 0 ] || {
-                echo "RACK DSACK reordering did not exercise bounded spurious recovery: loss=$loss_events timeout=$timeout_events" >&2
+            [ "$loss_events" -ge 1 ] &&
+            [ "$loss_events" -le 3 ] &&
+            [ "$timeout_events" -eq 0 ] || {
+                echo "RACK DSACK reordering exceeded bounded spurious recovery: expected_loss=1..3 loss=$loss_events timeout=$timeout_events" >&2
                 exit 1
             }
         fi
@@ -763,11 +765,12 @@ case "$LOSS_MODE" in
             # D-SACK is the recovery signal for exactly that case, so do not
             # require reordering_seen/rack_reordering_events here.
             [ "$retransmit_events" -ge 1 ] &&
+            [ "$retransmit_events" -le 12 ] &&
             [ "$rack_dsack_events" -ge 1 ] &&
             [ "$rack_reo_wnd_mult_max" -ge 2 ] &&
             [ "$rack_reo_wnd_mult" -ge 2 ] &&
             [ "$rack_reo_wnd_persist" -ge 1 ] || {
-                echo "D-SACK did not expand/persist RACK reordering window: retrans=$retransmit_events dsack=$rack_dsack_events mult=$rack_reo_wnd_mult max=$rack_reo_wnd_mult_max persist=$rack_reo_wnd_persist" >&2
+                echo "D-SACK adaptation gate failed or amplified retransmissions: retrans=$retransmit_events dsack=$rack_dsack_events mult=$rack_reo_wnd_mult max=$rack_reo_wnd_mult_max persist=$rack_reo_wnd_persist" >&2
                 exit 1
             }
         fi
