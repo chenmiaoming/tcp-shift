@@ -19,11 +19,10 @@ extern "C" {
 #define TCP_SHIFT_CUBIC_FAST_CONVERGENCE_NUM 17U
 #define TCP_SHIFT_CUBIC_FAST_CONVERGENCE_DEN 20U
 
-/* RFC 9406 HyStart++ recommended constants. The current ordinary tcp-shift
- * CUBIC path does not yet execute the generic Reno/CUBIC transport pacing
- * fallback, so it uses the RFC's non-paced L=8 ACK-growth cap. The model owns
- * one explicit capability bit so a transport that really does pace this flow
- * can select the RFC's paced L=infinity rule without changing the detector. */
+/* RFC 9406 HyStart++ recommended constants. The model owns one explicit
+ * capability bit so the adapter can select L=infinity only while this flow is
+ * actually registered with the shared pacer and has a finite nonzero pacing
+ * rate; otherwise it uses the RFC's non-paced L=8 ACK-growth cap. */
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_THRESH_NS UINT64_C(4000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MAX_RTT_THRESH_NS UINT64_C(16000000)
 #define TCP_SHIFT_CUBIC_HYSTARTPP_MIN_RTT_DIVISOR 8U
