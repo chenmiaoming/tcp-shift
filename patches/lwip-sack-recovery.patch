@@ -287,7 +287,12 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    /* Give up if the segment is still referenced by the netif driver
-@@ -1758,14 +1807,26 @@
+@@ -1758,14 +1807,31 @@
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++    (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
++  }
++#endif
    /* Move the first unacked segment to the unsent queue */
    /* Keep the unsent queue sorted. */
 -  pcb->unacked = seg->next;
@@ -315,7 +320,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1848,308 @@
+@@ -1787,5 +1853,313 @@
    return ERR_OK;
  }
  
@@ -372,6 +377,11 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +    if (tcp_output_segment_busy(seg)) {
 +      return ERR_VAL;
 +    }
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++      (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
++    }
++#endif
 +
 +    *unacked_link = seg->next;
 +    cur_seg = &pcb->unsent;
