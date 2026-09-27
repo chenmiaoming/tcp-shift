@@ -761,6 +761,13 @@ if [ "$CC" = bbr-internal ]; then
             echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
             exit 1
         }
+    elif [ "$RECOVERY_EXPECTATION" = tlp ]; then
+        # RFC 8985 section 7.4.2 permits a retransmitted TLP to repair the
+        # only tail loss before ordinary fast recovery starts. The dedicated
+        # TLP gate checks exact retransmission and zero-RTO behavior; a later
+        # ACK beyond TLP.end_seq is what triggers the special congestion
+        # response when such an ACK exists.
+        :
     else
         [ "$recovery_enter_events" -ge 1 ] || {
             echo "lossy BBR long-flow recorded no recovery entry" >&2
