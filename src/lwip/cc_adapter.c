@@ -75,11 +75,7 @@ static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
  * controller at accept therefore needs the value lwIP is about to publish. */
 static uint32_t tcp_shift_lwip_cc_initial_cwnd(uint32_t mss_bytes)
 {
-    uint32_t twice_mss = 2U * mss_bytes;
-    uint32_t four_mss = 4U * mss_bytes;
-    uint32_t floor = twice_mss > 4380U ? twice_mss : 4380U;
-
-    return four_mss < floor ? four_mss : floor;
+    return tcp_shift_initial_cwnd_bytes(mss_bytes);
 }
 
 static void tcp_shift_lwip_cc_transport_from_pcb(
