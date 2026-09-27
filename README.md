@@ -189,6 +189,7 @@ Start here:
 - [`docs/lwip-roadmap.md`](docs/lwip-roadmap.md) — milestone order and stop criteria;
 - [`docs/ci.md`](docs/ci.md) — qualification model and retained evidence;
 - [`docs/development.md`](docs/development.md) — development and handoff contract;
+- [`docs/standards-conformance.md`](docs/standards-conformance.md) — RFC/Linux/upstream reference hierarchy and scoped conformance claims;
 - [`docs/milestones/p5-rate-sampler-pacer.md`](docs/milestones/p5-rate-sampler-pacer.md) — completed P5 evidence;
 - [`docs/milestones/p5-merge-record.md`](docs/milestones/p5-merge-record.md) — PR #13 review/merge provenance and final P5 handoff;
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
