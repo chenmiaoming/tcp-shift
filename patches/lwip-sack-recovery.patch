@@ -262,11 +262,22 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        unacked_link = &seg->next;
 +        continue;
 +      }
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++      /* Under RACK, SACK_REXMIT describes retransmission history, not a
++         permanent exclusion. The delivery sidecar refreshes Segment.xmit_ts
++         on every successful retransmission, so a retransmission that is later
++         proven lost by fresh RACK timing evidence must be eligible again. */
++      if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
++        unacked_link = &seg->next;
++        continue;
++      }
++#else
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
 +          !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +        unacked_link = &seg->next;
 +        continue;
 +      }
++#endif
 +      break;
 +    }
 +    if (seg == NULL) {
@@ -342,11 +353,22 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +       fallback if this retransmission itself is lost. Retrying on every new
 +       SACK block causes severe spurious retransmission before one RTT has
 +       elapsed on high-latency paths. */
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++    /* RACK can declare a retransmission itself lost after its refreshed
++       transmit timestamp has aged behind a newer delivered transmission.
++       In that case allow another selective repair inside the same recovery
++       episode; the non-RACK path below retains the one-retransmission guard. */
++    if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
++      unacked_link = &seg->next;
++      continue;
++    }
++#else
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
 +        !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +      unacked_link = &seg->next;
 +      continue;
 +    }
++#endif
 +    if (tcp_output_segment_busy(seg)) {
 +      return ERR_VAL;
 +    }
