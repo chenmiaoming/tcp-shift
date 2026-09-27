@@ -249,6 +249,10 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
 int tcp_shift_lwip_cc_internal_bbr_active(
     const struct tcp_shift_lwip_cc_adapter *adapter);
 
+/* Qualification-only diagnostic. When TCP_SHIFT_BBR_STARTUP_TRACE is enabled,
+ * emit the bounded in-memory startup trace after traffic has stopped. */
+void tcp_shift_lwip_cc_dump_internal_bbr_startup_trace(void);
+
 void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
                                        tcp_accept_fn accept);
 
