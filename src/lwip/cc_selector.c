@@ -437,7 +437,7 @@ static int tcp_shift_cc_selector_pacing_rack_loss_status(
     void *arg,
     struct tcp_pcb *pcb,
     const void *segment,
-    u64_t *remaining_ns)
+    uint64_t *remaining_ns)
 {
     if (tcp_shift_cc_selector_base_hook_ops == NULL ||
         tcp_shift_cc_selector_base_hook_ops->rack_loss_status == NULL) {
