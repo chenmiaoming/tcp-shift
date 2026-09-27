@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -57,6 +58,18 @@ struct tcp_shift_pacing_service {
 };
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_rack_trace_enabled(void)
+{
+    const char *value = getenv("TCP_SHIFT_RACK_TRACE");
+
+    return value != NULL && value[0] != '\0' &&
+                   !(value[0] == '0' && value[1] == '\0')
+               ? 1
+               : 0;
+}
+
+static unsigned tcp_shift_rack_trace_events;
+
 struct tcp_shift_recovery_timer_service {
     const struct tcp_shift_lwip_recovery_timer_ops *ops;
     void *arg;
@@ -2031,10 +2044,43 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
     rack_segment.lost = 0U;
     in_recovery = tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
 
-    if (tcp_shift_rack_loss_remaining(
+    {
+        int lost = tcp_shift_rack_loss_remaining(
             &adapter->rack_tlp, &rack_segment, now_ns, in_recovery,
-            &remaining64)) {
-        return 1;
+            &remaining64);
+
+        if (tcp_shift_rack_trace_enabled() &&
+            tcp_shift_rack_trace_events < 256U &&
+            (lost != 0 || rack_segment.retransmitted != 0U)) {
+            fprintf(stderr,
+                    "tcp-shift-rack-trace: seq=%u end=%u retrans=%u "
+                    "acked=%u/%u now_ns=%llu xmit_ns=%llu "
+                    "rack_xmit_ns=%llu rack_end=%u rack_rtt_ns=%llu "
+                    "min_rtt_ns=%llu srtt_ns=%llu reo_wnd_ns=%llu "
+                    "fack=%u sacked=%u reordering=%u recovery=%u "
+                    "lost=%d remaining_ns=%llu\n",
+                    rack_segment.seq_start, rack_segment.end_seq,
+                    rack_segment.retransmitted,
+                    (unsigned)slot->acked_payload_bytes,
+                    (unsigned)slot->payload_bytes,
+                    (unsigned long long)now_ns,
+                    (unsigned long long)rack_segment.xmit_ts_ns,
+                    (unsigned long long)adapter->rack_tlp.rack_xmit_ts_ns,
+                    adapter->rack_tlp.rack_end_seq,
+                    (unsigned long long)adapter->rack_tlp.rack_rtt_ns,
+                    (unsigned long long)adapter->rack_tlp.min_rtt_ns,
+                    (unsigned long long)adapter->rack_tlp.srtt_ns,
+                    (unsigned long long)adapter->rack_tlp.reo_wnd_ns,
+                    adapter->rack_tlp.fack,
+                    adapter->rack_tlp.segs_sacked,
+                    adapter->rack_tlp.reordering_seen,
+                    in_recovery, lost,
+                    (unsigned long long)remaining64);
+            tcp_shift_rack_trace_events++;
+        }
+        if (lost != 0) {
+            return 1;
+        }
     }
     if (remaining_ns != NULL) {
         *remaining_ns = remaining64;
