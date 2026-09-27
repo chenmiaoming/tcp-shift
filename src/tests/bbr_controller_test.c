@@ -178,6 +178,66 @@ static int check_lifecycle(void)
     return 0;
 }
 
+static int check_first_rtt_pacing_rebootstrap(void)
+{
+    struct tcp_shift_bbr_controller_state state;
+    struct tcp_shift_cc_transport transport;
+    struct tcp_shift_cc_init init;
+    struct tcp_shift_cc_policy policy;
+    struct tcp_shift_cc_ack ack;
+    uint64_t bootstrap_rate;
+    uint64_t observed_rtt_rate;
+
+    memset(&state, 0, sizeof(state));
+    memset(&transport, 0, sizeof(transport));
+    memset(&init, 0, sizeof(init));
+    memset(&ack, 0, sizeof(ack));
+
+    transport.mss_bytes = 1460U;
+    transport.inflight_bytes = 14600U;
+    transport.send_window_bytes = 1000000U;
+    transport.cwnd_limit_bytes = 1000000U;
+    init.initial_cwnd_bytes = 14600U;
+    init.initial_ssthresh_bytes = transport.cwnd_limit_bytes;
+    init.min_cwnd_bytes = 2920U;
+
+    CHECK(tcp_shift_bbr_controller_init(
+              &state, &transport, &init, 0U, &policy) == 0);
+    bootstrap_rate = policy.pacing_rate_bytes_per_sec;
+    CHECK(state.has_seen_rtt == 0U);
+
+    /* Linux bbr_set_pacing_rate() replaces its nominal-1ms bootstrap once
+     * SRTT first becomes available, before applying the normal STARTUP
+     * monotonic-rate rule. Keep the model sample deliberately low so the
+     * observed-RTT bootstrap remains the active rate on this ACK. */
+    ack.acked_bytes = transport.mss_bytes;
+    ack.ack_time_ns = UINT64_C(1000000000);
+    ack.smoothed_rtt_ns = UINT64_C(40000000);
+    ack.rate = rate_sample(
+        UINT64_C(100000), 0U, transport.mss_bytes,
+        transport.inflight_bytes, TCP_SHIFT_CC_RATE_SAMPLE_VALID);
+
+    observed_rtt_rate = tcp_shift_bbr_initial_pacing_rate_bytes_per_sec(
+        init.initial_cwnd_bytes, ack.smoothed_rtt_ns);
+    CHECK(observed_rtt_rate != 0U);
+    CHECK(observed_rtt_rate < bootstrap_rate);
+    CHECK(tcp_shift_bbr_controller_on_ack(
+              &state, &transport, &ack, &policy) == 0);
+    CHECK(state.has_seen_rtt == 1U);
+    CHECK(policy.pacing_rate_bytes_per_sec == observed_rtt_rate);
+
+    /* The bootstrap replacement is one-shot. A later, larger SRTT must not
+     * reduce pacing a second time while STARTUP has not reached full pipe. */
+    ack.ack_time_ns += UINT64_C(40000000);
+    ack.smoothed_rtt_ns = UINT64_C(80000000);
+    ack.rate.prior_delivered_bytes = transport.mss_bytes;
+    ack.rate.delivered_total_bytes = 2U * transport.mss_bytes;
+    CHECK(tcp_shift_bbr_controller_on_ack(
+              &state, &transport, &ack, &policy) == 0);
+    CHECK(policy.pacing_rate_bytes_per_sec == observed_rtt_rate);
+    return 0;
+}
+
 static int check_recovery_composition(void)
 {
     struct tcp_shift_bbr_controller_state state;
@@ -297,11 +357,13 @@ static int check_invalid_inputs(void)
 int main(void)
 {
     CHECK(check_lifecycle() == 0);
+    CHECK(check_first_rtt_pacing_rebootstrap() == 0);
     CHECK(check_recovery_composition() == 0);
     CHECK(check_invalid_inputs() == 0);
 
     printf("bbr_controller_lifecycle=ok modes=startup-drain-probebw-probertt-probebw "
-           "public_ops=disabled loss_timeout=pending cycle_seed=external\n");
+           "first_rtt_pacing_rebootstrap=linux-shaped public_ops=disabled "
+           "loss_timeout=pending cycle_seed=external\n");
     printf("bbr_controller_recovery=ok conservation=one-packet-round "
            "round_marker=delivered restore=prior_cwnd public_ops=disabled\n");
     return 0;
