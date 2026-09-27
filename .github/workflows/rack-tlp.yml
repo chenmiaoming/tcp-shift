@@ -163,6 +163,7 @@ jobs:
         run: |
           out="$PWD/.build/rack-tlp-lost-retransmission"
           sudo env \
+            TCP_SHIFT_RACK_TRACE=1 \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
             TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
