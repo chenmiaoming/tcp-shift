@@ -95,15 +95,49 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_rack_loss_status(
               pcb, &segment2, &remaining_ns) == -1);
 
+    /* RFC 2883 requires D-SACK classification against the cumulative ACK in
+     * this same packet, not pcb->lastack. Keep lastack deliberately behind
+     * ack_seq: the first block is still a D-SACK and must grow reo_wnd. */
+    sack.left = seq;
+    sack.right = seq + payload;
+    CHECK(pcb->lastack == seq);
+    CHECK(tcp_shift_lwip_cc_hook_sack(
+              pcb, seq + payload, &sack, 1U) != 0);
+    CHECK(stats.rack_dsack_events == 1U);
+    CHECK(stats.rack_reordering_events == 1U);
+    CHECK(adapter.rack_tlp.reordering_seen == 1U);
+    CHECK(adapter.rack_tlp.reo_wnd_mult == 2U);
+    CHECK(adapter.rack_tlp.reo_wnd_persist ==
+          TCP_SHIFT_RACK_REO_WND_PERSIST_RECOVERIES);
+    CHECK(stats.rack_reo_wnd_mult == 2U);
+    CHECK(stats.rack_reo_wnd_mult_max == 2U);
+
+    /* Recovery exit advances the RFC 8985 D-SACK persistence lifecycle even
+     * for a transport/native recovery owner. */
+    adapter.hook.recovery_active = 1U;
+    adapter.hook.recovery_end_seq = pcb->snd_nxt;
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(
+              pcb, pcb->snd_nxt) == 0);
+    CHECK(adapter.hook.recovery_active == 0U);
+    CHECK(adapter.rack_tlp.dsack_round_active == 0U);
+    CHECK(adapter.rack_tlp.reo_wnd_mult == 2U);
+    CHECK(adapter.rack_tlp.reo_wnd_persist ==
+          TCP_SHIFT_RACK_REO_WND_PERSIST_RECOVERIES - 1U);
+    CHECK(stats.rack_reo_wnd_persist ==
+          TCP_SHIFT_RACK_REO_WND_PERSIST_RECOVERIES - 1U);
+
     pcb->unacked = NULL;
     tcp_shift_lwip_cc_adapter_unbind(&adapter);
     tcp_abort(pcb);
 
     printf("rack_tlp_adapter_contract=ok rack_end=%u rack_rtt_ns=%llu "
-           "min_rtt_ns=%llu sacked=%u\n",
+           "min_rtt_ns=%llu sacked=%u dsack=%llu reo_mult=%u persist=%u\n",
            (unsigned)sack.right,
            (unsigned long long)adapter.rack_tlp.rack_rtt_ns,
            (unsigned long long)adapter.rack_tlp.min_rtt_ns,
-           (unsigned)adapter.rack_tlp.segs_sacked);
+           (unsigned)adapter.rack_tlp.segs_sacked,
+           (unsigned long long)stats.rack_dsack_events,
+           (unsigned)adapter.rack_tlp.reo_wnd_mult,
+           (unsigned)adapter.rack_tlp.reo_wnd_persist);
     return 0;
 }
