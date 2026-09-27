@@ -2443,6 +2443,15 @@ void tcp_shift_lwip_cc_mark_app_limited(struct tcp_pcb *pcb)
     if (adapter->stats != NULL) {
         adapter->stats->app_limited_enters++;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    {
+        uint64_t now_ns = tcp_shift_delivery_now_ns(adapter);
+
+        if (now_ns != 0U) {
+            tcp_shift_tlp_arm_pto(adapter, pcb, now_ns);
+        }
+    }
+#endif
 }
 
 const struct tcp_shift_lwip_cc_stats *tcp_shift_lwip_cc_get_stats(void)

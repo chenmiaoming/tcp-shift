@@ -19,6 +19,7 @@ on:
       - 'src/tests/rack_tlp_test.c'
       - 'src/tests/rack_tlp_adapter_test.c'
       - 'scripts/p6-bbr-long-flow.sh'
+      - 'scripts/p6-bbr-app-limited.sh'
       - 'docs/milestones/rack-tlp.md'
       - '.github/workflows/rack-tlp.yml'
   workflow_dispatch:
@@ -46,6 +47,11 @@ jobs:
           sudo modprobe tun || true
           sudo modprobe ifb || true
           test -c /dev/net/tun
+
+      - name: Validate RACK-TLP live harnesses
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/p6-bbr-app-limited.sh
 
       - name: Fetch pinned lwIP
         run: sh scripts/fetch-lwip.sh
@@ -134,6 +140,33 @@ jobs:
           grep -F 'fault_marker_count=1' "$out/summary.txt"
           grep -F 'retransmit_events=1' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
+
+      - name: Prove app-limited tail loss is repaired before new data
+        run: |
+          out="$PWD/.build/rack-tlp-app-limited-tail-loss"
+          sudo env \
+            TCP_SHIFT_P6_BBR_APP_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_APP_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_APP_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_APP_BURST_BYTES=131072 \
+            TCP_SHIFT_P6_BBR_APP_IDLE_MS=1000 \
+            TCP_SHIFT_P6_BBR_APP_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_APP_FAULT_MODE=tail-loss \
+            TCP_SHIFT_P6_BBR_APP_RECOVERY_EXPECTATION=app-tail \
+            TCP_SHIFT_P6_BBR_APP_TUN_NAME=tsrackapp \
+            TCP_SHIFT_P6_BBR_APP_IFB_NAME=rackifbapp \
+            TCP_SHIFT_P6_BBR_APP_PUBLIC_PORT=18182 \
+            TCP_SHIFT_P6_BBR_APP_BACKEND_PORT=19182 \
+            TCP_SHIFT_P6_BBR_APP_OUT="$out" \
+            sh scripts/p6-bbr-app-limited.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'fault_mode=tail-loss' "$out/summary.txt"
+          grep -F 'recovery_expectation=app-tail' "$out/summary.txt"
+          grep -F 'fault_drops=1' "$out/summary.txt"
+          grep -F 'repair_before_second_burst=1' "$out/summary.txt"
+          grep -F 'loss_events=1' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+          grep -F 'qdisc_drops=0/0' "$out/summary.txt"
 
       - name: Prove clean long-RTT RACK stays lossless
         run: |
@@ -258,6 +291,9 @@ jobs:
             if [ -f .build/rack-tlp-tail-loss/summary.txt ]; then
               cat .build/rack-tlp-tail-loss/summary.txt
             fi
+            if [ -f .build/rack-tlp-app-limited-tail-loss/summary.txt ]; then
+              cat .build/rack-tlp-app-limited-tail-loss/summary.txt
+            fi
             if [ -f .build/rack-tlp-clean-long-rtt/summary.txt ]; then
               cat .build/rack-tlp-clean-long-rtt/summary.txt
             fi
@@ -272,7 +308,7 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending application-limited loss, deterministic 28-drop, teardown, controller-matrix, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending deterministic 28-drop, teardown, controller-matrix, and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RACK-TLP diagnostics
@@ -283,6 +319,7 @@ jobs:
           path: |
             .build/rack-tlp-single-sack
             .build/rack-tlp-tail-loss
+            .build/rack-tlp-app-limited-tail-loss
             .build/rack-tlp-clean-long-rtt
             .build/rack-tlp-lost-retransmission
             .build/rack-tlp-reorder-safe

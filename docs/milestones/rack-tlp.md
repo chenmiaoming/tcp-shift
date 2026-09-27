@@ -1,6 +1,6 @@
 # RFC 8985 RACK-TLP
 
-Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, lost-retransmission recovery, and deterministic reordering/D-SACK adaptation are live-qualified, experimental/default-OFF.
+Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, application-limited tail repair, lost-retransmission recovery, and deterministic reordering/D-SACK adaptation are live-qualified, experimental/default-OFF.
 
 tcp-shift is moving sender loss detection from a fixed DupAck/SACK-count heuristic toward RFC 8985 RACK-TLP. This work is deliberately transport-level and independent of Reno, CUBIC, and BBR controller policy.
 
@@ -60,7 +60,6 @@ Implementation phases:
 
 6. **Qualification**
    - tail loss that previously requires RTO;
-   - application-limited loss;
    - lost retransmission, including the required additional congestion response;
    - reordering below and above the reordering window;
    - DSACK adaptation;
@@ -78,6 +77,7 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - timer-driven RACK repair when loss matures below the ordinary DupThresh path;
 - PTO/TLP scheduling with ordinary RTO as the conservative fallback;
 - live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
+- live application-limited tail qualification where the final packet is first transmitted after the prior flight drains: the application-limited transition re-evaluates PTO, one TLP retransmission completes burst one before burst two is made available, the later ACK produces exactly one congestion indication, and the path records zero RTOs, zero unrelated qdisc drops, and exact payload integrity;
 - an RFC-shaped lost-retransmission gate: one original segment and its first retransmission are dropped, a later lost original segment is successfully retransmitted to provide newer RACK timing evidence, and the first hole is then repaired again without RTO;
 - the lost-retransmission gate requires exactly three injected drops, three retransmission events, two congestion-loss events, zero timeout fallback, zero unrelated qdisc drops, and exact payload integrity;
 - congestion-control callbacks kept separate from the transport loss detector; RACK reports the second congestion indication without moving the existing fast-recovery boundary;
@@ -93,4 +93,4 @@ The feature remains **experimental/default-OFF** because the current live qualif
 - incremental memory and wakeup/timer cost;
 - Reno, CUBIC, and internal BBR recovery behavior with RACK-TLP enabled, while preserving unchanged production behavior when it is disabled.
 
-Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, tail-loss TLP, lost-retransmission recovery, and reordering/D-SACK adaptation qualified on deterministic paths**, not complete RFC 8985 or production conformance.
+Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, ordinary and application-limited tail-loss TLP, lost-retransmission recovery, and reordering/D-SACK adaptation qualified on deterministic paths**, not complete RFC 8985 or production conformance.
