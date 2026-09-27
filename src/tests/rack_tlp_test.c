@@ -42,6 +42,7 @@ static int test_sent_after_and_rack_update(void)
 
     CHECK(tcp_shift_rack_note_delivered(
               &state, &newer, UINT64_C(210000000)) == 1);
+    tcp_shift_rack_detect_reordering(&state, &newer);
     CHECK(state.rack_xmit_ts_ns == newer.xmit_ts_ns);
     CHECK(state.rack_end_seq == newer.end_seq);
     CHECK(state.rack_rtt_ns == UINT64_C(100000000));
@@ -51,6 +52,7 @@ static int test_sent_after_and_rack_update(void)
     /* An original older segment delivered below FACK proves reordering. */
     CHECK(tcp_shift_rack_note_delivered(
               &state, &older, UINT64_C(220000000)) == 1);
+    tcp_shift_rack_detect_reordering(&state, &older);
     CHECK(state.reordering_seen == 1U);
     return 0;
 }
