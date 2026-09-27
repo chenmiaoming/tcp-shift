@@ -507,6 +507,27 @@ static int tcp_shift_lwip_bbr_hook_recovery_exit(void *arg,
     return 1;
 }
 
+static int tcp_shift_lwip_bbr_hook_rack_loss_status(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const void *segment,
+    u64_t *remaining_ns)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_lwip_bbr_binding *binding =
+        tcp_shift_lwip_bbr_binding_from_adapter(adapter, pcb);
+
+    if (binding == NULL || binding->base_hook_ops == NULL ||
+        binding->base_hook_ops->rack_loss_status == NULL) {
+        if (remaining_ns != NULL) {
+            *remaining_ns = 0U;
+        }
+        return -1;
+    }
+    return binding->base_hook_ops->rack_loss_status(
+        arg, pcb, segment, remaining_ns);
+}
+
 static u32_t tcp_shift_lwip_bbr_hook_effective_cwnd(void *arg,
                                                        struct tcp_pcb *pcb)
 {
@@ -578,6 +599,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_bbr_hook_ops = {
     .on_loss = tcp_shift_lwip_bbr_hook_loss,
     .on_timeout = tcp_shift_lwip_bbr_hook_timeout,
     .on_recovery_exit = tcp_shift_lwip_bbr_hook_recovery_exit,
+    .rack_loss_status = tcp_shift_lwip_bbr_hook_rack_loss_status,
     .effective_cwnd = tcp_shift_lwip_bbr_hook_effective_cwnd,
     .on_segment_send_eligible = tcp_shift_lwip_bbr_hook_send_eligible,
     .on_segment_tx = tcp_shift_lwip_bbr_hook_segment_tx,
