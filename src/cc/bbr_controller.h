@@ -31,6 +31,9 @@ struct tcp_shift_bbr_controller_state {
      * decision. Recovery cwnd accounting remains owned by the existing
      * transport/recovery boundary. */
     uint32_t pending_probe_loss_bytes;
+    /* Linux BBR bootstraps at a nominal 1 ms RTT, then reinitializes pacing
+     * exactly once when TCP first publishes a usable smoothed RTT. */
+    uint8_t has_seen_rtt;
     uint8_t initialized;
 };
 

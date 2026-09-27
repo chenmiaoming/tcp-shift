@@ -114,11 +114,14 @@ results = [None] * flows
 
 
 def worker(index, conn):
-    start.wait()
+    # Match the Linux reference harness: complete CPU-heavy payload setup
+    # before synchronizing the send start. Otherwise CPython's GIL can stagger
+    # the flows after the barrier and contaminate early RTT observations.
     payload = bytes((((offset * 73) + 19 + index * 17) & 0xFF)
                     for offset in range(payload_bytes))
     header = struct.pack("!IQ", index, payload_bytes)
     digest = hashlib.sha256(payload).hexdigest()
+    start.wait()
     conn.sendall(header)
     conn.sendall(payload)
     conn.shutdown(socket.SHUT_WR)

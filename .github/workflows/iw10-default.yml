@@ -1,0 +1,49 @@
+name: RFC 6928 IW10 default
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/lwip/initial_window.h'
+      - 'src/lwip/cc_hooks.h'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/tests/initial_window_test.c'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - '.github/workflows/iw10-default.yml'
+  workflow_dispatch:
+
+jobs:
+  initial-window-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake git
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Build RFC 6928 default
+        run: |
+          cmake -S . -B .build-iw10 -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-iw10 --target \
+            tcp-shift-initial-window-contract tcp-shift-p2 --parallel
+          .build-iw10/tcp-shift-initial-window-contract | tee /tmp/iw10.txt
+          grep -F 'default=rfc6928-iw10' /tmp/iw10.txt
+
+      - name: Build legacy rollback profile
+        run: |
+          cmake -S . -B .build-legacy-iw \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_LEGACY_INITIAL_WINDOW=ON
+          cmake --build .build-legacy-iw --target \
+            tcp-shift-initial-window-contract tcp-shift-p2 --parallel
+          .build-legacy-iw/tcp-shift-initial-window-contract | tee /tmp/legacy-iw.txt
+          grep -F 'default=legacy-lwip' /tmp/legacy-iw.txt

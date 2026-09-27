@@ -55,6 +55,7 @@ int tcp_shift_bbr_controller_init(
     state->cwnd_bytes = init->initial_cwnd_bytes;
     state->pending_probe_loss_bytes = 0U;
     state->delivered_bytes = 0U;
+    state->has_seen_rtt = 0U;
     initial_rate = tcp_shift_bbr_initial_pacing_rate_bytes_per_sec(
         init->initial_cwnd_bytes, 0U);
     if (initial_rate == 0U) {
@@ -87,6 +88,25 @@ int tcp_shift_bbr_controller_on_ack(
         state->cwnd_bytes == 0U ||
         state->cwnd_bytes > transport->cwnd_limit_bytes) {
         return -1;
+    }
+
+    /* Match Linux bbr_set_pacing_rate(): bbr_init() starts from a nominal
+     * 1 ms RTT, but the first ACK that makes SRTT usable replaces that
+     * bootstrap with high_gain * current_cwnd / SRTT. This replacement is
+     * intentionally allowed to reduce the pacing rate; only subsequent
+     * STARTUP updates are monotonic increases. Without this one-shot reset,
+     * IW10 leaves the 1 ms bootstrap rate active for multiple real RTTs and
+     * synchronized flows can build an artificial aggregate startup burst. */
+    if (state->has_seen_rtt == 0U && ack->smoothed_rtt_ns != 0U) {
+        uint64_t rtt_rate =
+            tcp_shift_bbr_initial_pacing_rate_bytes_per_sec(
+                state->cwnd_bytes, ack->smoothed_rtt_ns);
+
+        if (rtt_rate == 0U) {
+            return -1;
+        }
+        state->pacing_rate_bytes_per_sec = rtt_rate;
+        state->has_seen_rtt = 1U;
     }
 
     probe_loss_bytes = state->pending_probe_loss_bytes;

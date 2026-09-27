@@ -284,17 +284,29 @@ jobs:
           cmake -S . -B .build-p6-bbr-multiflow -DCMAKE_BUILD_TYPE=Release
           cmake --build .build-p6-bbr-multiflow --target tcp-shift-p6-bbr --parallel
 
-      - name: Run four internal BBR flows on one bottleneck
+      - name: Run repeated internal BBR flows on one bottleneck
         run: |
-          sudo env \
-            TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-bbr-multiflow/tcp-shift-p6-bbr" \
-            TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
-            TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
-            TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
-            TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=2097152 \
-            TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
-            TCP_SHIFT_P6_BBR_MULTI_OUT="$PWD/.build/p6-bbr-multiflow/edge-bdp" \
-            sh scripts/p6-bbr-multiflow.sh
+          status=0
+          for run in 1 2 3; do
+            if [ "$run" -eq 1 ]; then
+              out="$PWD/.build/p6-bbr-multiflow/edge-bdp"
+            else
+              out="$PWD/.build/p6-bbr-multiflow/edge-bdp-repeat-$run"
+            fi
+            echo "P6 BBR multi-flow stability run $run/3 -> $out"
+            if ! sudo env \
+              TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-bbr-multiflow/tcp-shift-p6-bbr" \
+              TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
+              TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
+              TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
+              TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=2097152 \
+              TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
+              TCP_SHIFT_P6_BBR_MULTI_OUT="$out" \
+              sh scripts/p6-bbr-multiflow.sh; then
+              status=1
+            fi
+          done
+          exit "$status"
 
       - name: Run four Linux BBR flows on the same path model
         run: |
@@ -324,6 +336,8 @@ jobs:
             echo "## P6 BBR multi-flow reference"
             for file in \
               .build/p6-bbr-multiflow/edge-bdp/summary.txt \
+              .build/p6-bbr-multiflow/edge-bdp-repeat-2/summary.txt \
+              .build/p6-bbr-multiflow/edge-bdp-repeat-3/summary.txt \
               .build/linux-bbr-multiflow/edge-bdp/summary.txt \
               .build/p6-bbr-multiflow/edge-bdp/comparison.txt; do
               if [ -f "$file" ]; then
@@ -342,6 +356,8 @@ jobs:
           name: p6-bbr-multiflow-edge-bdp
           path: |
             .build/p6-bbr-multiflow/edge-bdp
+            .build/p6-bbr-multiflow/edge-bdp-repeat-2
+            .build/p6-bbr-multiflow/edge-bdp-repeat-3
             .build/linux-bbr-multiflow/edge-bdp
           if-no-files-found: warn
           include-hidden-files: true

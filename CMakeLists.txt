@@ -16,6 +16,11 @@ option(TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     OFF
 )
 
+option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
+    "Use the pinned lwIP legacy initial window instead of RFC 6928 IW10"
+    OFF
+)
+
 if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
    NOT TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
     message(FATAL_ERROR
@@ -88,7 +93,28 @@ if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
     )
 endif()
 
+if(TCP_SHIFT_LEGACY_INITIAL_WINDOW)
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_LEGACY_INITIAL_WINDOW=1
+    )
+endif()
+
 add_subdirectory(src/cc)
+
+add_executable(tcp-shift-initial-window-contract
+    src/tests/initial_window_test.c
+)
+target_include_directories(tcp-shift-initial-window-contract PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_options(tcp-shift-initial-window-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+if(TCP_SHIFT_LEGACY_INITIAL_WINDOW)
+    target_compile_definitions(tcp-shift-initial-window-contract PRIVATE
+        TCP_SHIFT_LEGACY_INITIAL_WINDOW=1
+    )
+endif()
 
 add_library(tcp_shift_host STATIC
     src/host/tun.c
