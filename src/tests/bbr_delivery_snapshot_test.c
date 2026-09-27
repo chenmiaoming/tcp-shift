@@ -229,7 +229,7 @@ int main(void)
     CHECK(pause_for_rtt_sample() == 0);
     sack_range.left = seq8;
     sack_range.right = seq8 + payload;
-    CHECK(tcp_shift_lwip_cc_hook_sack(pcb, &sack_range, 1U) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_sack(pcb, pcb->lastack, &sack_range, 1U) != 0);
     CHECK(adapter.delivered_bytes == (uint64_t)payload * 7U);
     CHECK(stats.delivery_sack_events == 1U);
     CHECK(stats.delivery_sack_payload_bytes == payload);
