@@ -1,6 +1,7 @@
 #include "lwip/cc_adapter.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -20,6 +21,55 @@ struct tcp_shift_lwip_bbr_binding {
     uint32_t recovery_entry_acked_bytes;
     uint32_t cycle_seed;
 };
+
+static uint64_t tcp_shift_lwip_bbr_now_ns(void);
+
+static int tcp_shift_lwip_bbr_recovery_trace_enabled(void)
+{
+    const char *value = getenv("TCP_SHIFT_BBR_RECOVERY_TRACE");
+
+    return value != NULL && value[0] != '\0' &&
+                   !(value[0] == '0' && value[1] == '\0')
+               ? 1
+               : 0;
+}
+
+static unsigned tcp_shift_lwip_bbr_recovery_trace_events;
+
+static void tcp_shift_lwip_bbr_recovery_trace(
+    const char *event,
+    const struct tcp_shift_lwip_bbr_binding *binding,
+    const struct tcp_pcb *pcb,
+    uint32_t lost_bytes)
+{
+    if (!tcp_shift_lwip_bbr_recovery_trace_enabled() ||
+        binding == NULL || pcb == NULL ||
+        tcp_shift_lwip_bbr_recovery_trace_events >= 128U) {
+        return;
+    }
+
+    fprintf(stderr,
+            "tcp-shift-bbr-recovery-trace: event=%s lastack=%u snd_nxt=%u "
+            "end_seq=%u lost_bytes=%u cwnd=%u prior_cwnd=%u "
+            "in_recovery=%u packet_conservation=%u inflight=%u "
+            "dupacks=%u tf_infr=%u now_ns=%llu\n",
+            event,
+            pcb->lastack,
+            pcb->snd_nxt,
+            binding->adapter != NULL
+                ? binding->adapter->hook.recovery_end_seq
+                : 0U,
+            lost_bytes,
+            binding->controller.cwnd_bytes,
+            binding->controller.recovery.prior_cwnd_bytes,
+            binding->controller.recovery.in_recovery,
+            binding->controller.recovery.packet_conservation,
+            pcb->snd_nxt - pcb->lastack,
+            pcb->dupacks,
+            (pcb->flags & TF_INFR) != 0U ? 1U : 0U,
+            (unsigned long long)tcp_shift_lwip_bbr_now_ns());
+    tcp_shift_lwip_bbr_recovery_trace_events++;
+}
 
 static uint64_t tcp_shift_lwip_bbr_now_ns(void)
 {
@@ -229,6 +279,9 @@ static int tcp_shift_lwip_bbr_on_loss(
             uint64_t now_ns = tcp_shift_lwip_bbr_now_ns();
 
             binding->recovery_enter_ns = now_ns;
+            tcp_shift_lwip_bbr_recovery_trace(
+                "enter", binding, binding->adapter->pcb,
+                loss->lost_bytes);
             if (binding->adapter != NULL && binding->adapter->stats != NULL) {
                 struct tcp_shift_lwip_cc_stats *stats =
                     binding->adapter->stats;
@@ -551,6 +604,8 @@ static int tcp_shift_lwip_bbr_hook_recovery_exit(void *arg,
             arg, pcb, ack_seq);
     }
 
+    tcp_shift_lwip_bbr_recovery_trace(
+        "exit", binding, pcb, 0U);
     tcp_shift_lwip_bbr_transport_from_pcb(pcb, &transport);
     if (tcp_shift_bbr_controller_recovery_exit(
             &binding->controller, &transport, &policy) != 0 ||
