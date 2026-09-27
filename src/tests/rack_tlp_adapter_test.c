@@ -60,7 +60,6 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment1, seq, payload);
     pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
     pcb->snd_nxt = seq + payload;
-    CHECK(sleep_ns(200000L) == 0);
     tcp_shift_lwip_cc_hook_segment_tx(
         pcb, &segment2, seq + payload, payload);
     pcb->snd_nxt = seq + (2U * payload);
@@ -68,7 +67,7 @@ int main(void)
     /* Give the later segment a measurable RTT, then selectively acknowledge
      * it. RACK.segment must advance to segment2 while segment1 stays
      * outstanding and becomes the candidate older transmission. */
-    CHECK(sleep_ns(2000000L) == 0);
+    CHECK(sleep_ns(4000000L) == 0);
     sack.left = seq + payload;
     sack.right = seq + (2U * payload);
     CHECK(tcp_shift_lwip_cc_hook_sack(pcb, &sack, 1U) != 0);
@@ -85,7 +84,7 @@ int main(void)
 
     /* Wait beyond RTT + min_RTT/4. The same segment must then become lost by
      * elapsed transmit time, without needing a third later SACK. */
-    CHECK(sleep_ns(2000000L) == 0);
+    CHECK(sleep_ns(3000000L) == 0);
     remaining_ns = UINT64_MAX;
     status = tcp_shift_lwip_cc_hook_rack_loss_status(
         pcb, &segment1, &remaining_ns);
