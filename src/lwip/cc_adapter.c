@@ -538,7 +538,9 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     struct tcp_shift_lwip_cc_adapter *adapter;
     uint64_t deadline_ns;
     uint64_t now_ns;
+    uint32_t probe_start_seq = 0U;
     uint32_t probe_end_seq = 0U;
+    u8_t probe_is_retrans = 0U;
     size_t index;
     err_t err;
 
@@ -567,7 +569,9 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
             return 0;
         }
 
-        err = tcp_shift_tcp_tlp_probe(adapter->pcb, &probe_end_seq);
+        err = tcp_shift_tcp_tlp_probe(
+            adapter->pcb, &probe_start_seq, &probe_end_seq,
+            &probe_is_retrans);
         if (err != ERR_OK) {
             /* PTO is only a probe opportunity. If it cannot transmit, leave
              * the ordinary RTO as the conservative final fallback. */
@@ -575,7 +579,8 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
         }
         if (probe_end_seq != 0U) {
             tcp_shift_tlp_note_probe_sent(
-                &adapter->rack_tlp, probe_end_seq, 1U);
+                &adapter->rack_tlp, probe_start_seq, probe_end_seq,
+                probe_is_retrans != 0U);
         }
         return 0;
     }
