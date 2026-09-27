@@ -11,6 +11,11 @@ option(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
     OFF
 )
 
+option(TCP_SHIFT_EXPERIMENTAL_IW10
+    "Use RFC 6928-style IW10 instead of the pinned lwIP legacy initial cwnd"
+    OFF
+)
+
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
 if(NOT EXISTS "${LWIP_DIR}/src/Filelists.cmake")
     message(FATAL_ERROR "lwIP source not found at ${LWIP_DIR}; run scripts/fetch-lwip.sh first")
@@ -68,6 +73,14 @@ if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
     # that includes lwIP headers must see the same layout as tcp_shift_lwip.
     target_compile_definitions(tcp_shift_lwip PUBLIC
         TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=1
+    )
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_IW10)
+    # Diagnostic-only RFC 6928 initial-window A/B. PUBLIC keeps the transport
+    # and adapter's accept-time initial-cwnd calculation mechanically aligned.
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_EXPERIMENTAL_IW10=1
     )
 endif()
 
