@@ -220,6 +220,29 @@ static int tcp_shift_pacing_register(struct tcp_shift_lwip_cc_adapter *adapter)
     }
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static void tcp_shift_recovery_timer_cancel(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    size_t cancelled = 0U;
+
+    if (adapter == NULL || adapter->rack_timer_scheduled == 0U) {
+        return;
+    }
+    if (tcp_shift_recovery_timer_service.ops != NULL &&
+        tcp_shift_recovery_timer_service.ops->cancel != NULL &&
+        adapter->pacing_flow_id != 0U) {
+        (void)tcp_shift_recovery_timer_service.ops->cancel(
+            tcp_shift_recovery_timer_service.arg,
+            adapter->pacing_flow_id,
+            adapter->pacing_generation,
+            &cancelled);
+    }
+    adapter->rack_timer_scheduled = 0U;
+    adapter->rack_timer_deadline_ns = 0U;
+}
+#endif
+
 static void tcp_shift_pacing_unregister(struct tcp_shift_lwip_cc_adapter *adapter)
 {
     size_t index;
@@ -230,6 +253,9 @@ static void tcp_shift_pacing_unregister(struct tcp_shift_lwip_cc_adapter *adapte
     }
 
     tcp_shift_pacing_cancel(adapter);
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_recovery_timer_cancel(adapter);
+#endif
     index = (size_t)(adapter->pacing_flow_id - 1U);
     if (index < tcp_shift_pacing_service.capacity) {
         entry = &tcp_shift_pacing_service.entries[index];
@@ -275,6 +301,39 @@ int tcp_shift_lwip_cc_clear_pacer(void)
     tcp_shift_pacing_service.arg = NULL;
     return 0;
 }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+int tcp_shift_lwip_cc_configure_recovery_timer(
+    const struct tcp_shift_lwip_recovery_timer_ops *ops,
+    void *arg)
+{
+    if (ops == NULL || ops->schedule == NULL || ops->cancel == NULL) {
+        return -1;
+    }
+    if (tcp_shift_recovery_timer_service.ops != NULL) {
+        return tcp_shift_recovery_timer_service.ops == ops &&
+                       tcp_shift_recovery_timer_service.arg == arg
+                   ? 0
+                   : -1;
+    }
+    if (tcp_shift_pacing_service.active != 0U) {
+        return -1;
+    }
+    tcp_shift_recovery_timer_service.ops = ops;
+    tcp_shift_recovery_timer_service.arg = arg;
+    return 0;
+}
+
+int tcp_shift_lwip_cc_clear_recovery_timer(void)
+{
+    if (tcp_shift_pacing_service.active != 0U) {
+        return -1;
+    }
+    tcp_shift_recovery_timer_service.ops = NULL;
+    tcp_shift_recovery_timer_service.arg = NULL;
+    return 0;
+}
+#endif
 
 static void tcp_shift_pacing_note_tx(struct tcp_shift_lwip_cc_adapter *adapter,
                                      uint16_t payload_bytes,
