@@ -1725,6 +1725,7 @@ static uint32_t tcp_shift_delivery_build_sack_rate_sample(
     struct tcp_shift_lwip_cc_adapter *adapter,
     const struct tcp_shift_lwip_sack_range *ranges,
     uint8_t range_count,
+    unsigned process_rack,
     struct tcp_shift_cc_rate_sample *rate)
 {
     struct tcp_shift_delivery_slot *slots = tcp_shift_delivery_slots(adapter);
@@ -1770,8 +1771,12 @@ static uint32_t tcp_shift_delivery_build_sack_rate_sample(
     }
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    tcp_shift_rack_process_delivered_slots(
-        adapter, now_ns, "sack");
+    if (process_rack != 0U) {
+        tcp_shift_rack_process_delivered_slots(
+            adapter, now_ns, "sack");
+    }
+#else
+    (void)process_rack;
 #endif
     tcp_shift_delivery_finalize_rate_sample(
         adapter, candidate, delivered_added, now_ns, touched, 0U, rate);
@@ -1921,6 +1926,7 @@ static int tcp_shift_lwip_cc_on_sack(
     struct tcp_shift_cc_policy policy;
     uint32_t newly_delivered;
     uint64_t ack_time_ns;
+    unsigned defer_rack = 0U;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
         adapter->sack_delivery_policy == 0U || ranges == NULL ||
@@ -1941,8 +1947,16 @@ static int tcp_shift_lwip_cc_on_sack(
         tcp_shift_rack_record_stats(adapter);
     }
 #endif
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    /* tcp_parseopt() reports SACK blocks before tcp_receive() accounts the
+     * cumulative ACK. RFC 8985 section 6.2 requires one combined ordered pass
+     * over every segment newly ACKed or SACKed by the same ACK. If ACK advances
+     * SND.UNA, mark the SACK delivery now but defer RACK_update/reordering
+     * until the cumulative path has marked its lower sequence ranges too. */
+    defer_rack = (int32_t)(ack_seq - pcb->lastack) > 0 ? 1U : 0U;
+#endif
     newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
-        adapter, ranges, range_count, &ack.rate);
+        adapter, ranges, range_count, defer_rack == 0U, &ack.rate);
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->rack_tlp.tlp_is_retrans != 0U &&
         adapter->rack_tlp.tlp_end_seq != 0U) {
@@ -1991,8 +2005,10 @@ static int tcp_shift_lwip_cc_on_sack(
         &adapter->rack_tlp,
         adapter->rack_tlp.min_rtt_ns,
         adapter->srtt.smoothed_rtt_ns);
-    tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
-    tcp_shift_tlp_arm_pto(adapter, pcb, ack_time_ns);
+    if (defer_rack == 0U) {
+        tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
+        tcp_shift_tlp_arm_pto(adapter, pcb, ack_time_ns);
+    }
 #endif
     if (adapter->stats != NULL) {
         adapter->stats->ack_observation_events++;
