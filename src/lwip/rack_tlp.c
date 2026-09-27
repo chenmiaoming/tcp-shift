@@ -286,12 +286,14 @@ int tcp_shift_tlp_probe_allowed(const struct tcp_shift_rack_tlp_state *state)
 }
 
 void tcp_shift_tlp_note_probe_sent(struct tcp_shift_rack_tlp_state *state,
+                                   uint32_t start_seq,
                                    uint32_t end_seq,
                                    unsigned is_retransmission)
 {
     if (state == NULL) {
         return;
     }
+    state->tlp_start_seq = start_seq;
     state->tlp_end_seq = end_seq;
     state->tlp_is_retrans = is_retransmission != 0U ? 1U : 0U;
     state->rtt_sample_since_probe = 0U;
@@ -317,12 +319,14 @@ enum tcp_shift_tlp_ack_result tcp_shift_tlp_process_ack(
 
     if (state->tlp_is_retrans == 0U || dsack_matches_probe != 0U ||
         dupack_without_sack != 0U) {
+        state->tlp_start_seq = 0U;
         state->tlp_end_seq = 0U;
         state->tlp_is_retrans = 0U;
         return TCP_SHIFT_TLP_ACK_CLEARED;
     }
 
     if (tcp_shift_rack_seq_after(ack_seq, state->tlp_end_seq)) {
+        state->tlp_start_seq = 0U;
         state->tlp_end_seq = 0U;
         state->tlp_is_retrans = 0U;
         return TCP_SHIFT_TLP_ACK_LOSS_REPAIRED;
@@ -336,6 +340,7 @@ void tcp_shift_tlp_reset(struct tcp_shift_rack_tlp_state *state)
     if (state == NULL) {
         return;
     }
+    state->tlp_start_seq = 0U;
     state->tlp_end_seq = 0U;
     state->tlp_is_retrans = 0U;
 }
