@@ -456,6 +456,21 @@ static int tcp_shift_cc_selector_pacing_on_ack_observe(
         arg, pcb, acked_bytes);
 }
 
+static int tcp_shift_cc_selector_pacing_on_sack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    u32_t ack_seq,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    u8_t range_count)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->on_sack == NULL) {
+        return 0;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->on_sack(
+        arg, pcb, ack_seq, ranges, range_count);
+}
+
 static int tcp_shift_cc_selector_pacing_on_loss(void *arg,
                                                  struct tcp_pcb *pcb,
                                                  tcpwnd_size_t lost_bytes)
@@ -501,6 +516,19 @@ static int tcp_shift_cc_selector_pacing_on_timeout(void *arg,
                                                     struct tcp_pcb *pcb)
 {
     return tcp_shift_cc_selector_call_paced_timeout(arg, pcb);
+}
+
+static int tcp_shift_cc_selector_pacing_on_recovery_exit(
+    void *arg,
+    struct tcp_pcb *pcb,
+    u32_t ack_seq)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->on_recovery_exit == NULL) {
+        return 0;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->on_recovery_exit(
+        arg, pcb, ack_seq);
 }
 
 static int tcp_shift_cc_selector_pacing_rack_loss_status(
@@ -577,12 +605,15 @@ static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_cc_selector_pacing_hook_ops = {
         .on_ack = tcp_shift_cc_selector_pacing_on_ack,
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
+        .on_sack = tcp_shift_cc_selector_pacing_on_sack,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
         .on_rack_retrans_loss =
             tcp_shift_cc_selector_pacing_on_rack_retrans_loss,
         .on_tlp_loss = tcp_shift_cc_selector_pacing_on_tlp_loss,
         .on_tlp_dupack = tcp_shift_cc_selector_pacing_on_tlp_dupack,
         .on_timeout = tcp_shift_cc_selector_pacing_on_timeout,
+        .on_recovery_exit =
+            tcp_shift_cc_selector_pacing_on_recovery_exit,
         .rack_loss_status =
             tcp_shift_cc_selector_pacing_rack_loss_status,
         .on_segment_send_eligible =
