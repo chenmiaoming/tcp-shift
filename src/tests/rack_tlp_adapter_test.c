@@ -184,8 +184,11 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_sack(
               pcb, seq + payload, &sack, 1U) != 0);
     CHECK(stats.rack_dsack_events == 1U);
-    CHECK(stats.rack_reordering_events == 1U);
-    CHECK(adapter.rack_tlp.reordering_seen == 1U);
+    /* The hook runs during tcp_parseopt(), before the same packet's cumulative
+     * ACK is applied. RACK delivery ordering is intentionally deferred here;
+     * the live tcp_receive() path completes the combined RFC 8985 pass. */
+    CHECK(stats.rack_reordering_events == 0U);
+    CHECK(adapter.rack_tlp.reordering_seen == 0U);
     CHECK(adapter.rack_tlp.reo_wnd_mult == 2U);
     CHECK(adapter.rack_tlp.reo_wnd_persist ==
           TCP_SHIFT_RACK_REO_WND_PERSIST_RECOVERIES);
