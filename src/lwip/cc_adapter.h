@@ -62,6 +62,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_acked_segment_events;
     uint64_t delivery_sack_events;
     uint64_t delivery_sack_payload_bytes;
+    uint64_t rack_dsack_events;
+    uint64_t rack_reordering_events;
     uint64_t delivery_payload_bytes;
     uint64_t delivery_metadata_alloc_failures;
     uint64_t delivery_metadata_misses;
@@ -107,6 +109,9 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t delivery_peak_live_slots;
     uint32_t delivery_peak_slots_per_flow;
     uint32_t delivery_peak_capacity_slots_per_flow;
+    uint32_t rack_reo_wnd_mult;
+    uint32_t rack_reo_wnd_mult_max;
+    uint32_t rack_reo_wnd_persist;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
 
