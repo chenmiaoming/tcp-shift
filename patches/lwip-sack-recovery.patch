@@ -304,7 +304,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,113 @@
+@@ -1787,5 +1837,167 @@
    return ERR_OK;
  }
  
@@ -410,6 +410,60 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
 +
 +  pcb->rtime = 0;
++  err = tcp_output(pcb);
++  return err;
++}
++
++err_t
++tcp_shift_tcp_tlp_probe(struct tcp_pcb *pcb, u32_t *end_seq)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **link;
++  struct tcp_seg **cur_seg;
++  u32_t seq;
++  err_t err;
++
++  if (end_seq != NULL) {
++    *end_seq = 0U;
++  }
++  if (pcb == NULL || pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++
++  /* RFC 8985 section 7.3: with no eligible new data, retransmit the
++     highest-sequence segment sent so far. */
++  link = &pcb->unacked;
++  seg = pcb->unacked;
++  while (seg->next != NULL) {
++    link = &seg->next;
++    seg = seg->next;
++  }
++  if (tcp_output_segment_busy(seg)) {
++    return ERR_VAL;
++  }
++
++  seq = lwip_ntohl(seg->tcphdr->seqno);
++  if (end_seq != NULL) {
++    *end_seq = seq + TCP_TCPLEN(seg);
++  }
++
++  *link = seg->next;
++  cur_seg = &pcb->unsent;
++  while (*cur_seg &&
++         TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno), seq)) {
++    cur_seg = &((*cur_seg)->next);
++  }
++  seg->next = *cur_seg;
++  *cur_seg = seg;
++  seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
++#if TCP_OVERSIZE
++  if (seg->next == NULL) {
++    pcb->unsent_oversize = 0;
++  }
++#endif
++  pcb->rttest = 0;
++  pcb->rtime = 0;
++  MIB2_STATS_INC(mib2.tcpretranssegs);
 +  err = tcp_output(pcb);
 +  return err;
 +}
