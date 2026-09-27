@@ -1884,6 +1884,9 @@ static int tcp_shift_lwip_cc_on_sack(
         return 0;
     }
 
+#if !defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) || !TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    (void)ack_seq;
+#endif
     memset(&ack, 0, sizeof(ack));
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (tcp_shift_rack_sack_is_dsack(ack_seq, ranges, range_count)) {
