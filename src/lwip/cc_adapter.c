@@ -38,6 +38,7 @@ struct tcp_shift_delivery_slot {
     uint8_t retransmitted;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     uint8_t rack_delivered;
+    uint8_t rack_lost;
 #endif
 };
 
@@ -54,10 +55,21 @@ struct tcp_shift_pacing_service {
     size_t active;
 };
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+struct tcp_shift_recovery_timer_service {
+    const struct tcp_shift_lwip_recovery_timer_ops *ops;
+    void *arg;
+};
+#endif
+
 static struct tcp_shift_lwip_cc_listener_binding
     tcp_shift_lwip_cc_listeners[TCP_SHIFT_LWIP_CC_MAX_LISTENERS];
 static struct tcp_shift_lwip_cc_stats tcp_shift_lwip_cc_stats;
 static struct tcp_shift_pacing_service tcp_shift_pacing_service;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static struct tcp_shift_recovery_timer_service
+    tcp_shift_recovery_timer_service;
+#endif
 
 static uint32_t tcp_shift_delivery_outstanding_payload(
     const struct tcp_shift_lwip_cc_adapter *adapter);
@@ -911,6 +923,10 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
             adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
                                                : now_ns;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        slot->rack_delivered = 0U;
+        slot->rack_lost = 0U;
+#endif
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
             if (slot->retransmitted != 0U) {
