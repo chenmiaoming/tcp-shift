@@ -25,7 +25,7 @@ This document defines the reference hierarchy for protocol and congestion-contro
 | CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; Linux CUBIC is a differential reference |
 | HyStart++ | RFC 9406 | RFC 9406 HyStart++ with qualified recommended constants; delivery-domain round representation remains a documented abstraction |
 | Sender SACK experiment | SACK semantics from the TCP standards/upstream lwIP; project bounded recovery experiment | experimental/default-OFF; not an RFC 6675 conformance claim |
-| RACK-TLP | RFC 8985 | experimental/default-OFF RFC-driven implementation; core math, delivery ordering, reordering timer integration, timer-driven repair, live tail-loss TLP, and deterministic lost-retransmission repair with the additional congestion response are present, but production qualification is not complete |
+| RACK-TLP | RFC 8985; RFC 2883 for D-SACK interpretation | experimental/default-OFF RFC-driven implementation; core math, delivery ordering, reordering timer integration, timer-driven repair, live tail-loss TLP, deterministic lost-retransmission repair, below-window reordering tolerance, and D-SACK-driven reordering-window adaptation are present, but production qualification is not complete |
 | BBR | Linux mainline BBRv1 behavior; current IETF BBR draft as secondary semantic reference | compact BBRv1-style controller with selected independently justified newer semantics; never describe it as Linux-BBR-equivalent or RFC-conformant |
 | Generic TCP pacing | Linux TCP pacing behavior | Linux-derived implementation mechanism, not an RFC protocol requirement |
 | Delivery-rate sampling / app-limited accounting | Linux TCP/BBR rate-sampling semantics | Linux-derived transport observation mechanism used by internal BBR qualification |
@@ -43,6 +43,7 @@ Normative/reference links:
 - RFC 6928: https://www.rfc-editor.org/rfc/rfc6928.html
 - RFC 7323: https://www.rfc-editor.org/rfc/rfc7323.html
 - RFC 8201: https://www.rfc-editor.org/rfc/rfc8201.html
+- RFC 2883: https://www.rfc-editor.org/rfc/rfc2883.html
 - RFC 8985: https://www.rfc-editor.org/rfc/rfc8985.html
 - RFC 9406: https://www.rfc-editor.org/rfc/rfc9406.html
 - RFC 9438: https://www.rfc-editor.org/rfc/rfc9438.html
