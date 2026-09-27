@@ -67,7 +67,8 @@ struct tcp_shift_lwip_bbr_binding {
 static struct tcp_shift_bbr_startup_trace_retained
     tcp_shift_bbr_startup_retained[TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS];
 static uint32_t tcp_shift_bbr_startup_retained_count;
-static unsigned tcp_shift_bbr_startup_dump_registered;
+static uint32_t tcp_shift_bbr_startup_expected_flows = 1U;
+static unsigned tcp_shift_bbr_startup_dumped;
 
 static uint64_t tcp_shift_lwip_bbr_now_ns(void)
 {
@@ -141,15 +142,24 @@ static unsigned tcp_shift_lwip_bbr_startup_trace_requested(void)
 static int tcp_shift_lwip_bbr_startup_trace_enable(
     struct tcp_shift_lwip_bbr_binding *binding)
 {
+    const char *flow_count;
+    char *end = NULL;
+    unsigned long parsed;
+
     if (binding == NULL || !tcp_shift_lwip_bbr_startup_trace_requested()) {
         return 0;
     }
-    if (tcp_shift_bbr_startup_dump_registered == 0U) {
-        if (atexit(tcp_shift_lwip_bbr_dump_startup_traces) != 0) {
+
+    flow_count = getenv("TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS");
+    if (flow_count != NULL && flow_count[0] != '\0') {
+        parsed = strtoul(flow_count, &end, 10);
+        if (end == flow_count || *end != '\0' || parsed == 0UL ||
+            parsed > TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS) {
             return -1;
         }
-        tcp_shift_bbr_startup_dump_registered = 1U;
+        tcp_shift_bbr_startup_expected_flows = (uint32_t)parsed;
     }
+
     binding->startup_trace_enabled = 1U;
     return 0;
 }
@@ -256,6 +266,16 @@ static void tcp_shift_lwip_bbr_trace_retain(
     retained->count = binding->startup_trace_count;
     memcpy(retained->events, binding->startup_trace,
            (size_t)retained->count * sizeof(retained->events[0]));
+
+    /* The trace is retained while flows are active and emitted only after the
+     * last expected qualification flow has been destroyed. That keeps stderr
+     * I/O out of the startup/ACK pacing path being measured. */
+    if (tcp_shift_bbr_startup_dumped == 0U &&
+        tcp_shift_bbr_startup_retained_count >=
+            tcp_shift_bbr_startup_expected_flows) {
+        tcp_shift_lwip_bbr_dump_startup_traces();
+        tcp_shift_bbr_startup_dumped = 1U;
+    }
 }
 
 static void tcp_shift_lwip_bbr_note_recovery_cwnd(
