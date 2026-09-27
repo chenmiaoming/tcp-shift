@@ -287,6 +287,7 @@ jobs:
       - name: Run four internal BBR flows on one bottleneck
         run: |
           sudo env \
+            TCP_SHIFT_BBR_STARTUP_TRACE=1 \
             TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-bbr-multiflow/tcp-shift-p6-bbr" \
             TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
             TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
