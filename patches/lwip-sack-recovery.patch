@@ -145,7 +145,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,10 @@
+@@ -82,5 +82,30 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -223,7 +223,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,56 @@
+@@ -1738,14 +1759,52 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
