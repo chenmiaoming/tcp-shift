@@ -6,8 +6,18 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
+    "Enable sender SACK negotiation, scoreboard tags, and delivery evidence"
+    OFF
+)
+
+option(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
+    "Enable the legacy fixed-count selective-retransmission compatibility path"
+    OFF
+)
+
 option(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
-    "Enable experimental sender-side SACK recovery in the pinned lwIP transport"
+    "Deprecated alias: enable SACK evidence plus the legacy fixed-count selector"
     OFF
 )
 
@@ -21,10 +31,31 @@ option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
     OFF
 )
 
-if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
-   NOT TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
+if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
+    message(DEPRECATION
+        "TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY is a compatibility alias; "
+        "use TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE and, only for legacy "
+        "differential tests, TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR")
+    set(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE ON)
+    set(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR ON)
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR AND
+   NOT TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
     message(FATAL_ERROR
-        "RFC 8985 RACK-TLP requires TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON")
+        "The legacy SACK selector requires TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON")
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
+   NOT TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
+    message(FATAL_ERROR
+        "RFC 8985 RACK-TLP requires TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON")
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
+   TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
+    message(FATAL_ERROR
+        "RFC 8985 RACK-TLP must not be combined with the legacy fixed-count SACK selector")
 endif()
 
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
@@ -78,12 +109,18 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
-if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
+if(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
     # lwipopts.h changes struct tcp_pcb when SACK is enabled. This definition is
     # an ABI requirement, not an implementation detail: every project target
     # that includes lwIP headers must see the same layout as tcp_shift_lwip.
     target_compile_definitions(tcp_shift_lwip PUBLIC
-        TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=1
+        TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=1
+    )
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=1
     )
 endif()
 

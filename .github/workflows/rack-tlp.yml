@@ -53,45 +53,65 @@ jobs:
           sh -n scripts/p6-bbr-long-flow.sh
           sh -n scripts/p6-bbr-app-limited.sh
 
-      - name: Reject legacy three-SACK fallback in RACK loss oracle
+      - name: Enforce SACK evidence / legacy selector boundary
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           text = Path("patches/lwip-sack-recovery.patch").read_text()
           start = text.index("+static int\n+tcp_shift_tcp_segment_loss_proven")
-          end = text.index("+#endif\n \n /* Allow to add custom TCP header options", start)
+          end = text.index("+#endif /* RACK_TLP || LEGACY_SACK_SELECTOR */", start)
           body = text[start:end]
           rack_start = body.index(
               "+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP"
           )
-          legacy_start = body.index("+#else", rack_start)
+          legacy_start = body.index(
+              "+#elif TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR", rack_start
+          )
           rack_branch = body[rack_start:legacy_start]
           legacy_branch = body[legacy_start:]
 
           assert "+  return rack_status > 0;" in rack_branch
           assert "sacked_after >= 3U" not in rack_branch
           assert "+  return sacked_after >= 3U;" in legacy_branch
-          print("rack_loss_oracle_contract=ok primary=rfc8985 legacy_fallback=absent")
+          assert "#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR" in text
+          print("sack_recovery_boundary=ok rack=rfc8985 legacy=fixed-count-isolated")
           PY
 
       - name: Fetch pinned lwIP
         run: sh scripts/fetch-lwip.sh
 
-      - name: Reject RACK-TLP without SACK
+      - name: Reject invalid RACK/SACK build combinations
         run: |
-          if cmake -S . -B .build-rack-invalid \
+          if cmake -S . -B .build-rack-no-evidence \
               -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
-              -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=OFF; then
-            echo "RACK-TLP configured without mandatory SACK support" >&2
+              -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=OFF; then
+            echo "RACK-TLP configured without mandatory SACK evidence" >&2
             exit 1
           fi
+          if cmake -S . -B .build-rack-with-legacy \
+              -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+              -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
+              -DTCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON; then
+            echo "RACK-TLP configured with prohibited legacy fixed-count selector" >&2
+            exit 1
+          fi
+
+      - name: Build SACK evidence without either recovery selector
+        run: |
+          cmake -S . -B .build-sack-evidence-only \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON
+          cmake --build .build-sack-evidence-only --target \
+            tcp-shift-p2 \
+            tcp-shift-tcp-memory-contract \
+            --parallel
 
       - name: Configure RFC 8985 qualification build
         run: |
           cmake -S . -B .build-rack \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
             -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
 
       - name: Build RACK-TLP core and production runtime

@@ -124,18 +124,30 @@
 #define TCP_QUEUE_OOSEQ 1
 
 /*
- * Sender-side SACK recovery is still experimental. Production and the legacy
- * correctness gates stay on pinned lwIP/NewReno semantics unless a dedicated
- * qualification build opts in through CMake.
+ * Sender SACK evidence is separate from retransmission policy.
  *
- * When enabled, upstream SACK negotiation also needs receive-side SACK storage.
+ * TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE enables SACK negotiation, scoreboard
+ * tagging, and delivery evidence required by RFC 8985 RACK-TLP. The legacy
+ * fixed-count selective retransmission selector has its own build flag and is
+ * not part of the RACK path.
+ *
+ * The old TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY macro remains a source-level
+ * compatibility alias for non-CMake consumers during the migration.
+ *
+ * Enabling upstream SACK negotiation also needs receive-side SACK storage.
  * Two 8-byte ranges are the minimum warning-clean value for the pinned lwIP
  * implementation under the project's -Werror build.
  */
 #ifndef TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
 #define TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY 0
 #endif
-#if TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#ifndef TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
+#define TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#endif
+#ifndef TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
+#define TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#endif
+#if TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_MAX_SACK_NUM 2
 #else

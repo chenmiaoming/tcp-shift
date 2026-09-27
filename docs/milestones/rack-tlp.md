@@ -77,6 +77,7 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - RACK loss deadlines and a process-wide one-shot recovery timer integrated with the existing epoll owner;
 - timer-driven RACK repair when loss matures below the ordinary DupThresh path;
 - RACK-enabled retransmission selection now treats RFC 8985 time evidence as the sole fast-loss oracle: an unavailable RACK status is "not yet proven lost", not permission to fall back to the legacy fixed three-later-SACK rule; ordinary RTO remains the conservative terminal fallback;
+- the build boundary now matches that ownership: `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE` supplies SACK negotiation/scoreboard/delivery evidence, while `TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR` owns the fixed-count compatibility selector; RACK requires the former and rejects the latter, so the RFC 8985 qualification binary no longer enables the legacy recovery feature as a prerequisite;
 - PTO/TLP scheduling with ordinary RTO as the conservative fallback;
 - live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
 - live application-limited tail qualification where the final packet is first transmitted after the prior flight drains: the application-limited transition re-evaluates PTO, one TLP retransmission completes burst one before burst two is made available, the later ACK produces exactly one congestion indication, and the path records zero RTOs, zero unrelated qdisc drops, and exact payload integrity;
