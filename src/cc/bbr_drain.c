@@ -108,7 +108,6 @@ int tcp_shift_bbr_drain_policy(
     if (model == NULL || transport == NULL || ack == NULL || policy == NULL ||
         model->mode != TCP_SHIFT_BBR_MODE_DRAIN ||
         model->full_bw_reached == 0U || model->max_bw_bytes_per_sec == 0U ||
-        model->has_min_rtt == 0U || model->min_rtt_ns == 0U ||
         transport->mss_bytes == 0U || transport->cwnd_limit_bytes == 0U ||
         transport->cwnd_limit_bytes < transport->mss_bytes ||
         current_cwnd_bytes == 0U ||
@@ -119,7 +118,7 @@ int tcp_shift_bbr_drain_policy(
     minimum_cwnd = tcp_shift_bbr_drain_min_cwnd_bytes(transport);
     cwnd_target = tcp_shift_bbr_startup_cwnd_target_bytes(
         model->max_bw_bytes_per_sec,
-        model->min_rtt_ns,
+        model->has_min_rtt != 0U ? model->min_rtt_ns : 0U,
         transport->mss_bytes,
         transport->cwnd_limit_bytes,
         minimum_cwnd);
@@ -144,8 +143,14 @@ int tcp_shift_bbr_drain_policy(
         cwnd = transport->cwnd_limit_bytes;
     }
 
-    drain_target = tcp_shift_bbr_bdp_bytes(model->max_bw_bytes_per_sec,
-                                           model->min_rtt_ns);
+    /* A timeout can reach full_bw before any non-retransmitted RTT
+     * sample survives Karn filtering. The mode machine already permits that
+     * STARTUP -> DRAIN transition. Until min_rtt exists, retain the four-MSS
+     * fallback instead of rejecting the ACK and disabling the controller. */
+    drain_target = model->has_min_rtt != 0U && model->min_rtt_ns != 0U
+                       ? tcp_shift_bbr_bdp_bytes(
+                             model->max_bw_bytes_per_sec, model->min_rtt_ns)
+                       : minimum_cwnd;
     if (drain_target < minimum_cwnd) {
         drain_target = minimum_cwnd;
     }
