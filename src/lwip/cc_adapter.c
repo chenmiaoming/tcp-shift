@@ -1415,6 +1415,53 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
     return 1;
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
+                                               struct tcp_pcb *pcb,
+                                               const void *segment,
+                                               u64_t *remaining_ns)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_delivery_slot *slot;
+    struct tcp_shift_rack_segment rack_segment;
+    uint64_t now_ns;
+    unsigned in_recovery;
+
+    if (remaining_ns != NULL) {
+        *remaining_ns = 0U;
+    }
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
+        segment == NULL) {
+        return -1;
+    }
+
+    slot = tcp_shift_delivery_find(adapter, segment);
+    if (slot == NULL || slot->payload_bytes == 0U ||
+        slot->acked_payload_bytes >= slot->payload_bytes ||
+        slot->tx_ns == 0U) {
+        return -1;
+    }
+
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return -1;
+    }
+
+    rack_segment.xmit_ts_ns = slot->tx_ns;
+    rack_segment.seq_start = slot->seq_start;
+    rack_segment.end_seq = slot->seq_start + slot->payload_bytes;
+    rack_segment.retransmitted = slot->retransmitted;
+    rack_segment.lost = 0U;
+    in_recovery = tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+
+    return tcp_shift_rack_loss_remaining(
+               &adapter->rack_tlp, &rack_segment, now_ns, in_recovery,
+               (uint64_t *)remaining_ns)
+               ? 1
+               : 0;
+}
+#endif
+
 static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
@@ -1445,6 +1492,9 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_sack = tcp_shift_lwip_cc_on_sack,
     .on_loss = tcp_shift_lwip_cc_on_loss,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    .rack_loss_status = tcp_shift_lwip_cc_rack_loss_status,
+#endif
     .effective_cwnd = tcp_shift_lwip_cc_effective_cwnd,
     .on_segment_send_eligible = tcp_shift_lwip_cc_on_segment_send_eligible,
     .on_segment_tx = tcp_shift_lwip_cc_on_segment_tx,
