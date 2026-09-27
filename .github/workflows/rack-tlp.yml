@@ -342,7 +342,7 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending deterministic 28-drop, teardown, controller-matrix, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending teardown, controller-matrix, and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RACK-TLP diagnostics
