@@ -25,7 +25,7 @@ This document defines the reference hierarchy for protocol and congestion-contro
 | CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; Linux CUBIC is a differential reference |
 | HyStart++ | RFC 9406 | RFC 9406 HyStart++ with qualified recommended constants; delivery-domain round representation remains a documented abstraction |
 | Sender SACK experiment | SACK semantics from the TCP standards/upstream lwIP; project bounded recovery experiment | experimental/default-OFF; not an RFC 6675 conformance claim |
-| RACK-TLP | RFC 8985 | experimental/default-OFF RFC-driven implementation; core math, delivery ordering, reordering timer integration, timer-driven RACK repair, and live tail-loss TLP are present, but production qualification is not complete |
+| RACK-TLP | RFC 8985 | experimental/default-OFF RFC-driven implementation; core math, delivery ordering, reordering timer integration, timer-driven repair, live tail-loss TLP, and deterministic lost-retransmission repair with the additional congestion response are present, but production qualification is not complete |
 | BBR | Linux mainline BBRv1 behavior; current IETF BBR draft as secondary semantic reference | compact BBRv1-style controller with selected independently justified newer semantics; never describe it as Linux-BBR-equivalent or RFC-conformant |
 | Generic TCP pacing | Linux TCP pacing behavior | Linux-derived implementation mechanism, not an RFC protocol requirement |
 | Delivery-rate sampling / app-limited accounting | Linux TCP/BBR rate-sampling semantics | Linux-derived transport observation mechanism used by internal BBR qualification |
