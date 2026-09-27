@@ -158,7 +158,7 @@ static int test_pto_and_probe_state(void)
               0U) == UINT64_C(150000000));
 
     CHECK(tcp_shift_tlp_probe_allowed(&state) == 1);
-    tcp_shift_tlp_note_probe_sent(&state, 5000U, 1U);
+    tcp_shift_tlp_note_probe_sent(&state, 4000U, 5000U, 1U);
     CHECK(tcp_shift_tlp_probe_allowed(&state) == 0);
 
     /* ACK exactly covering a retransmitted probe is ambiguous. */
@@ -173,7 +173,7 @@ static int test_pto_and_probe_state(void)
     tcp_shift_tlp_note_rtt_sample(&state);
     CHECK(tcp_shift_tlp_probe_allowed(&state) == 1);
 
-    tcp_shift_tlp_note_probe_sent(&state, 7000U, 1U);
+    tcp_shift_tlp_note_probe_sent(&state, 6000U, 7000U, 1U);
     result = tcp_shift_tlp_process_ack(&state, 7000U, 1U, 0U);
     CHECK(result == TCP_SHIFT_TLP_ACK_CLEARED);
     return 0;
