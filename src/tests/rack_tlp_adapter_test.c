@@ -32,7 +32,7 @@ int main(void)
     unsigned char outstanding_sentinel;
     unsigned char segment1;
     unsigned char segment2;
-    u64_t remaining_ns = 0U;
+    uint64_t remaining_ns = 0U;
     uint32_t seq;
     uint16_t payload;
     int status;
