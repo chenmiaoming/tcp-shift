@@ -59,9 +59,6 @@ void tcp_shift_rack_set_rtt_estimates(struct tcp_shift_rack_tlp_state *state,
     }
     state->min_rtt_ns = min_rtt_ns;
     state->srtt_ns = srtt_ns;
-    if (min_rtt_ns != 0U || srtt_ns != 0U) {
-        state->rtt_sample_since_probe = 1U;
-    }
 }
 
 void tcp_shift_rack_note_sacked_segments(struct tcp_shift_rack_tlp_state *state,
@@ -103,7 +100,6 @@ int tcp_shift_rack_note_delivered(struct tcp_shift_rack_tlp_state *state,
         state->rack_end_seq = segment->end_seq;
     }
 
-    state->rtt_sample_since_probe = 1U;
     return 1;
 }
 
