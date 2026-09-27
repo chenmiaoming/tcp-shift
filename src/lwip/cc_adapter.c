@@ -74,6 +74,17 @@ static struct tcp_shift_recovery_timer_service
 static uint32_t tcp_shift_delivery_outstanding_payload(
     const struct tcp_shift_lwip_cc_adapter *adapter);
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static uint64_t tcp_shift_rack_detection_deadline(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    uint64_t now_ns);
+static void tcp_shift_rack_arm_detection_timer(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    uint64_t now_ns);
+#endif
+
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
 {
 #if LWIP_WND_SCALE
