@@ -26,7 +26,11 @@ static int sleep_ns(long ns)
 struct fake_timer_state {
     unsigned schedules;
     unsigned cancels;
+    uint64_t flow_id;
+    uint64_t cancel_flow_id;
     uint64_t deadline_ns;
+    uint32_t generation;
+    uint32_t cancel_generation;
     uint32_t kind;
 };
 
@@ -66,9 +70,9 @@ static int fake_recovery_schedule(void *arg,
 {
     struct fake_timer_state *state = arg;
 
-    (void)flow_id;
-    (void)generation;
     state->schedules++;
+    state->flow_id = flow_id;
+    state->generation = generation;
     state->deadline_ns = deadline_ns;
     state->kind = kind;
     return 0;
@@ -81,9 +85,9 @@ static int fake_recovery_cancel(void *arg,
 {
     struct fake_timer_state *state = arg;
 
-    (void)flow_id;
-    (void)generation;
     state->cancels++;
+    state->cancel_flow_id = flow_id;
+    state->cancel_generation = generation;
     if (cancelled != NULL) {
         *cancelled = 1U;
     }
@@ -112,6 +116,12 @@ int main(void)
     unsigned char segment3;
     struct fake_timer_state timer_state;
     uint64_t remaining_ns = 0U;
+    uint64_t stale_flow_id = 0U;
+    uint64_t stale_deadline_ns = 0U;
+    uint64_t active_deadline_ns = 0U;
+    uint32_t stale_generation = 0U;
+    uint32_t stale_kind = 0U;
+    uint32_t active_generation = 0U;
     uint32_t seq;
     uint16_t payload;
     int status;
@@ -310,26 +320,93 @@ int main(void)
     CHECK(stats.app_limited_enters == 1U);
     CHECK(adapter.app_limited_until_bytes == payload);
     CHECK(timer_state.schedules == 1U);
+    CHECK(timer_state.flow_id == adapter.pacing_flow_id);
+    CHECK(timer_state.generation == adapter.pacing_generation);
     CHECK(timer_state.kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP);
     CHECK(timer_state.deadline_ns != 0U);
     CHECK(adapter.recovery_timer_scheduled == 1U);
     CHECK(adapter.recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP);
 
+    stale_flow_id = timer_state.flow_id;
+    stale_generation = timer_state.generation;
+    stale_deadline_ns = timer_state.deadline_ns;
+    stale_kind = timer_state.kind;
+
+    /* Teardown must cancel the outstanding recovery deadline before the
+     * registry identity is released. A late callback from the cancelled
+     * generation must be harmless. */
     pcb->unacked = NULL;
     tcp_shift_lwip_cc_adapter_unbind(&adapter);
     CHECK(timer_state.cancels == 1U);
+    CHECK(timer_state.cancel_flow_id == stale_flow_id);
+    CHECK(timer_state.cancel_generation == stale_generation);
+    CHECK(adapter.recovery_timer_scheduled == 0U);
+    CHECK(adapter.pacing_flow_id == 0U);
+    CHECK(adapter.pacing_generation == 0U);
+    CHECK(tcp_shift_lwip_cc_resume_recovery_timer(
+              stale_flow_id, stale_generation, stale_kind,
+              stale_deadline_ns) == 0);
+    tcp_abort(pcb);
+
+    /* Reuse the released registry slot for a new PCB. The generation must
+     * advance, and a stale release from the previous connection must not
+     * clear or execute the new connection's live recovery timer. */
+    memset(&stats, 0, sizeof(stats));
+    pcb = tcp_new();
+    CHECK(pcb != NULL);
+    payload = pcb->mss;
+    seq = UINT32_C(800000);
+    pcb->cwnd = (tcpwnd_size_t)(payload * 8U);
+    pcb->ssthresh = (tcpwnd_size_t)(payload * 16U);
+    pcb->snd_wnd = (tcpwnd_size_t)(payload * 16U);
+    pcb->lastack = seq;
+    pcb->snd_nxt = seq;
+    CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
+    CHECK(adapter.pacing_flow_id == stale_flow_id);
+    CHECK(adapter.pacing_generation != stale_generation);
+    active_generation = adapter.pacing_generation;
+
+    adapter.rack_tlp.rtt_sample_since_probe = 1U;
+    adapter.rack_tlp.srtt_ns = UINT64_C(40000000);
+    adapter.rack_tlp.min_rtt_ns = UINT64_C(40000000);
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment3, seq, payload);
+    pcb->snd_nxt = seq + payload;
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    tcp_shift_lwip_cc_mark_app_limited(pcb);
+    CHECK(timer_state.schedules == 2U);
+    CHECK(timer_state.flow_id == stale_flow_id);
+    CHECK(timer_state.generation == active_generation);
+    CHECK(adapter.recovery_timer_scheduled == 1U);
+    active_deadline_ns = adapter.recovery_timer_deadline_ns;
+    CHECK(active_deadline_ns != 0U);
+
+    CHECK(tcp_shift_lwip_cc_resume_recovery_timer(
+              stale_flow_id, stale_generation, stale_kind,
+              stale_deadline_ns) == 0);
+    CHECK(adapter.recovery_timer_scheduled == 1U);
+    CHECK(adapter.recovery_timer_deadline_ns == active_deadline_ns);
+    CHECK(adapter.recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP);
+    CHECK(timer_state.cancels == 1U);
+
+    pcb->unacked = NULL;
+    tcp_shift_lwip_cc_adapter_unbind(&adapter);
+    CHECK(timer_state.cancels == 2U);
+    CHECK(timer_state.cancel_flow_id == stale_flow_id);
+    CHECK(timer_state.cancel_generation == active_generation);
     tcp_abort(pcb);
     CHECK(tcp_shift_lwip_cc_clear_recovery_timer() == 0);
     CHECK(tcp_shift_lwip_cc_clear_pacer() == 0);
 
     printf("rack_tlp_adapter_contract=ok rack_end=%u rack_rtt_ns=%llu "
-           "min_rtt_ns=%llu sacked=%u dsack=%llu reo_mult=%u persist=%u\n",
+           "min_rtt_ns=%llu sacked=%u dsack=%llu reo_mult=%u persist=%u "
+           "timer_cancels=%u stale_generation_safe=1\n",
            (unsigned)sack.right,
            (unsigned long long)adapter.rack_tlp.rack_rtt_ns,
            (unsigned long long)adapter.rack_tlp.min_rtt_ns,
            (unsigned)adapter.rack_tlp.segs_sacked,
            (unsigned long long)stats.rack_dsack_events,
            (unsigned)adapter.rack_tlp.reo_wnd_mult,
-           (unsigned)adapter.rack_tlp.reo_wnd_persist);
+           (unsigned)adapter.rack_tlp.reo_wnd_persist,
+           timer_state.cancels);
     return 0;
 }

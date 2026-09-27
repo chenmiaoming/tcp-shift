@@ -18,6 +18,7 @@ on:
       - 'patches/lwip-sack-recovery.patch'
       - 'src/tests/rack_tlp_test.c'
       - 'src/tests/rack_tlp_adapter_test.c'
+      - 'src/tests/rack_tlp_loop_lifecycle_test.c'
       - 'scripts/p6-bbr-long-flow.sh'
       - 'scripts/p6-bbr-app-limited.sh'
       - 'docs/milestones/rack-tlp.md'
@@ -136,6 +137,7 @@ jobs:
           cmake --build .build-rack --target \
             tcp-shift-rack-tlp-contract \
             tcp-shift-rack-tlp-adapter-contract \
+            tcp-shift-rack-tlp-loop-lifecycle-contract \
             tcp-shift-p2 \
             tcp-shift-p6-bbr \
             --parallel
@@ -145,6 +147,15 @@ jobs:
 
       - name: Run live adapter RACK contract
         run: .build-rack/tcp-shift-rack-tlp-adapter-contract
+
+      - name: Qualify recovery-timer teardown and stale-generation lifecycle
+        run: |
+          .build-rack/tcp-shift-rack-tlp-loop-lifecycle-contract \
+            | tee .build/rack-tlp-loop-lifecycle-summary.txt
+          grep -F 'rack_recovery_loop_lifecycle=ok ' \
+            .build/rack-tlp-loop-lifecycle-summary.txt
+          grep -F 'cancelled=1 releases=1 wakeups=1 callbacks=1 ' \
+            .build/rack-tlp-loop-lifecycle-summary.txt
 
       - name: Prove timer-driven recovery below DupThresh
         run: |

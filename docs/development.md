@@ -198,9 +198,9 @@ Development therefore proceeds by replacement, not accumulation:
 1. **SACK evidence and selector ownership are now separated.** SACK parsing, scoreboard state, per-segment delivery evidence, D-SACK interpretation, and retransmission identity are an independently buildable transport substrate. RACK and the legacy fixed-count selector cannot be enabled together.
 2. **RACK and legacy selection are now separate code paths.** RFC 8985 RACK timing evidence and the fixed three-later-SACK heuristic no longer share a policy helper; they share only neutral segment requeue/accounting mechanics.
 3. **Delete the legacy fixed-count selector once rollback evidence is no longer needed.** The compatibility selector remains available only for explicit non-RACK differential qualification. Do not route new functionality through it.
-4. **Finish RACK lifecycle qualification.** Add fail-closed tests for recovery-timer cancellation, connection teardown, stale generation/release safety, and timer ownership with no per-flow timerfd/thread/polling.
-5. **Measure the incremental RACK cost.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
-6. **Only then consider exposure.** RACK-TLP remains experimental/default-OFF until lifecycle/resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
+4. **RACK recovery-timer lifecycle is qualified.** Teardown cancels the exact flow generation, stale releases are harmless across registry-slot reuse, and the real epoll-owned recovery scheduler reuses one process-wide timerfd without per-flow timers/threads/polling.
+5. **Measure the incremental RACK cost next.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
+6. **Only then consider exposure or final legacy-selector deletion.** RACK-TLP remains experimental/default-OFF until resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
 7. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
 
 Current main checkpoint after PR #69:
@@ -216,7 +216,7 @@ RACK-TLP:
 - below/above-reordering-window behavior + D-SACK adaptation qualified
 - 28-drop exact recovery qualified
 - Reno / CUBIC / internal BBR controller matrix qualified
-- remaining production blockers: teardown/stale-release lifecycle and incremental resource cost
+- remaining production blocker before the next exposure/delete review: incremental RACK memory/wakeup/timer cost
 ```
 
 The compact internal BBR controller remains an internal/experimental controller. The remaining deterministic performance delta is a measurement topic, not permission to reintroduce non-RFC transport shortcuts.

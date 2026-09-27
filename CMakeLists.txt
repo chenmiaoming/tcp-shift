@@ -478,4 +478,22 @@ if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
         tcp_shift_lwip_cc_adapter
         tcp_shift_lwip
     )
+
+    add_executable(tcp-shift-rack-tlp-loop-lifecycle-contract
+        src/tests/rack_tlp_loop_lifecycle_test.c
+        src/platform.c
+    )
+    target_include_directories(tcp-shift-rack-tlp-loop-lifecycle-contract PRIVATE
+        ${LWIP_INCLUDE_DIRS}
+    )
+    target_compile_options(tcp-shift-rack-tlp-loop-lifecycle-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+        -ffunction-sections -fdata-sections
+    )
+    target_link_libraries(tcp-shift-rack-tlp-loop-lifecycle-contract PRIVATE
+        tcp_shift_runtime
+    )
+    target_link_options(tcp-shift-rack-tlp-loop-lifecycle-contract PRIVATE
+        -Wl,--gc-sections
+    )
 endif()
