@@ -301,6 +301,41 @@ static void print_pacing_stats(const struct tcp_shift_lwip_cc_stats *stats,
             (unsigned long long)pacer->max_lateness_ns);
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static void print_recovery_timer_stats(const struct tcp_shift_lwip_loop *loop)
+{
+    const struct tcp_shift_pacer_stats *timer =
+        tcp_shift_lwip_loop_recovery_stats(loop);
+
+    if (timer == NULL) {
+        return;
+    }
+    fprintf(stderr,
+            "tcp-shift-p2-recovery-timer: loop_wakeups=%llu "
+            "release_callbacks=%llu callback_errors=%llu "
+            "timerfd_creates=%llu timer_arms=%llu timer_rearms=%llu "
+            "timer_disarms=%llu timer_expirations=%llu "
+            "scheduled_events=%llu released_events=%llu "
+            "cancelled_events=%llu heap_current=%zu heap_peak=%zu "
+            "heap_capacity=%zu max_lateness_ns=%llu\n",
+            (unsigned long long)loop->recovery_timer_wakeups,
+            (unsigned long long)loop->recovery_release_callbacks,
+            (unsigned long long)loop->recovery_callback_errors,
+            (unsigned long long)timer->timerfd_creates,
+            (unsigned long long)timer->timer_arms,
+            (unsigned long long)timer->timer_rearms,
+            (unsigned long long)timer->timer_disarms,
+            (unsigned long long)timer->timer_expirations,
+            (unsigned long long)timer->scheduled_events,
+            (unsigned long long)timer->released_events,
+            (unsigned long long)timer->cancelled_events,
+            timer->heap_current,
+            timer->heap_peak,
+            timer->heap_capacity,
+            (unsigned long long)timer->max_lateness_ns);
+}
+#endif
+
 static void print_bbr_stats(const struct tcp_shift_lwip_cc_stats *stats)
 {
     if (stats->bbr_model_observations == 0U) {
@@ -560,6 +595,9 @@ int main(int argc, char **argv)
     print_delivery_stats(cc_stats);
     print_rate_stats(cc_stats);
     print_pacing_stats(cc_stats, &loop);
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    print_recovery_timer_stats(&loop);
+#endif
     print_bbr_stats(cc_stats);
 
 out:
