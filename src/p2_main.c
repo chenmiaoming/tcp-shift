@@ -493,6 +493,10 @@ int main(int argc, char **argv)
         }
     }
 
+#ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    tcp_shift_lwip_cc_dump_internal_bbr_startup_trace();
+#endif
+
     cc_stats = tcp_shift_lwip_cc_get_stats();
     fprintf(stderr,
             "tcp-shift-p2: rx_packets=%llu rx_drops=%llu rx_errors=%llu "
