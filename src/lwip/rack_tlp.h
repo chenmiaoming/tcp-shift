@@ -71,6 +71,10 @@ int tcp_shift_rack_note_delivered(struct tcp_shift_rack_tlp_state *state,
                                   const struct tcp_shift_rack_segment *segment,
                                   uint64_t ack_time_ns);
 
+void tcp_shift_rack_detect_reordering(
+    struct tcp_shift_rack_tlp_state *state,
+    const struct tcp_shift_rack_segment *segment);
+
 void tcp_shift_rack_note_dsack(struct tcp_shift_rack_tlp_state *state,
                                uint32_t snd_nxt);
 
