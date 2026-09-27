@@ -410,10 +410,21 @@ pacing_tx_bytes=$(printf '%s\n' "$pacing" | sed -n 's/.* tx_bytes=\([0-9][0-9]*\
 [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
 [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
-[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$TOTAL_BYTES" ] || {
+[ -n "$pacing_tx_bytes" ] || {
     echo "invalid app-limited pacing telemetry" >&2
     exit 1
 }
+if [ "$RECOVERY_EXPECTATION" = clean ]; then
+    [ "$pacing_tx_bytes" -eq "$TOTAL_BYTES" ] || {
+        echo "clean app-limited pacing byte mismatch: tx=$pacing_tx_bytes expected=$TOTAL_BYTES" >&2
+        exit 1
+    }
+else
+    [ "$pacing_tx_bytes" -gt "$TOTAL_BYTES" ] || {
+        echo "app-limited tail repair missing from pacing bytes: tx=$pacing_tx_bytes payload=$TOTAL_BYTES" >&2
+        exit 1
+    }
+fi
 
 receiver_gap_ns=$(sed -n 's/.* receiver_idle_gap_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/client.stdout")
 backend_idle_ns=$(sed -n 's/.* backend_idle_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/backend.stdout")
