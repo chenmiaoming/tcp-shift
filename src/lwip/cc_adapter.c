@@ -1472,7 +1472,7 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
 static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
                                                struct tcp_pcb *pcb,
                                                const void *segment,
-                                               u64_t *remaining_ns)
+                                               uint64_t *remaining_ns)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_delivery_slot *slot;
@@ -1514,7 +1514,7 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
         return 1;
     }
     if (remaining_ns != NULL) {
-        *remaining_ns = (u64_t)remaining64;
+        *remaining_ns = remaining64;
     }
     return 0;
 }
