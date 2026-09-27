@@ -183,6 +183,21 @@ int tcp_shift_bbr_controller_on_ack(
     return 0;
 }
 
+int tcp_shift_bbr_controller_note_loss(
+    struct tcp_shift_bbr_controller_state *state,
+    uint32_t lost_bytes)
+{
+    if (state == NULL || state->initialized == 0U || lost_bytes == 0U) {
+        return -1;
+    }
+    if (state->pending_probe_loss_bytes > UINT32_MAX - lost_bytes) {
+        state->pending_probe_loss_bytes = UINT32_MAX;
+    } else {
+        state->pending_probe_loss_bytes += lost_bytes;
+    }
+    return 0;
+}
+
 int tcp_shift_bbr_controller_recovery_enter(
     struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
