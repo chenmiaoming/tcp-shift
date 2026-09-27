@@ -53,11 +53,15 @@ jobs:
         run: |
           cmake --build .build-rack --target \
             tcp-shift-rack-tlp-contract \
+            tcp-shift-rack-tlp-adapter-contract \
             tcp-shift-p2 \
             --parallel
 
       - name: Run RFC 8985 core contract
         run: .build-rack/tcp-shift-rack-tlp-contract
+
+      - name: Run live adapter RACK contract
+        run: .build-rack/tcp-shift-rack-tlp-adapter-contract
 
       - name: Record qualification boundary
         run: |
@@ -66,6 +70,7 @@ jobs:
             echo
             echo '~~~text'
             .build-rack/tcp-shift-rack-tlp-contract
+            .build-rack/tcp-shift-rack-tlp-adapter-contract
             echo '~~~'
             echo
             echo "Runtime behavior remains disabled until the ACK/SACK and timer integration commits land."
