@@ -1,6 +1,8 @@
 #include "lwip/cc_adapter.h"
 
+#include <inttypes.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -18,7 +20,9 @@ struct tcp_shift_lwip_bbr_binding {
     const struct tcp_shift_lwip_cc_hook_ops *base_hook_ops;
     uint64_t recovery_enter_ns;
     uint32_t recovery_entry_acked_bytes;
+    uint32_t startup_trace_rounds;
     uint32_t cycle_seed;
+    unsigned startup_trace_enabled;
 };
 
 static uint64_t tcp_shift_lwip_bbr_now_ns(void)
@@ -30,6 +34,99 @@ static uint64_t tcp_shift_lwip_bbr_now_ns(void)
     }
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) +
            (uint64_t)now.tv_nsec;
+}
+
+static unsigned tcp_shift_lwip_bbr_startup_trace_requested(void)
+{
+    const char *value = getenv("TCP_SHIFT_BBR_STARTUP_TRACE");
+
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0
+               ? 1U
+               : 0U;
+}
+
+static void tcp_shift_lwip_bbr_trace_init(
+    const struct tcp_shift_lwip_bbr_binding *binding,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_cc_policy *policy)
+{
+    if (binding == NULL || binding->startup_trace_enabled == 0U ||
+        binding->adapter == NULL || transport == NULL || policy == NULL) {
+        return;
+    }
+
+    fprintf(
+        stderr,
+        "tcp-shift-bbr-startup: flow_id=%" PRIu64
+        " event=init cwnd_bytes=%" PRIu32
+        " pacing_rate_Bps=%" PRIu64
+        " mss_bytes=%" PRIu32
+        " inflight_bytes=%" PRIu32
+        " srtt_ns=%" PRIu64 "\n",
+        binding->adapter->pacing_flow_id, policy->cwnd_bytes,
+        policy->pacing_rate_bytes_per_sec, transport->mss_bytes,
+        transport->inflight_bytes,
+        binding->adapter->srtt.smoothed_rtt_ns);
+}
+
+static void tcp_shift_lwip_bbr_trace_ack(
+    struct tcp_shift_lwip_bbr_binding *binding,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_cc_ack *ack,
+    enum tcp_shift_bbr_mode mode_before)
+{
+    const struct tcp_shift_bbr_model *model;
+
+    if (binding == NULL || binding->startup_trace_enabled == 0U ||
+        binding->adapter == NULL || transport == NULL || ack == NULL) {
+        return;
+    }
+
+    model = &binding->controller.model;
+    if (model->round_start != 0U && binding->startup_trace_rounds < 8U) {
+        fprintf(
+            stderr,
+            "tcp-shift-bbr-startup: flow_id=%" PRIu64
+            " event=round round=%" PRIu32
+            " mode=%u cwnd_bytes=%" PRIu32
+            " pacing_rate_Bps=%" PRIu64
+            " max_bw_Bps=%" PRIu64
+            " min_rtt_ns=%" PRIu64
+            " inflight_bytes=%" PRIu32
+            " acked_bytes=%" PRIu32
+            " sample_rate_Bps=%" PRIu64
+            " sample_rtt_ns=%" PRIu64
+            " delivered_total_bytes=%" PRIu64
+            " flags=%" PRIu32 "\n",
+            binding->adapter->pacing_flow_id, model->round_count,
+            (unsigned)model->mode, binding->controller.cwnd_bytes,
+            binding->controller.pacing_rate_bytes_per_sec,
+            model->max_bw_bytes_per_sec,
+            model->has_min_rtt != 0U ? model->min_rtt_ns : 0U,
+            transport->inflight_bytes, ack->acked_bytes,
+            ack->rate.delivery_rate_bytes_per_sec, ack->rate.rtt_ns,
+            ack->rate.delivered_total_bytes, ack->rate.flags);
+        binding->startup_trace_rounds++;
+    }
+
+    if (mode_before != model->mode) {
+        fprintf(
+            stderr,
+            "tcp-shift-bbr-startup: flow_id=%" PRIu64
+            " event=mode-transition from=%u to=%u round=%" PRIu32
+            " cwnd_bytes=%" PRIu32
+            " pacing_rate_Bps=%" PRIu64
+            " max_bw_Bps=%" PRIu64
+            " min_rtt_ns=%" PRIu64
+            " inflight_bytes=%" PRIu32 "\n",
+            binding->adapter->pacing_flow_id, (unsigned)mode_before,
+            (unsigned)model->mode, model->round_count,
+            binding->controller.cwnd_bytes,
+            binding->controller.pacing_rate_bytes_per_sec,
+            model->max_bw_bytes_per_sec,
+            model->has_min_rtt != 0U ? model->min_rtt_ns : 0U,
+            transport->inflight_bytes);
+    }
 }
 
 static void tcp_shift_lwip_bbr_note_recovery_cwnd(
@@ -174,14 +271,17 @@ static int tcp_shift_lwip_bbr_on_ack(
     struct tcp_shift_cc_policy *policy)
 {
     struct tcp_shift_lwip_bbr_binding *binding = state;
+    enum tcp_shift_bbr_mode mode_before;
     int result;
 
     if (binding == NULL) {
         return -1;
     }
+    mode_before = binding->controller.model.mode;
     result = tcp_shift_bbr_controller_on_ack(
         &binding->controller, transport, ack, policy);
     if (result == 0) {
+        tcp_shift_lwip_bbr_trace_ack(binding, transport, ack, mode_before);
         if (binding->controller.recovery.in_recovery != 0U &&
             binding->adapter != NULL && binding->adapter->stats != NULL) {
             if (binding->controller.recovery.packet_conservation != 0U) {
@@ -685,6 +785,8 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
     binding->cycle_seed = cycle_seed;
     binding->adapter = adapter;
     binding->base_hook_ops = adapter->hook.ops;
+    binding->startup_trace_enabled =
+        tcp_shift_lwip_bbr_startup_trace_requested();
     if (binding->base_hook_ops == NULL) {
         free(binding);
         return -1;
@@ -734,6 +836,7 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
         adapter->stats->pacing_last_rate_bytes_per_sec =
             policy.pacing_rate_bytes_per_sec;
     }
+    tcp_shift_lwip_bbr_trace_init(binding, &transport, &policy);
     tcp_shift_lwip_bbr_record_stats(binding);
     return 0;
 }
