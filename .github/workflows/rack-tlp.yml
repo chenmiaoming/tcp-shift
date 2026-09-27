@@ -135,6 +135,32 @@ jobs:
           grep -F 'retransmit_events=1' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
 
+      - name: Prove RACK repairs a lost retransmission without RTO
+        run: |
+          out="$PWD/.build/rack-tlp-lost-retransmission"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=2097152 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=lost-retransmission \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=rack \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrackrtx \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifbrtx \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18178 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19178 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'loss_mode=deterministic-lost-retransmission' "$out/summary.txt"
+          grep -F 'recovery_expectation=rack' "$out/summary.txt"
+          grep -F 'fault_drops=2' "$out/summary.txt"
+          grep -F 'retransmit_events=2' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+
       - name: Record qualification boundary
         run: |
           {
@@ -149,7 +175,22 @@ jobs:
             if [ -f .build/rack-tlp-tail-loss/summary.txt ]; then
               cat .build/rack-tlp-tail-loss/summary.txt
             fi
+            if [ -f .build/rack-tlp-lost-retransmission/summary.txt ]; then
+              cat .build/rack-tlp-lost-retransmission/summary.txt
+            fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending reordering, lost-retransmission, teardown, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending live reordering/DSACK, teardown, controller-matrix, and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload RACK-TLP diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rack-tlp-qualification
+          path: |
+            .build/rack-tlp-single-sack
+            .build/rack-tlp-tail-loss
+            .build/rack-tlp-lost-retransmission
+          if-no-files-found: warn
+          include-hidden-files: true
