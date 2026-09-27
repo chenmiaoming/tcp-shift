@@ -300,6 +300,7 @@ jobs:
           grep -F 'cc=reno' "$out/summary.txt"
           grep -F 'fault_drops=28' "$out/summary.txt"
           grep -F 'retransmit_events=28' "$out/summary.txt"
+          grep -E 'sack_events=[1-9][0-9]*' "$out/summary.txt"
           grep -F 'rack_reordering_events=0' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
@@ -331,6 +332,7 @@ jobs:
           grep -F 'cc=cubic' "$out/summary.txt"
           grep -F 'fault_drops=28' "$out/summary.txt"
           grep -F 'retransmit_events=28' "$out/summary.txt"
+          grep -E 'sack_events=[1-9][0-9]*' "$out/summary.txt"
           grep -F 'rack_reordering_events=0' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
@@ -419,6 +421,12 @@ jobs:
             if [ -f .build/rack-tlp-first-send-28/summary.txt ]; then
               cat .build/rack-tlp-first-send-28/summary.txt
             fi
+            if [ -f .build/rack-tlp-first-send-28-reno/summary.txt ]; then
+              cat .build/rack-tlp-first-send-28-reno/summary.txt
+            fi
+            if [ -f .build/rack-tlp-first-send-28-cubic/summary.txt ]; then
+              cat .build/rack-tlp-first-send-28-cubic/summary.txt
+            fi
             if [ -f .build/rack-tlp-reorder-safe/summary.txt ]; then
               cat .build/rack-tlp-reorder-safe/summary.txt
             fi
@@ -427,7 +435,7 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending teardown, controller-matrix, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending teardown and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RACK-TLP diagnostics
