@@ -96,7 +96,9 @@ grep -F 'public_ops=disabled loss_timeout=pending cycle_seed=external' \
     "$BUILD/summary.txt" >/dev/null
 grep -F 'bbr_controller_recovery=ok conservation=one-packet-round ' \
     "$BUILD/summary.txt" >/dev/null
-grep -F 'round_marker=delivered restore=prior_cwnd public_ops=disabled' \
+grep -F 'round_marker=delivered retrans_loss=additional-cwnd-response ' \
+    "$BUILD/summary.txt" >/dev/null
+grep -F 'restore=prior_cwnd public_ops=disabled' \
     "$BUILD/summary.txt" >/dev/null
 
 "$RECOVERY_BINARY" | tee "$BUILD/recovery-summary.txt"
