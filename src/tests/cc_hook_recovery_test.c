@@ -46,11 +46,12 @@ static int fake_loss(void *arg,
     return state->handle_loss != 0U;
 }
 
-static int fake_recovery_exit(void *arg, struct tcp_pcb *pcb)
+static int fake_recovery_exit(void *arg, struct tcp_pcb *pcb, u32_t ack_seq)
 {
     struct fake_state *state = arg;
 
     (void)pcb;
+    (void)ack_seq;
     state->recovery_exit_calls++;
     return state->handle_recovery_exit != 0U;
 }
@@ -121,7 +122,7 @@ int main(void)
 
     hook.recovery_controller_owned = 1U;
     state.handle_recovery_exit = 1U;
-    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb) == 1);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb, pcb.snd_nxt) == 1);
     CHECK(state.recovery_exit_calls == 1U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(&pcb) == 0U);
@@ -131,7 +132,7 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_hook_take_recovery_exit(&hook) == 0U);
 
     /* Repeated exit is also idempotent. */
-    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb) == 0);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(&pcb, pcb.snd_nxt) == 0);
     CHECK(state.recovery_exit_calls == 1U);
     CHECK(hook.recovery_exit_events == 1U);
 
