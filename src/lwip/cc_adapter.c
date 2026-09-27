@@ -1746,6 +1746,17 @@ static int tcp_shift_lwip_cc_prepare_ack(
     }
     ack->smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    {
+        enum tcp_shift_tlp_ack_result tlp_result =
+            tcp_shift_tlp_process_ack(
+                &adapter->rack_tlp, pcb->lastack, 0U, 0U);
+
+        if (tlp_result == TCP_SHIFT_TLP_ACK_LOSS_REPAIRED &&
+            !tcp_shift_lwip_cc_hook_tlp_loss(pcb, pcb->mss)) {
+            tcp_shift_lwip_cc_disable_on_error(adapter);
+            return 0;
+        }
+    }
     tcp_shift_rack_set_rtt_estimates(
         &adapter->rack_tlp,
         adapter->rack_tlp.min_rtt_ns,
