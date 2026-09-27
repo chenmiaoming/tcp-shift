@@ -134,17 +134,39 @@ heap final:           0
 
 The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. This qualifies pacer correctness under BDP pressure; it does not remove the later need to evaluate window scaling for high-throughput/high-RTT scenarios.
 
-## P6: tcp-shift BBR — active / internal + sender-SACK reference qualified
+## P6: tcp-shift BBR + RFC-first transport recovery — active
 
-The compact `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
+The compact internal `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
 
-Merged P6 work now includes explicit-loss ProbeBW semantics (#40), bounded sender-SACK selective recovery behind `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` (#41), a deterministic first-transmission-only ~1% long-RTT loss reference (#44), SACK-aware out-of-order delivery accounting for internal BBR (#45), and SACK-aware effective-cwnd send gating (#49). The sender-SACK option remains compile-time OFF by default, so legacy/production Reno/CUBIC behavior is unchanged.
+The transport work has moved beyond the earlier bounded sender-SACK reference. Merged PRs #67-#69 establish RFC 8985 RACK-TLP as the active recovery direction:
 
-The stable 260 ms / 10 Mbit/s / 4 MiB first-send-loss reference injects exactly 28 first-transmission drops. After #49, tcp-shift BBR measures 5.052860 Mbit/s versus Linux BBR at 5.491376 Mbit/s, a 0.920145 diagnostic ratio, with exact 28/28 tcp-shift drop/retransmission accounting, Linux also at 28 retransmissions, zero tcp-shift RTO fallback, zero unrelated qdisc drops, and exact payload delivery. This materially improves the #45 ~0.745 ratio but still does not establish Linux-BBR parity.
+- PR #67 fixes same-ACK cumulative/SACK ordering so RACK processes one ACK's newly delivered segments as one ordered RFC 8985 set; the 260 ms / 10 Mbit/s / 4 MiB / 28-drop reference returns to exact 28 retransmissions, zero RTO, zero false reordering, and the same recovery-episode count as the non-RACK sender-SACK reference;
+- PR #68 removes the fixed three-later-SACK fallback from RACK-enabled loss detection. RFC 8985 time evidence is now the sole fast-loss oracle in a RACK build;
+- PR #69 separates transport SACK observation from controller ACK credit and preserves `on_sack`, `rack_loss_status`, and `on_recovery_exit` through the production pacing selector. The deterministic 28-drop RACK path is qualified across Reno, CUBIC, and internal BBR.
 
-PR #49 fixes a transport accounting mismatch rather than tuning BBR gains: when the sender-SACK experiment is active, already-SACKed payload releases equivalent effective-cwnd credit for native `tcp_output()`, while the peer `snd_wnd` limit remains unchanged. Initial and later selective retransmissions now require the same three-later-SACK proof. PRs #42/#43 remain closed batching/baseline experiments with no material benefit.
+The target transport stack is now:
 
-The next milestone is provider/OpenVZ qualification of the experimental BBR + sender-SACK combination plus measurement-led investigation of the remaining deterministic-loss gap. Only after that evidence should the project decide whether to expose `bbr` publicly. Reno remains the production default.
+```text
+SACK scoreboard / delivery evidence
+    -> RFC 8985 RACK loss detection
+    -> RACK selective retransmission
+    -> TLP/PTO for tail probing
+    -> ordinary RTO fallback
+
+CC controller
+    -> Reno / CUBIC / internal BBR congestion response only
+```
+
+The old fixed-count sender-SACK recovery selector is therefore a compatibility path, not the target architecture. The next development steps are:
+
+1. split RFC-required SACK parsing/scoreboard/delivery evidence from the old fixed three-later-SACK retransmission selector;
+2. remove the old selector after equivalent RACK coverage and rollback/differential evidence exist;
+3. qualify RACK recovery-timer cancellation, connection teardown, and stale-release/generation safety;
+4. rerun P3 memory plus wakeup/timer/CPU qualification with RACK-TLP enabled;
+5. keep RACK-TLP experimental/default-OFF until those lifecycle/resource gates pass;
+6. only after transport semantics are closed, continue provider/OpenVZ qualification and decide whether an experimental public `bbr` selector is justified.
+
+BBR remains a compact BBRv1-style controller rather than a Linux-BBR implementation. Because BBR has no published RFC target, Linux BBR remains the primary behavioral/differential reference; the current IETF BBR draft is secondary semantic guidance. Do not compensate for transport defects by tuning BBR gains.
 
 ## Milestone state
 
@@ -157,7 +179,7 @@ P4 generic CC boundary     complete
 P5a delivery ledger        complete
 P5b rate/app-limited       complete
 P5c event-driven pacing    complete
-P6 tcp-shift BBR           active / sender-SACK reference qualified
+P6 BBR + RACK recovery     active / RFC 8985 path qualified, lifecycle/resource closeout pending
 ```
 
 ## Stop criteria
