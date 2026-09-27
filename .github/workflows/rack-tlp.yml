@@ -78,30 +78,27 @@ jobs:
       - name: Fetch pinned lwIP
         run: sh scripts/fetch-lwip.sh
 
-      - name: Reject RACK-TLP without SACK
-        run: |
-          if cmake -S . -B .build-rack-invalid \
-              -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
-              -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=OFF; then
-            echo "RACK-TLP configured without mandatory SACK support" >&2
-            exit 1
-          fi
-
       - name: Configure RFC 8985 qualification build
         run: |
           cmake -S . -B .build-rack \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON \
-            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=OFF
 
       - name: Build RACK-TLP core and production runtime
         run: |
           cmake --build .build-rack --target \
             tcp-shift-rack-tlp-contract \
             tcp-shift-rack-tlp-adapter-contract \
+            tcp-shift-tcp-memory-contract \
             tcp-shift-p2 \
             tcp-shift-p6-bbr \
             --parallel
+
+      - name: Prove RACK owns sender-SACK capability
+        run: |
+          .build-rack/tcp-shift-tcp-memory-contract | tee .build-rack/rack-sack-layout.txt
+          grep -F 'tcp_memory_layout=ok sack_out=1' .build-rack/rack-sack-layout.txt
 
       - name: Run RFC 8985 core contract
         run: .build-rack/tcp-shift-rack-tlp-contract
