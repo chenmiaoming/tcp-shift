@@ -56,9 +56,6 @@ struct tcp_shift_pacing_service {
     size_t active;
 };
 
-static uint32_t tcp_shift_delivery_outstanding_payload(
-    const struct tcp_shift_lwip_cc_adapter *adapter);
-
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 struct tcp_shift_recovery_timer_service {
     const struct tcp_shift_lwip_recovery_timer_ops *ops;
@@ -74,6 +71,9 @@ static struct tcp_shift_pacing_service tcp_shift_pacing_service;
 static struct tcp_shift_recovery_timer_service
     tcp_shift_recovery_timer_service;
 #endif
+
+static uint32_t tcp_shift_delivery_outstanding_payload(
+    const struct tcp_shift_lwip_cc_adapter *adapter);
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 static uint64_t tcp_shift_rack_detection_deadline(
