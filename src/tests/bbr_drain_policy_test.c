@@ -209,10 +209,22 @@ static int check_drain_policy(void)
     model.mode = TCP_SHIFT_BBR_MODE_PROBE_BW;
     CHECK(tcp_shift_bbr_drain_policy(
               &model, &transport, &ack, 5000U, &policy) < 0);
+
+    /* Full-pipe detection can precede the first usable RTT after RTO because
+     * Karn filtering rejects RTT samples from retransmissions. DRAIN remains
+     * valid in that interval: use the four-MSS fallback until min_rtt exists. */
     model.mode = TCP_SHIFT_BBR_MODE_DRAIN;
     model.has_min_rtt = 0U;
+    model.min_rtt_ns = 0U;
+    transport.cwnd_limit_bytes = 10000000U;
+    ack.acked_bytes = 1460U;
     CHECK(tcp_shift_bbr_drain_policy(
-              &model, &transport, &ack, 5000U, &policy) < 0);
+              &model, &transport, &ack, 1460U, &policy) == 0);
+    CHECK(policy.cwnd_bytes == 5840U);
+    CHECK(policy.ssthresh_bytes == 5840U);
+    CHECK(policy.pacing_rate_bytes_per_sec ==
+          tcp_shift_bbr_drain_pacing_rate_bytes_per_sec(
+              model.max_bw_bytes_per_sec));
     return 0;
 }
 
@@ -225,6 +237,6 @@ int main(void)
 
     printf("bbr_drain_policy=ok pacing_gain=88/256 pacing_margin=99/100 "
            "cwnd_gain=739/256 drain_target=1bdp transition=startup-drain-probebw "
-           "full_pipe_detector=integrated\n");
+           "pre_rtt_fallback=4mss full_pipe_detector=integrated\n");
     return 0;
 }
