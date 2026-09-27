@@ -213,6 +213,61 @@ int main(void)
     tcp_shift_lwip_cc_adapter_unbind(&adapter);
     tcp_abort(pcb);
 
+    /* tcp_parseopt() exposes SACK blocks before tcp_receive() advances
+     * SND.UNA. RFC 8985 section 6.2 requires both kinds of newly delivered
+     * segment from one ACK to participate in the same ordered Step 2/Step 3
+     * pass. Reproduce the loss-only shape that previously produced a false
+     * reordering event: this ACK cumulatively covers segment1 while SACKing
+     * segment3 around an outstanding segment2 hole. */
+    memset(&adapter, 0, sizeof(adapter));
+    memset(&stats, 0, sizeof(stats));
+    pcb = tcp_new();
+    CHECK(pcb != NULL);
+    payload = pcb->mss;
+    seq = UINT32_C(600000);
+    pcb->cwnd = (tcpwnd_size_t)(payload * 8U);
+    pcb->ssthresh = (tcpwnd_size_t)(payload * 16U);
+    pcb->snd_wnd = (tcpwnd_size_t)(payload * 16U);
+    pcb->lastack = seq;
+    pcb->snd_nxt = seq;
+    CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
+    adapter.sack_delivery_policy = 1U;
+
+    tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment1, seq, payload);
+    pcb->snd_nxt = seq + payload;
+    tcp_shift_lwip_cc_hook_segment_tx(
+        pcb, &segment2, seq + payload, payload);
+    pcb->snd_nxt = seq + (2U * payload);
+    tcp_shift_lwip_cc_hook_segment_tx(
+        pcb, &segment3, seq + (2U * payload), payload);
+    pcb->snd_nxt = seq + (3U * payload);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+
+    CHECK(sleep_ns(1000000L) == 0);
+    sack.left = seq + (2U * payload);
+    sack.right = seq + (3U * payload);
+    CHECK(tcp_shift_lwip_cc_hook_sack(
+              pcb, seq + payload, &sack, 1U) != 0);
+    /* RACK processing is deferred because this same ACK also advances
+     * cumulative delivery. */
+    CHECK(adapter.rack_tlp.rack_end_seq == 0U);
+    CHECK(adapter.rack_tlp.fack == 0U);
+    CHECK(adapter.rack_tlp.reordering_seen == 0U);
+
+    /* Match tcp_receive(): publish the cumulative ACK before invoking the CC
+     * ACK hook. The combined RACK pass must visit segment1 before segment3 by
+     * end_seq, so the ordinary hole does not masquerade as packet reordering. */
+    pcb->lastack = seq + payload;
+    CHECK(tcp_shift_lwip_cc_hook_ack(pcb, payload) != 0);
+    CHECK(adapter.rack_tlp.rack_end_seq == sack.right);
+    CHECK(adapter.rack_tlp.fack == sack.right);
+    CHECK(adapter.rack_tlp.reordering_seen == 0U);
+    CHECK(stats.rack_reordering_events == 0U);
+
+    pcb->unacked = NULL;
+    tcp_shift_lwip_cc_adapter_unbind(&adapter);
+    tcp_abort(pcb);
+
     /* A tail can be first transmitted only after the prior flight has fully
      * drained. In that case there is no later ACK to arm PTO. The bridge's
      * application-limited transition must therefore arm the RFC 8985 TLP
