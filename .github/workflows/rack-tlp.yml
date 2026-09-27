@@ -1,0 +1,72 @@
+name: RFC 8985 RACK-TLP
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/lwip/rack_tlp.c'
+      - 'src/lwip/rack_tlp.h'
+      - 'src/tests/rack_tlp_test.c'
+      - 'docs/milestones/rack-tlp.md'
+      - '.github/workflows/rack-tlp.yml'
+  workflow_dispatch:
+
+jobs:
+  rack-tlp-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Reject RACK-TLP without SACK
+        run: |
+          if cmake -S . -B .build-rack-invalid \
+              -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+              -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=OFF; then
+            echo "RACK-TLP configured without mandatory SACK support" >&2
+            exit 1
+          fi
+
+      - name: Configure RFC 8985 qualification build
+        run: |
+          cmake -S . -B .build-rack \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
+
+      - name: Build RACK-TLP core and production runtime
+        run: |
+          cmake --build .build-rack --target \
+            tcp-shift-rack-tlp-contract \
+            tcp-shift-p2 \
+            --parallel
+
+      - name: Run RFC 8985 core contract
+        run: .build-rack/tcp-shift-rack-tlp-contract
+
+      - name: Record qualification boundary
+        run: |
+          {
+            echo "## RFC 8985 RACK-TLP"
+            echo
+            echo '~~~text'
+            .build-rack/tcp-shift-rack-tlp-contract
+            echo '~~~'
+            echo
+            echo "Runtime behavior remains disabled until the ACK/SACK and timer integration commits land."
+          } >> "$GITHUB_STEP_SUMMARY"
