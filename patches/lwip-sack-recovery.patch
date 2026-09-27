@@ -597,7 +597,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  err = tcp_output(pcb);
 +  return err;
 +}
-++#endif /* TCP_SHIFT_EXPERIMENTAL_RACK_TLP */
++#endif /* TCP_SHIFT_EXPERIMENTAL_RACK_TLP */
 +#endif /* LWIP_TCP_SACK_OUT */
 +
  
