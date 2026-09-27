@@ -53,21 +53,18 @@ struct tcp_shift_lwip_bbr_binding {
     struct tcp_shift_bbr_controller_state controller;
     struct tcp_shift_lwip_cc_adapter *adapter;
     const struct tcp_shift_lwip_cc_hook_ops *base_hook_ops;
-    struct tcp_shift_bbr_startup_trace_event
-        startup_trace[TCP_SHIFT_BBR_STARTUP_TRACE_EVENTS];
+    struct tcp_shift_bbr_startup_trace_retained *startup_trace;
     uint64_t recovery_enter_ns;
     uint64_t startup_trace_flow_id;
     uint32_t recovery_entry_acked_bytes;
-    uint32_t startup_trace_count;
     uint32_t startup_trace_rounds;
     uint32_t cycle_seed;
     unsigned startup_trace_enabled;
 };
 
 static struct tcp_shift_bbr_startup_trace_retained
-    tcp_shift_bbr_startup_retained[TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS];
-static uint32_t tcp_shift_bbr_startup_retained_count;
-static uint32_t tcp_shift_bbr_startup_expected_flows = 1U;
+    tcp_shift_bbr_startup_traces[TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS];
+static uint32_t tcp_shift_bbr_startup_trace_count;
 static unsigned tcp_shift_bbr_startup_dumped;
 
 static uint64_t tcp_shift_lwip_bbr_now_ns(void)
@@ -81,15 +78,19 @@ static uint64_t tcp_shift_lwip_bbr_now_ns(void)
            (uint64_t)now.tv_nsec;
 }
 
-static void tcp_shift_lwip_bbr_dump_startup_traces(void)
+void tcp_shift_lwip_cc_dump_internal_bbr_startup_trace(void)
 {
     uint32_t flow_index;
 
+    if (tcp_shift_bbr_startup_dumped != 0U) {
+        return;
+    }
+
     for (flow_index = 0U;
-         flow_index < tcp_shift_bbr_startup_retained_count;
+         flow_index < tcp_shift_bbr_startup_trace_count;
          flow_index++) {
         const struct tcp_shift_bbr_startup_trace_retained *flow =
-            &tcp_shift_bbr_startup_retained[flow_index];
+            &tcp_shift_bbr_startup_traces[flow_index];
         uint32_t event_index;
 
         for (event_index = 0U; event_index < flow->count; event_index++) {
@@ -128,6 +129,7 @@ static void tcp_shift_lwip_bbr_dump_startup_traces(void)
                 event->delivered_total_bytes, event->flags);
         }
     }
+    tcp_shift_bbr_startup_dumped = 1U;
 }
 
 static unsigned tcp_shift_lwip_bbr_startup_trace_requested(void)
@@ -142,24 +144,15 @@ static unsigned tcp_shift_lwip_bbr_startup_trace_requested(void)
 static int tcp_shift_lwip_bbr_startup_trace_enable(
     struct tcp_shift_lwip_bbr_binding *binding)
 {
-    const char *flow_count;
-    char *end = NULL;
-    unsigned long parsed;
-
     if (binding == NULL || !tcp_shift_lwip_bbr_startup_trace_requested()) {
         return 0;
     }
-
-    flow_count = getenv("TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS");
-    if (flow_count != NULL && flow_count[0] != '\0') {
-        parsed = strtoul(flow_count, &end, 10);
-        if (end == flow_count || *end != '\0' || parsed == 0UL ||
-            parsed > TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS) {
-            return -1;
-        }
-        tcp_shift_bbr_startup_expected_flows = (uint32_t)parsed;
+    if (tcp_shift_bbr_startup_trace_count >= TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS) {
+        return -1;
     }
 
+    binding->startup_trace =
+        &tcp_shift_bbr_startup_traces[tcp_shift_bbr_startup_trace_count++];
     binding->startup_trace_enabled = 1U;
     return 0;
 }
@@ -170,10 +163,11 @@ static void tcp_shift_lwip_bbr_trace_append(
 {
     if (binding == NULL || event == NULL ||
         binding->startup_trace_enabled == 0U ||
-        binding->startup_trace_count >= TCP_SHIFT_BBR_STARTUP_TRACE_EVENTS) {
+        binding->startup_trace == NULL ||
+        binding->startup_trace->count >= TCP_SHIFT_BBR_STARTUP_TRACE_EVENTS) {
         return;
     }
-    binding->startup_trace[binding->startup_trace_count++] = *event;
+    binding->startup_trace->events[binding->startup_trace->count++] = *event;
 }
 
 static void tcp_shift_lwip_bbr_trace_init(
@@ -247,35 +241,6 @@ static void tcp_shift_lwip_bbr_trace_ack(
     event.mode_after = (uint32_t)model->mode;
     event.kind = kind;
     tcp_shift_lwip_bbr_trace_append(binding, &event);
-}
-
-static void tcp_shift_lwip_bbr_trace_retain(
-    const struct tcp_shift_lwip_bbr_binding *binding)
-{
-    struct tcp_shift_bbr_startup_trace_retained *retained;
-
-    if (binding == NULL || binding->startup_trace_enabled == 0U ||
-        binding->startup_trace_count == 0U ||
-        tcp_shift_bbr_startup_retained_count >=
-            TCP_SHIFT_BBR_STARTUP_TRACE_FLOWS) {
-        return;
-    }
-
-    retained =
-        &tcp_shift_bbr_startup_retained[tcp_shift_bbr_startup_retained_count++];
-    retained->count = binding->startup_trace_count;
-    memcpy(retained->events, binding->startup_trace,
-           (size_t)retained->count * sizeof(retained->events[0]));
-
-    /* The trace is retained while flows are active and emitted only after the
-     * last expected qualification flow has been destroyed. That keeps stderr
-     * I/O out of the startup/ACK pacing path being measured. */
-    if (tcp_shift_bbr_startup_dumped == 0U &&
-        tcp_shift_bbr_startup_retained_count >=
-            tcp_shift_bbr_startup_expected_flows) {
-        tcp_shift_lwip_bbr_dump_startup_traces();
-        tcp_shift_bbr_startup_dumped = 1U;
-    }
 }
 
 static void tcp_shift_lwip_bbr_note_recovery_cwnd(
@@ -897,11 +862,8 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_bbr_hook_ops = {
 
 static void tcp_shift_lwip_bbr_destroyed(u8_t id, void *data)
 {
-    struct tcp_shift_lwip_bbr_binding *binding = data;
-
     (void)id;
-    tcp_shift_lwip_bbr_trace_retain(binding);
-    free(binding);
+    free(data);
 }
 
 static const struct tcp_ext_arg_callbacks tcp_shift_lwip_bbr_callbacks = {
