@@ -1,6 +1,8 @@
 #ifndef TCP_SHIFT_LWIP_CC_HOOKS_H
 #define TCP_SHIFT_LWIP_CC_HOOKS_H
 
+#include <stdint.h>
+
 #include "lwip/opt.h"
 
 #if LWIP_TCP
@@ -42,6 +44,17 @@ struct tcp_shift_lwip_sack_range {
     u32_t right;
 };
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+/* Implemented by the controlled lwIP SACK patch. Requeue every segment whose
+ * RACK time evidence is mature, enter one fast-recovery episode if necessary,
+ * then drive ordinary tcp_output(). */
+err_t tcp_shift_tcp_rack_rexmit_due(struct tcp_pcb *pcb);
+err_t tcp_shift_tcp_tlp_probe(struct tcp_pcb *pcb,
+                              u32_t *start_seq,
+                              u32_t *end_seq,
+                              u8_t *is_retransmission);
+#endif
+
 struct tcp_shift_lwip_cc_hook_ops {
     void (*on_ack_begin)(void *arg, struct tcp_pcb *pcb);
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
@@ -53,8 +66,18 @@ struct tcp_shift_lwip_cc_hook_ops {
                    const struct tcp_shift_lwip_sack_range *ranges,
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
+    int (*on_tlp_loss)(void *arg,
+                       struct tcp_pcb *pcb,
+                       tcpwnd_size_t lost_bytes);
+    void (*on_tlp_dupack)(void *arg,
+                          struct tcp_pcb *pcb,
+                          unsigned sack_seen);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
+    int (*rack_loss_status)(void *arg,
+                            struct tcp_pcb *pcb,
+                            const void *segment,
+                            uint64_t *remaining_ns);
     u32_t (*effective_cwnd)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
@@ -159,6 +182,28 @@ tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
                : 0U;
 }
 
+/* Return 1 when RFC 8985 has declared segment lost, 0 when the
+ * RACK evidence exists but the reordering window has not expired, and -1 when
+ * RACK is unavailable for this PCB/segment. remaining_ns is meaningful only
+ * for the 0 result and is zero when no timer deadline can yet be derived. */
+static inline int
+tcp_shift_lwip_cc_hook_rack_loss_status(struct tcp_pcb *pcb,
+                                         const void *segment,
+                                         uint64_t *remaining_ns)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (remaining_ns != NULL) {
+        *remaining_ns = 0U;
+    }
+    if (pcb == NULL || segment == NULL || hook == NULL || hook->ops == NULL ||
+        hook->ops->rack_loss_status == NULL) {
+        return -1;
+    }
+    return hook->ops->rack_loss_status(
+        hook->arg, pcb, segment, remaining_ns);
+}
+
 static inline u32_t
 tcp_shift_lwip_cc_hook_effective_cwnd(struct tcp_pcb *pcb,
                                       u32_t native_cwnd)
@@ -253,6 +298,34 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
         tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_tlp_loss(struct tcp_pcb *pcb,
+                                tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_tlp_loss == NULL || lost_bytes == 0U) {
+        return 0;
+    }
+    /* A retransmitted TLP that proves a real loss gets the congestion
+     * response without creating a fast-recovery episode. */
+    return hook->ops->on_tlp_loss(hook->arg, pcb, lost_bytes) != 0;
+}
+
+static inline void
+tcp_shift_lwip_cc_hook_tlp_dupack(struct tcp_pcb *pcb,
+                                  unsigned sack_seen)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_tlp_dupack == NULL) {
+        return;
+    }
+    hook->ops->on_tlp_dupack(hook->arg, pcb, sack_seen);
 }
 
 static inline int

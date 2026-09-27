@@ -145,7 +145,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,10 @@
+@@ -82,5 +82,30 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -153,6 +153,26 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#if LWIP_TCP_SACK_OUT
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
++
++static int
++tcp_shift_tcp_segment_loss_proven(struct tcp_pcb *pcb,
++                                  const struct tcp_seg *seg,
++                                  u16_t sacked_after)
++{
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  uint64_t remaining_ns = 0U;
++  int rack_status =
++      tcp_shift_lwip_cc_hook_rack_loss_status(pcb, seg, &remaining_ns);
++
++  if (rack_status >= 0) {
++    return rack_status != 0;
++  }
++#else
++  LWIP_UNUSED_ARG(pcb);
++  LWIP_UNUSED_ARG(seg);
++#endif
++  return sacked_after >= 3U;
++}
 +#endif
  
  /* Allow to add custom TCP header options by defining this hook */
@@ -203,7 +223,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,56 @@
+@@ -1738,14 +1759,52 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
@@ -233,10 +253,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        sacked_after++;
 +      }
 +    }
-+    if (sacked_after < 3U) {
-+      return ERR_VAL;
-+    }
-+
 +    unacked_link = &pcb->unacked;
 +    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
@@ -247,7 +263,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +        continue;
 +      }
 +      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
-+          sacked_after < 3U) {
++          !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +        unacked_link = &seg->next;
 +        continue;
 +      }
@@ -288,7 +304,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,81 @@
+@@ -1787,5 +1837,297 @@
    return ERR_OK;
  }
  
@@ -312,10 +328,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      sacked_after++;
 +    }
 +  }
-+  if (sacked_after < 3U) {
-+    return ERR_VAL;
-+  }
-+
 +  unacked_link = &pcb->unacked;
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
@@ -330,8 +342,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +       fallback if this retransmission itself is lost. Retrying on every new
 +       SACK block causes severe spurious retransmission before one RTT has
 +       elapsed on high-latency paths. */
-+    if (sacked_after < 3U ||
-+        (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
++        !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
 +      unacked_link = &seg->next;
 +      continue;
 +    }
@@ -366,6 +378,226 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
 +  return ERR_VAL;
 +}
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++err_t
++tcp_shift_tcp_rack_rexmit_due(struct tcp_pcb *pcb)
++{
++  err_t err;
++  u8_t moved = 0U;
++
++  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
++      pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++
++  /* Enter one ordinary fast-recovery episode if RACK found the first loss.
++     The project CC hook in tcp_rexmit_fast() owns the congestion response;
++     subsequent RACK-lost segments are repairs inside that same episode. */
++  if ((pcb->flags & TF_INFR) == 0U) {
++    tcp_rexmit_fast(pcb);
++    if ((pcb->flags & TF_INFR) == 0U) {
++      return ERR_VAL;
++    }
++    moved = 1U;
++  }
++
++  while (tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++    moved = 1U;
++  }
++  if (moved == 0U) {
++    return ERR_VAL;
++  }
++
++  pcb->rtime = 0;
++  err = tcp_output(pcb);
++  return err;
++}
++
++static err_t
++tcp_shift_tcp_tlp_send_new_data(struct tcp_pcb *pcb,
++                                u32_t *start_seq,
++                                u32_t *end_seq)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg *useg;
++  struct netif *netif;
++  u32_t seq;
++  u32_t seg_end;
++  err_t err;
++
++  if (pcb == NULL || pcb->unsent == NULL) {
++    return ERR_VAL;
++  }
++
++  /* Retransmissions can be requeued ahead of never-sent data. Find the
++     first segment at SND.NXT: that is the next new-data probe candidate. */
++  seg = pcb->unsent;
++  while (seg != NULL &&
++         TCP_SEQ_LT(lwip_ntohl(seg->tcphdr->seqno), pcb->snd_nxt)) {
++    seg = seg->next;
++  }
++  if (seg == NULL || lwip_ntohl(seg->tcphdr->seqno) != pcb->snd_nxt ||
++      seg->len == 0U || tcp_output_segment_busy(seg)) {
++    return ERR_VAL;
++  }
++
++  seq = lwip_ntohl(seg->tcphdr->seqno);
++  seg_end = seq + TCP_TCPLEN(seg);
++  /* RFC 8985 section 7.3 permits one probe beyond cwnd, but never beyond
++     the receiver's advertised window. */
++  if (seq - pcb->lastack + seg->len > pcb->snd_wnd) {
++    return ERR_VAL;
++  }
++
++  netif = tcp_route(pcb, &pcb->local_ip, &pcb->remote_ip);
++  if (netif == NULL) {
++    return ERR_RTE;
++  }
++  if (ip_addr_isany(&pcb->local_ip)) {
++    const ip_addr_t *local_ip =
++        ip_netif_get_local_ip(netif, &pcb->remote_ip);
++    if (local_ip == NULL) {
++      return ERR_RTE;
++    }
++    ip_addr_copy(pcb->local_ip, *local_ip);
++  }
++  if (pcb->state != SYN_SENT) {
++    TCPH_SET_FLAG(seg->tcphdr, TCP_ACK);
++  }
++
++  err = tcp_output_segment(seg, pcb, netif);
++  if (err != ERR_OK) {
++    return err;
++  }
++
++  /* Remove exactly this new segment from the sorted unsent list. */
++  if (pcb->unsent == seg) {
++    pcb->unsent = seg->next;
++  } else {
++    struct tcp_seg *prev = pcb->unsent;
++    while (prev != NULL && prev->next != seg) {
++      prev = prev->next;
++    }
++    if (prev == NULL) {
++      return ERR_VAL;
++    }
++    prev->next = seg->next;
++  }
++#if TCP_OVERSIZE
++  if (pcb->unsent == NULL) {
++    pcb->unsent_oversize = 0;
++  }
++#endif
++
++  pcb->snd_nxt = seg_end;
++  seg->next = NULL;
++  useg = pcb->unacked;
++  if (useg == NULL) {
++    pcb->unacked = seg;
++  } else if (TCP_SEQ_LT(seq, lwip_ntohl(useg->tcphdr->seqno))) {
++    seg->next = useg;
++    pcb->unacked = seg;
++  } else {
++    while (useg->next != NULL &&
++           TCP_SEQ_LT(lwip_ntohl(useg->next->tcphdr->seqno), seq)) {
++      useg = useg->next;
++    }
++    seg->next = useg->next;
++    useg->next = seg;
++  }
++
++  pcb->rtime = 0;
++  if (start_seq != NULL) {
++    *start_seq = seq;
++  }
++  if (end_seq != NULL) {
++    *end_seq = seg_end;
++  }
++  return ERR_OK;
++}
++
++err_t
++tcp_shift_tcp_tlp_probe(struct tcp_pcb *pcb,
++                        u32_t *start_seq,
++                        u32_t *end_seq,
++                        u8_t *is_retransmission)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **link;
++  struct tcp_seg **cur_seg;
++  u32_t seq;
++  err_t err;
++
++  if (start_seq != NULL) {
++    *start_seq = 0U;
++  }
++  if (end_seq != NULL) {
++    *end_seq = 0U;
++  }
++  if (is_retransmission != NULL) {
++    *is_retransmission = 0U;
++  }
++  if (pcb == NULL) {
++    return ERR_VAL;
++  }
++
++  /* RFC 8985 section 7.3 prefers one segment of new data, even one packet
++     beyond cwnd, when the receive window permits it. */
++  err = tcp_shift_tcp_tlp_send_new_data(pcb, start_seq, end_seq);
++  if (err == ERR_OK) {
++    return ERR_OK;
++  }
++  if (err != ERR_VAL) {
++    return err;
++  }
++  if (pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++
++  /* With no eligible new data, retransmit the highest-sequence segment. */
++  link = &pcb->unacked;
++  seg = pcb->unacked;
++  while (seg->next != NULL) {
++    link = &seg->next;
++    seg = seg->next;
++  }
++  if (tcp_output_segment_busy(seg)) {
++    return ERR_VAL;
++  }
++
++  seq = lwip_ntohl(seg->tcphdr->seqno);
++  if (start_seq != NULL) {
++    *start_seq = seq;
++  }
++  if (end_seq != NULL) {
++    *end_seq = seq + TCP_TCPLEN(seg);
++  }
++  if (is_retransmission != NULL) {
++    *is_retransmission = 1U;
++  }
++
++  *link = seg->next;
++  cur_seg = &pcb->unsent;
++  while (*cur_seg &&
++         TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno), seq)) {
++    cur_seg = &((*cur_seg)->next);
++  }
++  seg->next = *cur_seg;
++  *cur_seg = seg;
++  seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
++#if TCP_OVERSIZE
++  if (seg->next == NULL) {
++    pcb->unsent_oversize = 0;
++  }
++#endif
++  pcb->rttest = 0;
++  pcb->rtime = 0;
++  MIB2_STATS_INC(mib2.tcpretranssegs);
++  err = tcp_output(pcb);
++  return err;
++}
++#endif /* TCP_SHIFT_EXPERIMENTAL_RACK_TLP */
 +#endif /* LWIP_TCP_SACK_OUT */
 +
  

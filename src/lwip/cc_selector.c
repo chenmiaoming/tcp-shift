@@ -427,10 +427,52 @@ static int tcp_shift_cc_selector_pacing_on_loss(void *arg,
     return tcp_shift_cc_selector_call_paced_loss(arg, pcb, lost_bytes);
 }
 
+static void tcp_shift_cc_selector_pacing_on_tlp_dupack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    unsigned sack_seen)
+{
+    if (tcp_shift_cc_selector_base_hook_ops != NULL &&
+        tcp_shift_cc_selector_base_hook_ops->on_tlp_dupack != NULL) {
+        tcp_shift_cc_selector_base_hook_ops->on_tlp_dupack(
+            arg, pcb, sack_seen);
+    }
+}
+
+static int tcp_shift_cc_selector_pacing_on_tlp_loss(
+    void *arg,
+    struct tcp_pcb *pcb,
+    tcpwnd_size_t lost_bytes)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->on_tlp_loss == NULL) {
+        return 0;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->on_tlp_loss(
+        arg, pcb, lost_bytes);
+}
+
 static int tcp_shift_cc_selector_pacing_on_timeout(void *arg,
                                                     struct tcp_pcb *pcb)
 {
     return tcp_shift_cc_selector_call_paced_timeout(arg, pcb);
+}
+
+static int tcp_shift_cc_selector_pacing_rack_loss_status(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const void *segment,
+    uint64_t *remaining_ns)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->rack_loss_status == NULL) {
+        if (remaining_ns != NULL) {
+            *remaining_ns = 0U;
+        }
+        return -1;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->rack_loss_status(
+        arg, pcb, segment, remaining_ns);
 }
 
 static int tcp_shift_cc_selector_pacing_send_eligible(void *arg,
@@ -491,7 +533,11 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_ack = tcp_shift_cc_selector_pacing_on_ack,
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
+        .on_tlp_loss = tcp_shift_cc_selector_pacing_on_tlp_loss,
+        .on_tlp_dupack = tcp_shift_cc_selector_pacing_on_tlp_dupack,
         .on_timeout = tcp_shift_cc_selector_pacing_on_timeout,
+        .rack_loss_status =
+            tcp_shift_cc_selector_pacing_rack_loss_status,
         .on_segment_send_eligible =
             tcp_shift_cc_selector_pacing_send_eligible,
         .on_segment_tx = tcp_shift_cc_selector_pacing_on_segment_tx,

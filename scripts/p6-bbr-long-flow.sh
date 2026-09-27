@@ -61,8 +61,8 @@ case "$FAULT_MODE" in
     *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst, lost-retransmission or first-send-loss" >&2; exit 1;;
 esac
 case "$RECOVERY_EXPECTATION" in
-    strict|diagnostic) ;;
-    *) echo "RECOVERY_EXPECTATION must be strict or diagnostic" >&2; exit 1;;
+    strict|diagnostic|tlp) ;;
+    *) echo "RECOVERY_EXPECTATION must be strict, diagnostic or tlp" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -608,12 +608,20 @@ case "$LOSS_MODE" in
         }
         ;;
     deterministic-first-send)
-        [ "$loss_events" -ge 1 ] &&
-        [ "$loss_events" -le "$FAULT_MARKER_COUNT" ] &&
-        [ "$timeout_events" -eq 0 ] || {
-            echo "first-send-loss did not stay in bounded fast recovery: markers=$FAULT_MARKER_COUNT loss=$loss_events timeout=$timeout_events" >&2
-            exit 1
-        }
+        if [ "$RECOVERY_EXPECTATION" = tlp ]; then
+            [ "$loss_events" -le "$FAULT_MARKER_COUNT" ] &&
+            [ "$timeout_events" -eq 0 ] || {
+                echo "TLP first-send-loss fell back to RTO or amplified loss events: markers=$FAULT_MARKER_COUNT loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        else
+            [ "$loss_events" -ge 1 ] &&
+            [ "$loss_events" -le "$FAULT_MARKER_COUNT" ] &&
+            [ "$timeout_events" -eq 0 ] || {
+                echo "first-send-loss did not stay in bounded fast recovery: markers=$FAULT_MARKER_COUNT loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        fi
         ;;
 esac
 
@@ -753,6 +761,13 @@ if [ "$CC" = bbr-internal ]; then
             echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
             exit 1
         }
+    elif [ "$RECOVERY_EXPECTATION" = tlp ]; then
+        # RFC 8985 section 7.4.2 permits a retransmitted TLP to repair the
+        # only tail loss before ordinary fast recovery starts. The dedicated
+        # TLP gate checks exact retransmission and zero-RTO behavior; a later
+        # ACK beyond TLP.end_seq is what triggers the special congestion
+        # response when such an ACK exists.
+        :
     else
         [ "$recovery_enter_events" -ge 1 ] || {
             echo "lossy BBR long-flow recorded no recovery entry" >&2

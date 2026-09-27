@@ -11,6 +11,17 @@ option(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
     OFF
 )
 
+option(TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    "Enable experimental RFC 8985 RACK-TLP sender loss detection"
+    OFF
+)
+
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
+   NOT TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
+    message(FATAL_ERROR
+        "RFC 8985 RACK-TLP requires TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON")
+endif()
+
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
 if(NOT EXISTS "${LWIP_DIR}/src/Filelists.cmake")
     message(FATAL_ERROR "lwIP source not found at ${LWIP_DIR}; run scripts/fetch-lwip.sh first")
@@ -71,6 +82,12 @@ if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
     )
 endif()
 
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_EXPERIMENTAL_RACK_TLP=1
+    )
+endif()
+
 add_subdirectory(src/cc)
 
 add_library(tcp_shift_host STATIC
@@ -116,6 +133,12 @@ target_include_directories(tcp_shift_lwip_tcp_memory PRIVATE ${LWIP_INCLUDE_DIRS
 target_compile_options(tcp_shift_lwip_tcp_memory PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_lwip_tcp_memory PUBLIC tcp_shift_lwip)
 
+add_library(tcp_shift_rack_tlp STATIC
+    src/lwip/rack_tlp.c
+)
+target_include_directories(tcp_shift_rack_tlp PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp_shift_rack_tlp PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
     src/lwip/cc_selector.c
@@ -127,6 +150,7 @@ target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC
     tcp_shift_cc
     tcp_shift_lwip
     tcp_shift_pacer
+    tcp_shift_rack_tlp
 )
 
 add_library(tcp_shift_lwip_cc_bbr_qualification STATIC
@@ -365,3 +389,30 @@ target_compile_options(tcp-shift-tcp-memory-contract PRIVATE
     -Wall -Wextra -Wpedantic -Werror
 )
 target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_memory)
+
+
+add_executable(tcp-shift-rack-tlp-contract
+    src/tests/rack_tlp_test.c
+)
+target_include_directories(tcp-shift-rack-tlp-contract PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp-shift-rack-tlp-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-rack-tlp-contract PRIVATE tcp_shift_rack_tlp)
+
+if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
+    add_executable(tcp-shift-rack-tlp-adapter-contract
+        src/tests/rack_tlp_adapter_test.c
+        src/platform.c
+    )
+    target_include_directories(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        ${LWIP_INCLUDE_DIRS}
+    )
+    target_compile_options(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-rack-tlp-adapter-contract PRIVATE
+        tcp_shift_lwip_cc_adapter
+        tcp_shift_lwip
+    )
+endif()

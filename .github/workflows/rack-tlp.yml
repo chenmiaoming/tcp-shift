@@ -1,0 +1,155 @@
+name: RFC 8985 RACK-TLP
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/lwip/rack_tlp.c'
+      - 'src/lwip/rack_tlp.h'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_adapter.h'
+      - 'src/lwip/cc_hooks.h'
+      - 'src/runtime/lwip_loop.c'
+      - 'src/runtime/lwip_loop.h'
+      - 'src/p2_main.c'
+      - 'src/p2_ipv6_main.c'
+      - 'patches/lwip-sack-recovery.patch'
+      - 'src/tests/rack_tlp_test.c'
+      - 'src/tests/rack_tlp_adapter_test.c'
+      - 'scripts/p6-bbr-long-flow.sh'
+      - 'docs/milestones/rack-tlp.md'
+      - '.github/workflows/rack-tlp.yml'
+  workflow_dispatch:
+
+jobs:
+  rack-tlp-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Reject RACK-TLP without SACK
+        run: |
+          if cmake -S . -B .build-rack-invalid \
+              -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+              -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=OFF; then
+            echo "RACK-TLP configured without mandatory SACK support" >&2
+            exit 1
+          fi
+
+      - name: Configure RFC 8985 qualification build
+        run: |
+          cmake -S . -B .build-rack \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
+
+      - name: Build RACK-TLP core and production runtime
+        run: |
+          cmake --build .build-rack --target \
+            tcp-shift-rack-tlp-contract \
+            tcp-shift-rack-tlp-adapter-contract \
+            tcp-shift-p2 \
+            tcp-shift-p6-bbr \
+            --parallel
+
+      - name: Run RFC 8985 core contract
+        run: .build-rack/tcp-shift-rack-tlp-contract
+
+      - name: Run live adapter RACK contract
+        run: .build-rack/tcp-shift-rack-tlp-adapter-contract
+
+      - name: Prove timer-driven recovery below DupThresh
+        run: |
+          out="$PWD/.build/rack-tlp-single-sack"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=5840 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=64 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=1 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=1 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=4 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=RACK \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrack1 \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifb1 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18176 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19176 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'fault_marker_count=1' "$out/summary.txt"
+          grep -F 'retransmit_events=1' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+
+      - name: Prove TLP repairs a true tail loss without RTO
+        run: |
+          out="$PWD/.build/rack-tlp-tail-loss"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=5840 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=64 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=3 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=1 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=4 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TLPX \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=tlp \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tstlp1 \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=tlpifb1 \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18177 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19177 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'fault_marker_count=1' "$out/summary.txt"
+          grep -F 'retransmit_events=1' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+
+      - name: Record qualification boundary
+        run: |
+          {
+            echo "## RFC 8985 RACK-TLP"
+            echo
+            echo '~~~text'
+            .build-rack/tcp-shift-rack-tlp-contract
+            .build-rack/tcp-shift-rack-tlp-adapter-contract
+            if [ -f .build/rack-tlp-single-sack/summary.txt ]; then
+              cat .build/rack-tlp-single-sack/summary.txt
+            fi
+            if [ -f .build/rack-tlp-tail-loss/summary.txt ]; then
+              cat .build/rack-tlp-tail-loss/summary.txt
+            fi
+            echo '~~~'
+            echo
+            echo "Runtime behavior remains disabled until the ACK/SACK and timer integration commits land."
+          } >> "$GITHUB_STEP_SUMMARY"
