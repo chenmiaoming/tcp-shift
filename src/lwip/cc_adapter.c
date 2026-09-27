@@ -1,4 +1,5 @@
 #include "lwip/cc_adapter.h"
+#include "lwip/priv/tcp_priv.h"
 #include "runtime/pacer.h"
 
 #include <limits.h>
@@ -83,6 +84,9 @@ static void tcp_shift_rack_arm_detection_timer(
     struct tcp_shift_lwip_cc_adapter *adapter,
     struct tcp_pcb *pcb,
     uint64_t now_ns);
+static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
+                                  struct tcp_pcb *pcb,
+                                  uint64_t now_ns);
 #endif
 
 static uint32_t tcp_shift_lwip_cc_cwnd_limit(void)
@@ -1072,6 +1076,137 @@ static void tcp_shift_rack_arm_detection_timer(
     adapter->recovery_timer_deadline_ns = deadline_ns;
     adapter->recovery_timer_kind = TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK;
 }
+
+static uint32_t tcp_shift_tlp_flight_segments(
+    const struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    const struct tcp_shift_delivery_slot *slots;
+    uint32_t count = 0U;
+    uint16_t index;
+
+    if (adapter == NULL || adapter->delivery_slots == NULL) {
+        return 0U;
+    }
+    slots = (const struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        const struct tcp_shift_delivery_slot *slot = &slots[index];
+
+        if (slot->segment != NULL && slot->payload_bytes != 0U &&
+            slot->acked_payload_bytes < slot->payload_bytes) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static uint64_t tcp_shift_tlp_rto_expiration_ns(
+    const struct tcp_pcb *pcb,
+    uint64_t now_ns)
+{
+    uint64_t remaining_ticks;
+    uint64_t remaining_ns;
+
+    if (pcb == NULL || now_ns == 0U || pcb->rto <= 0) {
+        return 0U;
+    }
+    if (pcb->rtime >= pcb->rto) {
+        return now_ns;
+    }
+
+    remaining_ticks = (uint64_t)(pcb->rto - pcb->rtime);
+    remaining_ns =
+        remaining_ticks * (uint64_t)TCP_SLOW_INTERVAL * UINT64_C(1000000);
+    return remaining_ns > UINT64_MAX - now_ns ? UINT64_MAX
+                                               : now_ns + remaining_ns;
+}
+
+static void tcp_shift_tlp_arm_pto(struct tcp_shift_lwip_cc_adapter *adapter,
+                                  struct tcp_pcb *pcb,
+                                  uint64_t now_ns)
+{
+    uint64_t pto_ns;
+    uint64_t deadline_ns;
+    uint64_t rto_expiration_ns;
+    uint32_t flight_segments;
+    size_t cancelled = 0U;
+
+    if (adapter == NULL || pcb == NULL || now_ns == 0U) {
+        return;
+    }
+    if (tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) ||
+        adapter->rack_tlp.segs_sacked != 0U ||
+        !tcp_shift_tlp_probe_allowed(&adapter->rack_tlp)) {
+        if (adapter->recovery_timer_scheduled != 0U &&
+            adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
+            tcp_shift_recovery_timer_cancel(adapter);
+        }
+        return;
+    }
+
+    flight_segments = tcp_shift_tlp_flight_segments(adapter);
+    if (flight_segments == 0U) {
+        if (adapter->recovery_timer_scheduled != 0U &&
+            adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
+            tcp_shift_recovery_timer_cancel(adapter);
+        }
+        return;
+    }
+
+    /* RACK reordering evidence takes priority over TLP. */
+    if (adapter->recovery_timer_scheduled != 0U &&
+        adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK) {
+        return;
+    }
+
+    rto_expiration_ns = tcp_shift_tlp_rto_expiration_ns(pcb, now_ns);
+    pto_ns = tcp_shift_tlp_calc_pto_ns(
+        &adapter->rack_tlp, now_ns, rto_expiration_ns,
+        flight_segments, 0U);
+    if (pto_ns == 0U) {
+        return;
+    }
+    deadline_ns = pto_ns > UINT64_MAX - now_ns ? UINT64_MAX
+                                                : now_ns + pto_ns;
+
+    if (adapter->recovery_timer_scheduled != 0U) {
+        if (adapter->recovery_timer_deadline_ns == deadline_ns &&
+            adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
+            return;
+        }
+        if (tcp_shift_recovery_timer_service.ops == NULL ||
+            tcp_shift_recovery_timer_service.ops->cancel == NULL ||
+            tcp_shift_recovery_timer_service.ops->cancel(
+                tcp_shift_recovery_timer_service.arg,
+                adapter->pacing_flow_id,
+                adapter->pacing_generation,
+                &cancelled) < 0) {
+            tcp_shift_recovery_timer_cancel(adapter);
+            return;
+        }
+        adapter->recovery_timer_scheduled = 0U;
+        adapter->recovery_timer_deadline_ns = 0U;
+        adapter->recovery_timer_kind = 0U;
+    }
+
+    if (tcp_shift_recovery_timer_service.ops == NULL ||
+        tcp_shift_recovery_timer_service.ops->schedule == NULL ||
+        adapter->pacing_flow_id == 0U) {
+        return;
+    }
+    if (tcp_shift_recovery_timer_service.ops->schedule(
+            tcp_shift_recovery_timer_service.arg,
+            adapter->pacing_flow_id,
+            adapter->pacing_generation,
+            deadline_ns,
+            TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) < 0) {
+        return;
+    }
+
+    adapter->recovery_timer_scheduled = 1U;
+    adapter->recovery_timer_deadline_ns = deadline_ns;
+    adapter->recovery_timer_kind = TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP;
+}
+
 #endif
 
 static void tcp_shift_lwip_cc_transport_from_adapter(
