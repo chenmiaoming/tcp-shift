@@ -237,7 +237,7 @@ static void tcp_shift_recovery_timer_cancel(
 {
     size_t cancelled = 0U;
 
-    if (adapter == NULL || adapter->rack_timer_scheduled == 0U) {
+    if (adapter == NULL || adapter->recovery_timer_scheduled == 0U) {
         return;
     }
     if (tcp_shift_recovery_timer_service.ops != NULL &&
@@ -249,8 +249,9 @@ static void tcp_shift_recovery_timer_cancel(
             adapter->pacing_generation,
             &cancelled);
     }
-    adapter->rack_timer_scheduled = 0U;
-    adapter->rack_timer_deadline_ns = 0U;
+    adapter->recovery_timer_scheduled = 0U;
+    adapter->recovery_timer_deadline_ns = 0U;
+    adapter->recovery_timer_kind = 0U;
 }
 #endif
 
@@ -546,8 +547,9 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     }
 
     adapter = entry->adapter;
-    adapter->rack_timer_scheduled = 0U;
-    adapter->rack_timer_deadline_ns = 0U;
+    adapter->recovery_timer_scheduled = 0U;
+    adapter->recovery_timer_deadline_ns = 0U;
+    adapter->recovery_timer_kind = 0U;
     if (adapter->bound == 0U || adapter->pcb == NULL ||
         kind != TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK ||
         actual_release_ns == 0U) {
@@ -1033,12 +1035,12 @@ static void tcp_shift_rack_arm_detection_timer(
         tcp_shift_recovery_timer_cancel(adapter);
         return;
     }
-    if (adapter->rack_timer_scheduled != 0U &&
-        adapter->rack_timer_deadline_ns == deadline_ns) {
+    if (adapter->recovery_timer_scheduled != 0U &&
+        adapter->recovery_timer_deadline_ns == deadline_ns) {
         return;
     }
 
-    if (adapter->rack_timer_scheduled != 0U) {
+    if (adapter->recovery_timer_scheduled != 0U) {
         if (tcp_shift_recovery_timer_service.ops == NULL ||
             tcp_shift_recovery_timer_service.ops->cancel == NULL ||
             tcp_shift_recovery_timer_service.ops->cancel(
@@ -1049,8 +1051,8 @@ static void tcp_shift_rack_arm_detection_timer(
             tcp_shift_recovery_timer_cancel(adapter);
             return;
         }
-        adapter->rack_timer_scheduled = 0U;
-        adapter->rack_timer_deadline_ns = 0U;
+        adapter->recovery_timer_scheduled = 0U;
+        adapter->recovery_timer_deadline_ns = 0U;
     }
 
     if (tcp_shift_recovery_timer_service.ops == NULL ||
@@ -1066,8 +1068,9 @@ static void tcp_shift_rack_arm_detection_timer(
             TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK) < 0) {
         return;
     }
-    adapter->rack_timer_scheduled = 1U;
-    adapter->rack_timer_deadline_ns = deadline_ns;
+    adapter->recovery_timer_scheduled = 1U;
+    adapter->recovery_timer_deadline_ns = deadline_ns;
+    adapter->recovery_timer_kind = TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK;
 }
 #endif
 
