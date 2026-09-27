@@ -16,7 +16,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#define TCP_SHIFT_TCP_OPT_SACK        5U
 +
 +#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
-+err_t tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb);
++err_t tcp_shift_tcp_rexmit_legacy_sack_hole(struct tcp_pcb *pcb);
 +#endif
 +
 +static void
@@ -52,7 +52,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
 +                if ((pcb->flags & TF_INFR) != 0U &&
 +                    (pcb->flags & TF_SACK) != 0U &&
-+                    tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++                    tcp_shift_tcp_rexmit_legacy_sack_hole(pcb) == ERR_OK) {
 +                  pcb->rtime = 0;
 +                }
 +#endif /* TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR */
@@ -68,7 +68,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
             segment; tcp_input() will drive ordinary tcp_output() afterwards. */
 +#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
 +        if ((pcb->flags & TF_SACK) != 0U) {
-+          if (tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++          if (tcp_shift_tcp_rexmit_legacy_sack_hole(pcb) == ERR_OK) {
 +            pcb->rtime = 0;
 +          }
 +        } else
@@ -147,7 +147,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 --- a/src/core/tcp_out.c
 +++ b/src/core/tcp_out.c
-@@ -82,5 +82,38 @@
+@@ -82,5 +82,21 @@
  #ifdef LWIP_HOOK_FILENAME
  #include LWIP_HOOK_FILENAME
  #endif
@@ -156,33 +156,16 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
 +
-+#if TCP_SHIFT_EXPERIMENTAL_RACK_TLP || TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
-+static int
-+tcp_shift_tcp_segment_loss_proven(struct tcp_pcb *pcb,
-+                                  const struct tcp_seg *seg,
-+                                  u16_t sacked_after)
-+{
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-+  uint64_t remaining_ns = 0U;
-+  int rack_status;
-+
-+  LWIP_UNUSED_ARG(sacked_after);
-+  rack_status =
-+      tcp_shift_lwip_cc_hook_rack_loss_status(pcb, seg, &remaining_ns);
-+
-+  /* RFC 8985 is the sole fast-loss oracle in a RACK build. If transport
-+     timestamp/scoreboard state is not available yet, fail closed and let the
-+     RACK reordering timer or ordinary RTO establish loss later. Falling back
-+     to the legacy fixed three-later-SACK proof would silently mix the
-+     DupThresh/RFC 6675-style detector back into RACK-TLP. */
-+  return rack_status > 0;
-+#elif TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
-+  LWIP_UNUSED_ARG(pcb);
-+  LWIP_UNUSED_ARG(seg);
-+  return sacked_after >= 3U;
++static struct tcp_seg *
++tcp_shift_tcp_select_rack_loss(struct tcp_pcb *pcb,
++                               struct tcp_seg ***selected_link);
 +#endif
-+}
-+#endif /* RACK_TLP || LEGACY_SACK_SELECTOR */
++#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
++static struct tcp_seg *
++tcp_shift_tcp_select_legacy_sack_hole(struct tcp_pcb *pcb,
++                                      struct tcp_seg ***selected_link);
++#endif
 +#endif /* LWIP_TCP_SACK_OUT */
  
  /* Allow to add custom TCP header options by defining this hook */
@@ -233,14 +216,13 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,63 @@
+@@ -1738,14 +1759,29 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
    struct tcp_seg **cur_seg;
 +#if LWIP_TCP_SACK_OUT && (TCP_SHIFT_EXPERIMENTAL_RACK_TLP || TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
-+  struct tcp_seg **unacked_link;
-+  u16_t sacked_after = 0U;
++  struct tcp_seg **unacked_link = &pcb->unacked;
 +#endif
  
    LWIP_ASSERT("tcp_rexmit: invalid pcb", pcb != NULL);
@@ -251,45 +233,12 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  
    seg = pcb->unacked;
 +#if LWIP_TCP_SACK_OUT && (TCP_SHIFT_EXPERIMENTAL_RACK_TLP || TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
-+  unacked_link = &pcb->unacked;
 +  if ((pcb->flags & TF_SACK) != 0U) {
-+    /* The initial fast retransmit must use the same SACK loss proof as
-+       later selective hole retransmits. Merely choosing the first segment
-+       without a SACK tag is unsafe once several discontiguous SACK ranges
-+       coexist: a delivered segment can temporarily lack a retained block. */
-+    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
-+      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
-+          sacked_after != 0xFFFFU) {
-+        sacked_after++;
-+      }
-+    }
-+    unacked_link = &pcb->unacked;
-+    for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
-+      if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
-+        if (sacked_after != 0U) {
-+          sacked_after--;
-+        }
-+        unacked_link = &seg->next;
-+        continue;
-+      }
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-+      /* Under RACK, SACK_REXMIT describes retransmission history, not a
-+         permanent exclusion. The delivery sidecar refreshes Segment.xmit_ts
-+         on every successful retransmission, so a retransmission that is later
-+         proven lost by fresh RACK timing evidence must be eligible again. */
-+      if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
-+        unacked_link = &seg->next;
-+        continue;
-+      }
-+#else
-+      if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
-+          !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
-+        unacked_link = &seg->next;
-+        continue;
-+      }
++    seg = tcp_shift_tcp_select_rack_loss(pcb, &unacked_link);
++#elif TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
++    seg = tcp_shift_tcp_select_legacy_sack_hole(pcb, &unacked_link);
 +#endif
-+      break;
-+    }
 +    if (seg == NULL) {
 +      return ERR_VAL;
 +    }
@@ -330,96 +279,153 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1853,313 @@
+@@ -1787,5 +1853,370 @@
    return ERR_OK;
  }
  
 +#if LWIP_TCP_SACK_OUT && (TCP_SHIFT_EXPERIMENTAL_RACK_TLP || TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
-+err_t
-+tcp_shift_tcp_rexmit_sack_hole(struct tcp_pcb *pcb)
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++static struct tcp_seg *
++tcp_shift_tcp_select_rack_loss(struct tcp_pcb *pcb,
++                               struct tcp_seg ***selected_link)
 +{
 +  struct tcp_seg *seg;
-+  struct tcp_seg **unacked_link;
-+  struct tcp_seg **cur_seg;
++  struct tcp_seg **link;
++
++  if (pcb == NULL || selected_link == NULL) {
++    return NULL;
++  }
++  link = &pcb->unacked;
++  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
++    uint64_t remaining_ns = 0U;
++
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
++      link = &seg->next;
++      continue;
++    }
++    if (tcp_shift_lwip_cc_hook_rack_loss_status(
++            pcb, seg, &remaining_ns) > 0) {
++      *selected_link = link;
++      return seg;
++    }
++    link = &seg->next;
++  }
++  return NULL;
++}
++#endif
++
++#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
++static struct tcp_seg *
++tcp_shift_tcp_select_legacy_sack_hole(struct tcp_pcb *pcb,
++                                      struct tcp_seg ***selected_link)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **link;
 +  u16_t sacked_after = 0U;
 +
-+  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
-+      pcb->unacked == NULL) {
-+    return ERR_VAL;
++  if (pcb == NULL || selected_link == NULL) {
++    return NULL;
 +  }
-+
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U &&
 +        sacked_after != 0xFFFFU) {
 +      sacked_after++;
 +    }
 +  }
-+  unacked_link = &pcb->unacked;
++  link = &pcb->unacked;
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
 +      if (sacked_after != 0U) {
 +        sacked_after--;
 +      }
-+      unacked_link = &seg->next;
++      link = &seg->next;
 +      continue;
 +    }
-+    /* Do not retransmit the same hole again during one fast-recovery
-+       episode. A later RTO clears SACK_REXMIT and remains the conservative
-+       fallback if this retransmission itself is lost. Retrying on every new
-+       SACK block causes severe spurious retransmission before one RTT has
-+       elapsed on high-latency paths. */
-+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-+    /* RACK can declare a retransmission itself lost after its refreshed
-+       transmit timestamp has aged behind a newer delivered transmission.
-+       In that case allow another selective repair inside the same recovery
-+       episode; the non-RACK path below retains the one-retransmission guard. */
-+    if (!tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
-+      unacked_link = &seg->next;
-+      continue;
++    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) == 0U &&
++        sacked_after >= 3U) {
++      *selected_link = link;
++      return seg;
 +    }
-+#else
-+    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U ||
-+        !tcp_shift_tcp_segment_loss_proven(pcb, seg, sacked_after)) {
-+      unacked_link = &seg->next;
-+      continue;
-+    }
-+#endif
-+    if (tcp_output_segment_busy(seg)) {
-+      return ERR_VAL;
-+    }
-+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-+    if ((seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
-+      (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
-+    }
++    link = &seg->next;
++  }
++  return NULL;
++}
 +#endif
 +
-+    *unacked_link = seg->next;
-+    cur_seg = &pcb->unsent;
-+    while (*cur_seg &&
-+           TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno),
-+                      lwip_ntohl(seg->tcphdr->seqno))) {
-+      cur_seg = &((*cur_seg)->next);
-+    }
-+    seg->next = *cur_seg;
-+    *cur_seg = seg;
-+    seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
-+#if TCP_OVERSIZE
-+    if (seg->next == NULL) {
-+      pcb->unsent_oversize = 0;
-+    }
-+#endif
-+    /* Extra SACK hole retransmissions are part of the current fast-recovery
-+       episode, not additional RTO retry episodes. pinned lwIP uses pcb->nrtx
-+       as a connection-abandon/backoff budget (TCP_MAXRTX), so charging every
-+       selectively retransmitted hole here can kill a healthy high-RTT flow
-+       after a single burst of losses. The initial legacy tcp_rexmit() still
-+       owns its existing nrtx accounting. */
-+    pcb->rttest = 0;
-+    MIB2_STATS_INC(mib2.tcpretranssegs);
-+    return ERR_OK;
++static err_t
++tcp_shift_tcp_requeue_selected_sack_segment(struct tcp_pcb *pcb,
++                                            struct tcp_seg *seg,
++                                            struct tcp_seg **unacked_link,
++                                            u8_t report_rack_retrans_loss)
++{
++  struct tcp_seg **cur_seg;
++
++  if (pcb == NULL || seg == NULL || unacked_link == NULL ||
++      tcp_output_segment_busy(seg)) {
++    return ERR_VAL;
 +  }
-+  return ERR_VAL;
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  if (report_rack_retrans_loss != 0U &&
++      (seg->flags & TCP_SHIFT_TF_SEG_SACK_REXMIT) != 0U) {
++    (void)tcp_shift_lwip_cc_hook_rack_retrans_loss(pcb, seg->len);
++  }
++#else
++  LWIP_UNUSED_ARG(report_rack_retrans_loss);
++#endif
++
++  *unacked_link = seg->next;
++  cur_seg = &pcb->unsent;
++  while (*cur_seg &&
++         TCP_SEQ_LT(lwip_ntohl((*cur_seg)->tcphdr->seqno),
++                    lwip_ntohl(seg->tcphdr->seqno))) {
++    cur_seg = &((*cur_seg)->next);
++  }
++  seg->next = *cur_seg;
++  *cur_seg = seg;
++  seg->flags |= TCP_SHIFT_TF_SEG_SACK_REXMIT;
++#if TCP_OVERSIZE
++  if (seg->next == NULL) {
++    pcb->unsent_oversize = 0;
++  }
++#endif
++  pcb->rttest = 0;
++  MIB2_STATS_INC(mib2.tcpretranssegs);
++  return ERR_OK;
 +}
++
++#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
++err_t
++tcp_shift_tcp_rexmit_legacy_sack_hole(struct tcp_pcb *pcb)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **unacked_link = NULL;
++
++  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
++      pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++  seg = tcp_shift_tcp_select_legacy_sack_hole(pcb, &unacked_link);
++  return tcp_shift_tcp_requeue_selected_sack_segment(
++      pcb, seg, unacked_link, 0U);
++}
++#endif
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++static err_t
++tcp_shift_tcp_rexmit_rack_loss(struct tcp_pcb *pcb)
++{
++  struct tcp_seg *seg;
++  struct tcp_seg **unacked_link = NULL;
++
++  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
++      pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++  seg = tcp_shift_tcp_select_rack_loss(pcb, &unacked_link);
++  return tcp_shift_tcp_requeue_selected_sack_segment(
++      pcb, seg, unacked_link, 1U);
++}
++#endif
 +
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 +err_t
@@ -444,7 +450,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +    moved = 1U;
 +  }
 +
-+  while (tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++  while (tcp_shift_tcp_rexmit_rack_loss(pcb) == ERR_OK) {
 +    moved = 1U;
 +  }
 +  if (moved == 0U) {

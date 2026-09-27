@@ -53,29 +53,46 @@ jobs:
           sh -n scripts/p6-bbr-long-flow.sh
           sh -n scripts/p6-bbr-app-limited.sh
 
-      - name: Enforce SACK evidence / legacy selector boundary
+      - name: Enforce independent RACK and legacy retransmission selectors
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
           text = Path("patches/lwip-sack-recovery.patch").read_text()
-          start = text.index("+static int\n+tcp_shift_tcp_segment_loss_proven")
-          end = text.index("+#endif /* RACK_TLP || LEGACY_SACK_SELECTOR */", start)
-          body = text[start:end]
-          rack_start = body.index(
-              "+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP"
-          )
-          legacy_start = body.index(
-              "+#elif TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR", rack_start
-          )
-          rack_branch = body[rack_start:legacy_start]
-          legacy_branch = body[legacy_start:]
+          assert "tcp_shift_tcp_segment_loss_proven" not in text
 
-          assert "+  return rack_status > 0;" in rack_branch
-          assert "sacked_after >= 3U" not in rack_branch
-          assert "+  return sacked_after >= 3U;" in legacy_branch
-          assert "#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR" in text
-          print("sack_recovery_boundary=ok rack=rfc8985 legacy=fixed-count-isolated")
+          selector_defs = text.index(
+              "+#if LWIP_TCP_SACK_OUT && (TCP_SHIFT_EXPERIMENTAL_RACK_TLP || "
+              "TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)",
+              text.index("@@ -1787"),
+          )
+          rack_start = text.index(
+              "+tcp_shift_tcp_select_rack_loss(struct tcp_pcb *pcb,",
+              selector_defs,
+          )
+          rack_end = text.index(
+              "+#if TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR", rack_start
+          )
+          rack_body = text[rack_start:rack_end]
+          assert "tcp_shift_lwip_cc_hook_rack_loss_status" in rack_body
+          assert "sacked_after" not in rack_body
+
+          legacy_start = text.index(
+              "+tcp_shift_tcp_select_legacy_sack_hole(struct tcp_pcb *pcb,",
+              rack_end,
+          )
+          legacy_end = text.index(
+              "+static err_t\n+tcp_shift_tcp_requeue_selected_sack_segment",
+              legacy_start,
+          )
+          legacy_body = text[legacy_start:legacy_end]
+          assert "sacked_after >= 3U" in legacy_body
+          assert "tcp_shift_lwip_cc_hook_rack_loss_status" not in legacy_body
+
+          assert "+tcp_shift_tcp_rexmit_rack_loss(struct tcp_pcb *pcb)" in text
+          assert "+tcp_shift_tcp_rexmit_legacy_sack_hole(struct tcp_pcb *pcb)" in text
+          assert "+  while (tcp_shift_tcp_rexmit_rack_loss(pcb) == ERR_OK)" in text
+          print("rack_selector_boundary=ok selectors=independent requeue=shared")
           PY
 
       - name: Fetch pinned lwIP
