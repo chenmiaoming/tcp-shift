@@ -195,12 +195,13 @@ Reno / CUBIC / internal BBR
 
 Development therefore proceeds by replacement, not accumulation:
 
-1. **Separate required SACK evidence from the legacy selector.** Keep SACK parsing, scoreboard state, per-segment delivery evidence, D-SACK interpretation, and retransmission identity because RACK requires them. Move the old fixed-count selective-recovery policy behind an explicit compatibility boundary.
-2. **Delete the legacy fixed-count selector once coverage is equivalent.** The three-later-SACK proof may remain temporarily for non-RACK differential qualification, but it must not be reachable from an RFC 8985 build and should be removed when RACK teardown/resource gates and rollback evidence are complete.
-3. **Finish RACK lifecycle qualification.** Add fail-closed tests for recovery-timer cancellation, connection teardown, stale generation/release safety, and timer ownership with no per-flow timerfd/thread/polling.
-4. **Measure the incremental RACK cost.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
-5. **Only then consider exposure.** RACK-TLP remains experimental/default-OFF until lifecycle/resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
-6. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
+1. **SACK evidence and selector ownership are now separated.** SACK parsing, scoreboard state, per-segment delivery evidence, D-SACK interpretation, and retransmission identity are an independently buildable transport substrate. RACK and the legacy fixed-count selector cannot be enabled together.
+2. **RACK and legacy selection are now separate code paths.** RFC 8985 RACK timing evidence and the fixed three-later-SACK heuristic no longer share a policy helper; they share only neutral segment requeue/accounting mechanics.
+3. **Delete the legacy fixed-count selector once rollback evidence is no longer needed.** The compatibility selector remains available only for explicit non-RACK differential qualification. Do not route new functionality through it.
+4. **Finish RACK lifecycle qualification.** Add fail-closed tests for recovery-timer cancellation, connection teardown, stale generation/release safety, and timer ownership with no per-flow timerfd/thread/polling.
+5. **Measure the incremental RACK cost.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
+6. **Only then consider exposure.** RACK-TLP remains experimental/default-OFF until lifecycle/resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
+7. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
 
 Current main checkpoint after PR #69:
 
