@@ -54,13 +54,14 @@ Implementation phases:
 
 5. **RTO and congestion-control integration**
    - on RTO, mark SND.UNA lost unconditionally and only mark other segments when the RACK deadline has elapsed;
-   - feed one congestion event into Reno/CUBIC/BBR without coupling RACK to controller internals;
+   - feed the initial congestion event into Reno/CUBIC/BBR without coupling RACK to controller internals;
+   - when RACK proves that a retransmission was itself lost, deliver the additional congestion response required by RFC 8985 section 9.3 without starting a second transport recovery episode;
    - reset TLP state on connection start, fast recovery, and RTO recovery.
 
 6. **Qualification**
    - tail loss that previously requires RTO;
    - application-limited loss;
-   - lost retransmission;
+   - lost retransmission, including the required additional congestion response;
    - reordering below and above the reordering window;
    - DSACK adaptation;
    - deterministic 28-drop reference with exact retransmission accounting;
@@ -77,17 +78,18 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - timer-driven RACK repair when loss matures below the ordinary DupThresh path;
 - PTO/TLP scheduling with ordinary RTO as the conservative fallback;
 - live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
-- congestion-control callbacks kept separate from the transport loss detector.
+- an RFC-shaped lost-retransmission gate: one original segment and its first retransmission are dropped, a later lost original segment is successfully retransmitted to provide newer RACK timing evidence, and the first hole is then repaired again without RTO;
+- the lost-retransmission gate requires exactly three injected drops, three retransmission events, two congestion-loss events, zero timeout fallback, zero unrelated qdisc drops, and exact payload integrity;
+- congestion-control callbacks kept separate from the transport loss detector; RACK reports the second congestion indication without moving the existing fast-recovery boundary.
 
 The feature remains **experimental/default-OFF** because the current live qualification is still narrow. Before considering production/default enablement, add fail-closed live gates for:
 
 - packet reordering both below and above the computed reordering window;
 - DSACK-driven reordering-window adaptation;
 - application-limited loss;
-- a lost retransmission;
 - the deterministic 28-drop reference under RACK-TLP with exact retransmission accounting;
 - recovery-timer cancellation/stale-release lifecycle under connection teardown;
 - incremental memory and wakeup/timer cost;
 - Reno, CUBIC, and internal BBR recovery behavior with RACK-TLP enabled, while preserving unchanged production behavior when it is disabled.
 
-Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live RACK timer and tail-loss TLP subsets qualified**, not complete RFC 8985 or production conformance.
+Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, tail-loss TLP, and lost-retransmission recovery qualified on deterministic paths**, not complete RFC 8985 or production conformance.
