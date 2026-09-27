@@ -1,0 +1,158 @@
+name: RACK resource cost
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/rack-resource.yml'
+      - 'CMakeLists.txt'
+      - 'src/runtime/**'
+      - 'src/lwip/**'
+      - 'src/lwipopts.h'
+      - 'src/p2_main.c'
+      - 'src/tests/rack_resource_size_test.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p3-memory-baseline.sh'
+      - 'scripts/p3-cpu-baseline.sh'
+      - 'scripts/p3-rack-resource-evaluate.py'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - 'patches/lwip-sack-recovery.patch'
+      - '.lwip-baseline'
+      - 'docs/milestones/rack-tlp.md'
+      - 'docs/development.md'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rack-resource-cost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            python3
+
+      - name: Validate resource harnesses
+        run: |
+          sh -n scripts/fetch-lwip.sh
+          sh -n scripts/p3-memory-baseline.sh
+          sh -n scripts/p3-cpu-baseline.sh
+          python3 -m py_compile scripts/p3-rack-resource-evaluate.py
+          sudo modprobe tun || true
+          test -c /dev/net/tun
+          test -r /proc/self/smaps_rollup
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Build default and RFC 8985 resource binaries
+        run: |
+          cmake -S . -B .build-resource-default -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-resource-default --target \
+            tcp-shift-p2 \
+            tcp-shift-rack-resource-size-contract \
+            --parallel
+
+          cmake -S . -B .build-resource-rack \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
+          cmake --build .build-resource-rack --target \
+            tcp-shift-p2 \
+            tcp-shift-rack-resource-size-contract \
+            --parallel
+
+      - name: Record static resource sizes
+        run: |
+          mkdir -p .build/rack-resource
+          .build-resource-default/tcp-shift-rack-resource-size-contract \
+            | tee .build/rack-resource/default-size.txt
+          .build-resource-rack/tcp-shift-rack-resource-size-contract \
+            | tee .build/rack-resource/rack-size.txt
+          grep -F 'rack_enabled=0' .build/rack-resource/default-size.txt
+          grep -F 'rack_enabled=1' .build/rack-resource/rack-size.txt
+
+      - name: Measure default staged idle memory
+        run: |
+          sudo env \
+            TCP_SHIFT_P3_BINARY="$PWD/.build-resource-default/tcp-shift-p2" \
+            TCP_SHIFT_P3_STAGES="32 64 128" \
+            sh scripts/p3-memory-baseline.sh
+          sudo chown -R "$USER:$USER" .build/p3-memory-baseline
+          mkdir -p .build/rack-resource/default-memory
+          cp -a .build/p3-memory-baseline/. .build/rack-resource/default-memory/
+
+      - name: Measure RACK staged idle memory
+        run: |
+          sudo env \
+            TCP_SHIFT_P3_BINARY="$PWD/.build-resource-rack/tcp-shift-p2" \
+            TCP_SHIFT_P3_STAGES="32 64 128" \
+            sh scripts/p3-memory-baseline.sh
+          sudo chown -R "$USER:$USER" .build/p3-memory-baseline
+          mkdir -p .build/rack-resource/rack-memory
+          cp -a .build/p3-memory-baseline/. .build/rack-resource/rack-memory/
+
+      - name: Measure default CPU reference
+        run: |
+          sudo env \
+            TCP_SHIFT_P3_BINARY="$PWD/.build-resource-default/tcp-shift-p2" \
+            TCP_SHIFT_P3_CPU_IDLE_SECONDS=5 \
+            TCP_SHIFT_P3_CPU_OPS_PER_FLOW=2048 \
+            sh scripts/p3-cpu-baseline.sh
+          sudo chown -R "$USER:$USER" .build/p3-cpu-baseline
+          mkdir -p .build/rack-resource/default-cpu
+          cp -a .build/p3-cpu-baseline/. .build/rack-resource/default-cpu/
+
+      - name: Measure RACK CPU and recovery timer wakeups
+        run: |
+          sudo env \
+            TCP_SHIFT_P3_BINARY="$PWD/.build-resource-rack/tcp-shift-p2" \
+            TCP_SHIFT_P3_CPU_IDLE_SECONDS=5 \
+            TCP_SHIFT_P3_CPU_OPS_PER_FLOW=2048 \
+            sh scripts/p3-cpu-baseline.sh
+          sudo chown -R "$USER:$USER" .build/p3-cpu-baseline
+          mkdir -p .build/rack-resource/rack-cpu
+          cp -a .build/p3-cpu-baseline/. .build/rack-resource/rack-cpu/
+          grep -F 'tcp-shift-p2-recovery-timer:' \
+            .build/rack-resource/rack-cpu/runtime.stderr
+
+      - name: Enforce RACK resource bounds
+        run: |
+          python3 scripts/p3-rack-resource-evaluate.py \
+            --default-size .build/rack-resource/default-size.txt \
+            --rack-size .build/rack-resource/rack-size.txt \
+            --default-memory .build/rack-resource/default-memory/summary.json \
+            --rack-memory .build/rack-resource/rack-memory/summary.json \
+            --default-cpu .build/rack-resource/default-cpu/summary.json \
+            --rack-cpu .build/rack-resource/rack-cpu/summary.json \
+            --rack-runtime-stderr .build/rack-resource/rack-cpu/runtime.stderr \
+            --out .build/rack-resource/summary.json \
+            | tee .build/rack-resource/evaluate.txt
+          grep -F 'rack_resource_cost=ok' .build/rack-resource/evaluate.txt
+
+      - name: Upload RACK resource diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-rack-resource-cost
+          path: .build/rack-resource
+          if-no-files-found: warn
