@@ -9,6 +9,7 @@
 #include "cc/registry.h"
 #include "cc/reno.h"
 #include "lwip/cc_hooks.h"
+#include "lwip/rack_tlp.h"
 #include "lwip/tcp.h"
 
 struct tcp_shift_lwip_cc_pacer_ops {
@@ -150,6 +151,9 @@ struct tcp_shift_lwip_cc_adapter {
         union tcp_shift_cc_builtin_state reno;
     };
     struct tcp_shift_cc_srtt srtt;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    struct tcp_shift_rack_tlp_state rack_tlp;
+#endif
     struct tcp_shift_lwip_cc_stats *stats;
     struct tcp_pcb *pcb;
     void *delivery_slots;
