@@ -223,7 +223,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
    seg->next = pcb->unsent;
  #if TCP_OVERSIZE_DBGCHECK
    /* if last unsent changed, we need to update unsent_oversize */
-@@ -1738,14 +1759,52 @@
+@@ -1738,14 +1759,63 @@
  tcp_rexmit(struct tcp_pcb *pcb)
  {
    struct tcp_seg *seg;
@@ -287,7 +287,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +#endif
  
    /* Give up if the segment is still referenced by the netif driver
-@@ -1758,14 +1796,26 @@
+@@ -1758,14 +1807,26 @@
    /* Move the first unacked segment to the unsent queue */
    /* Keep the unsent queue sorted. */
 -  pcb->unacked = seg->next;
@@ -315,7 +315,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,297 @@
+@@ -1787,5 +1848,308 @@
    return ERR_OK;
  }
  
