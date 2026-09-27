@@ -20,6 +20,7 @@ BACKEND_PORT=${TCP_SHIFT_P6_BBR_MULTI_BACKEND_PORT:-19163}
 
 RUNTIME_PID=
 BACKEND_PID=
+QDISC_SAMPLER_PID=
 
 mkdir -p "$OUT"
 : > "$OUT/backend.stdout"
@@ -73,6 +74,7 @@ stop_pid()
 cleanup()
 {
     set +e
+    stop_pid "${QDISC_SAMPLER_PID:-}"
     stop_pid "${RUNTIME_PID:-}"
     stop_pid "${BACKEND_PID:-}"
     tc qdisc del dev "$TUN_NAME" root >/dev/null 2>&1 || true
@@ -209,6 +211,69 @@ tc qdisc replace dev "$TUN_NAME" root netem \
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-before.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-before.txt"
 
+python3 - "$IFB_NAME" "$OUT/ifb-qdisc-samples.tsv" <<'PY' &
+import re
+import signal
+import subprocess
+import sys
+import time
+
+device = sys.argv[1]
+path = sys.argv[2]
+running = True
+sent_re = re.compile(
+    r"Sent ([0-9]+) bytes ([0-9]+) pkt \\(dropped ([0-9]+),"
+)
+backlog_re = re.compile(r"backlog ([0-9]+)([KMG]?b) ([0-9]+)p")
+units = {"b": 1, "Kb": 1024, "Mb": 1024 * 1024, "Gb": 1024 * 1024 * 1024}
+
+
+def stop(_signum, _frame):
+    global running
+    running = False
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+started_ns = time.monotonic_ns()
+next_sample_ns = started_ns
+interval_ns = 5_000_000
+
+with open(path, "w", buffering=1) as out:
+    out.write(
+        "elapsed_ms\tsent_bytes\tsent_packets\tdropped_packets"
+        "\tbacklog_bytes\tbacklog_packets\n"
+    )
+    while running:
+        sample = subprocess.run(
+            ["tc", "-s", "qdisc", "show", "dev", device],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+        now_ns = time.monotonic_ns()
+        sent = sent_re.search(sample)
+        backlog = backlog_re.search(sample)
+        sent_bytes = int(sent.group(1)) if sent else -1
+        sent_packets = int(sent.group(2)) if sent else -1
+        dropped = int(sent.group(3)) if sent else -1
+        backlog_bytes = (
+            int(backlog.group(1)) * units[backlog.group(2)] if backlog else -1
+        )
+        backlog_packets = int(backlog.group(3)) if backlog else -1
+        out.write(
+            f"{(now_ns - started_ns) / 1_000_000.0:.3f}\t"
+            f"{sent_bytes}\t{sent_packets}\t{dropped}\t"
+            f"{backlog_bytes}\t{backlog_packets}\n"
+        )
+        next_sample_ns += interval_ns
+        sleep_ns = next_sample_ns - time.monotonic_ns()
+        if sleep_ns > 0:
+            time.sleep(sleep_ns / 1_000_000_000.0)
+PY
+QDISC_SAMPLER_PID=$!
+
 python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOWS" "$PAYLOAD_BYTES" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
 import hashlib
@@ -325,6 +390,9 @@ if ! wait "$BACKEND_PID"; then
     exit 1
 fi
 BACKEND_PID=
+
+stop_pid "$QDISC_SAMPLER_PID"
+QDISC_SAMPLER_PID=
 
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
