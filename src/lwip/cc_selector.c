@@ -433,6 +433,23 @@ static int tcp_shift_cc_selector_pacing_on_timeout(void *arg,
     return tcp_shift_cc_selector_call_paced_timeout(arg, pcb);
 }
 
+static int tcp_shift_cc_selector_pacing_rack_loss_status(
+    void *arg,
+    struct tcp_pcb *pcb,
+    const void *segment,
+    u64_t *remaining_ns)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->rack_loss_status == NULL) {
+        if (remaining_ns != NULL) {
+            *remaining_ns = 0U;
+        }
+        return -1;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->rack_loss_status(
+        arg, pcb, segment, remaining_ns);
+}
+
 static int tcp_shift_cc_selector_pacing_send_eligible(void *arg,
                                                        struct tcp_pcb *pcb,
                                                        u16_t payload_bytes)
@@ -492,6 +509,8 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
         .on_timeout = tcp_shift_cc_selector_pacing_on_timeout,
+        .rack_loss_status =
+            tcp_shift_cc_selector_pacing_rack_loss_status,
         .on_segment_send_eligible =
             tcp_shift_cc_selector_pacing_send_eligible,
         .on_segment_tx = tcp_shift_cc_selector_pacing_on_segment_tx,
