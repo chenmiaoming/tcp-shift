@@ -233,25 +233,16 @@ int tcp_shift_rack_lost_on_rto(
     if (segment == NULL) {
         return 0;
     }
-    if (segment->end_seq != 0U &&
-        (uint32_t)(segment->end_seq - snd_una) <=
-            (uint32_t)(segment->end_seq - (segment->end_seq - 1U))) {
-        /* Sequence-range start is not part of the compact segment view. The
-         * transport must identify the SND.UNA segment and pass it with
-         * end_seq == snd_una + payload. For the generic core, equality with
-         * the tracked RACK end is insufficient; callers should use the normal
-         * expiry result for non-first segments. */
-    }
 
-    if (tcp_shift_rack_loss_remaining(state, segment, now_ns, in_recovery,
-                                      &remaining)) {
+    /* RFC 8985 section 6.3: SND.UNA is always marked lost when the RTO
+     * expires. Other segments still require their RACK RTT + reo_wnd
+     * deadline to have elapsed. */
+    if (segment->seq_start == snd_una) {
         return 1;
     }
-    return remaining == 0U && segment->xmit_ts_ns != 0U &&
-                   now_ns >= segment->xmit_ts_ns &&
-                   snd_una != 0U
-               ? 0
-               : 0;
+
+    return tcp_shift_rack_loss_remaining(
+        state, segment, now_ns, in_recovery, &remaining);
 }
 
 uint64_t tcp_shift_tlp_calc_pto_ns(
