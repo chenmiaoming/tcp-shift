@@ -1,6 +1,6 @@
 # RFC 8985 RACK-TLP
 
-Status: active transport-recovery implementation, experimental/default-OFF.
+Status: active transport-recovery implementation; core RFC state plus live RACK timer and tail-loss TLP paths are present, experimental/default-OFF.
 
 tcp-shift is moving sender loss detection from a fixed DupAck/SACK-count heuristic toward RFC 8985 RACK-TLP. This work is deliberately transport-level and independent of Reno, CUBIC, and BBR controller policy.
 
@@ -18,7 +18,7 @@ RFC 8985 requires SACK plus per-segment most-recent transmit timestamps. tcp-shi
 
 The implementation keeps RACK/TLP metadata out of upstream `struct tcp_seg` where practical so the lwIP fork remains bounded.
 
-## Scope of this PR
+## Implementation phases
 
 The PR is intentionally dedicated to RACK-TLP. It must not contain BBR gain changes, CUBIC changes, IW10 policy changes, or unrelated memory tuning.
 
@@ -68,12 +68,26 @@ Implementation phases:
 
 ## Current boundary
 
-The current implementation provides the transport-neutral RFC state/math, feeds cumulative/SACK delivery into RACK using separate RFC-ordered timing and reordering passes, and lets the experimental SACK retransmission selector query RACK time evidence. It does **not** enable RACK-TLP in default production builds, and the reordering timer/TLP PTO path is not complete yet.
+The implementation is beyond the core-math-only stage. The experimental build now provides:
 
-The feature remains default-OFF until live lwIP integration proves:
+- transport-neutral RFC 8985 RACK/TLP state and deterministic contracts;
+- per-segment latest-transmit timestamps and delivery ordering through the existing sidecar;
+- cumulative/SACK delivery processing in the RFC-required timing pass followed by the reordering pass;
+- RACK loss deadlines and a process-wide one-shot recovery timer integrated with the existing epoll owner;
+- timer-driven RACK repair when loss matures below the ordinary DupThresh path;
+- PTO/TLP scheduling with ordinary RTO as the conservative fallback;
+- live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
+- congestion-control callbacks kept separate from the transport loss detector.
 
-- no retransmission amplification;
-- no extra RTO regressions;
-- bounded per-flow metadata/timer cost;
-- Reno/CUBIC production behavior remains unchanged when the feature is OFF;
-- BBR remains an independent consumer of transport loss events.
+The feature remains **experimental/default-OFF** because the current live qualification is still narrow. Before considering production/default enablement, add fail-closed live gates for:
+
+- packet reordering both below and above the computed reordering window;
+- DSACK-driven reordering-window adaptation;
+- application-limited loss;
+- a lost retransmission;
+- the deterministic 28-drop reference under RACK-TLP with exact retransmission accounting;
+- recovery-timer cancellation/stale-release lifecycle under connection teardown;
+- incremental memory and wakeup/timer cost;
+- Reno, CUBIC, and internal BBR recovery behavior with RACK-TLP enabled, while preserving unchanged production behavior when it is disabled.
+
+Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live RACK timer and tail-loss TLP subsets qualified**, not complete RFC 8985 or production conformance.
