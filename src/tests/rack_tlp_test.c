@@ -18,10 +18,12 @@ static int test_sent_after_and_rack_update(void)
     struct tcp_shift_rack_tlp_state state;
     struct tcp_shift_rack_segment older = {
         .xmit_ts_ns = UINT64_C(100000000),
+        .seq_start = 1000U,
         .end_seq = 2000U,
     };
     struct tcp_shift_rack_segment newer = {
         .xmit_ts_ns = UINT64_C(110000000),
+        .seq_start = 2000U,
         .end_seq = 3000U,
     };
 
@@ -58,10 +60,12 @@ static int test_reordering_window_and_loss_deadline(void)
     struct tcp_shift_rack_tlp_state state;
     struct tcp_shift_rack_segment delivered = {
         .xmit_ts_ns = UINT64_C(200000000),
+        .seq_start = 3000U,
         .end_seq = 4000U,
     };
     struct tcp_shift_rack_segment missing = {
         .xmit_ts_ns = UINT64_C(100000000),
+        .seq_start = 2000U,
         .end_seq = 3000U,
     };
     uint64_t remaining = 0U;
@@ -80,6 +84,13 @@ static int test_reordering_window_and_loss_deadline(void)
     CHECK(tcp_shift_rack_loss_remaining(
               &state, &missing, UINT64_C(225000000), 0U,
               &remaining) == 1);
+
+    /* RTO always marks the SND.UNA segment, but later segments still use
+     * their RACK deadline. */
+    CHECK(tcp_shift_rack_lost_on_rto(
+              &state, &missing, 2000U, UINT64_C(150000000), 0U) == 1);
+    CHECK(tcp_shift_rack_lost_on_rto(
+              &state, &delivered, 2000U, UINT64_C(150000000), 0U) == 0);
 
     /* With no observed reordering, 3 SACKed segments collapse reo_wnd to 0. */
     state.reordering_seen = 0U;
@@ -169,6 +180,7 @@ static int test_retransmission_ambiguity(void)
     struct tcp_shift_rack_tlp_state state;
     struct tcp_shift_rack_segment retrans = {
         .xmit_ts_ns = UINT64_C(200000000),
+        .seq_start = 3000U,
         .end_seq = 4000U,
         .retransmitted = 1U,
     };
