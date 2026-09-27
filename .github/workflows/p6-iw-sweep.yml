@@ -1,0 +1,171 @@
+name: P6 IW10 length sweep
+
+on:
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - 'src/lwip/cc_adapter.c'
+      - 'scripts/fetch-lwip.sh'
+      - 'scripts/p6-bbr-long-flow.sh'
+      - 'scripts/linux-cubic-pacing-reference.sh'
+      - 'scripts/p6-iw-sweep-evaluate.py'
+      - '.github/workflows/p6-iw-sweep.yml'
+  workflow_dispatch:
+
+jobs:
+  iw-length-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install qualification dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          sudo modprobe tcp_bbr || true
+          test -c /dev/net/tun
+          sysctl net.ipv4.tcp_available_congestion_control
+
+      - name: Validate sweep harness
+        run: |
+          sh -n scripts/p6-bbr-long-flow.sh
+          sh -n scripts/linux-cubic-pacing-reference.sh
+          python3 -m py_compile scripts/p6-iw-sweep-evaluate.py
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Build legacy-IW internal BBR
+        run: |
+          cmake -S . -B .build-iw4 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON
+          cmake --build .build-iw4 --target tcp-shift-p6-bbr --parallel
+
+      - name: Build RFC 6928 IW10 internal BBR
+        run: |
+          cmake -S . -B .build-iw10 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_IW10=ON
+          cmake --build .build-iw10 --target tcp-shift-p6-bbr --parallel
+
+      - name: Run IW4, IW10 and Linux BBR sweep
+        run: |
+          set -eu
+          root="$PWD/.build/p6-iw-sweep"
+          mkdir -p "$root"
+          : > "$root/results.txt"
+
+          run_tcp_shift() {
+            label="$1"
+            binary="$2"
+            payload="$3"
+            mode="$4"
+            out="$root/$payload/$mode/$label"
+            mkdir -p "$out"
+
+            fault_mode=none
+            if [ "$mode" = loss ]; then
+              fault_mode=first-send-loss
+            fi
+
+            sudo env \
+              TCP_SHIFT_P6_BBR_LONG_BINARY="$binary" \
+              TCP_SHIFT_P6_BBR_LONG_CC=bbr-internal \
+              TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+              TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+              TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES="$payload" \
+              TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MODE="$fault_mode" \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+              TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+              TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+              sh scripts/p6-bbr-long-flow.sh
+          }
+
+          run_linux() {
+            payload="$1"
+            mode="$2"
+            out="$root/$payload/$mode/linux"
+            mkdir -p "$out"
+
+            fault_mode=none
+            if [ "$mode" = loss ]; then
+              fault_mode=first-send-loss
+            fi
+
+            sudo env \
+              TCP_SHIFT_LINUX_PACING_CC=bbr \
+              TCP_SHIFT_LINUX_PACING_CASE="iw-sweep-$payload-$mode" \
+              TCP_SHIFT_LINUX_PACING_MODE=fq \
+              TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+              TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+              TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES="$payload" \
+              TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MODE="$fault_mode" \
+              TCP_SHIFT_LINUX_PACING_FAULT_FIRST_PACKET=80 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT=28 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS=96 \
+              TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX=TSFS \
+              TCP_SHIFT_LINUX_PACING_OUT="$out" \
+              sh scripts/linux-cubic-pacing-reference.sh
+          }
+
+          for payload in 4194304 16777216 33554432; do
+            for mode in clean loss; do
+              run_tcp_shift iw4 "$PWD/.build-iw4/tcp-shift-p6-bbr" "$payload" "$mode"
+              run_tcp_shift iw10 "$PWD/.build-iw10/tcp-shift-p6-bbr" "$payload" "$mode"
+              run_linux "$payload" "$mode"
+
+              sudo chown -R "$USER:$USER" "$root/$payload/$mode"
+              python3 scripts/p6-iw-sweep-evaluate.py \
+                "$payload" "$mode" \
+                "$root/$payload/$mode/iw4/summary.txt" \
+                "$root/$payload/$mode/iw10/summary.txt" \
+                "$root/$payload/$mode/linux/summary.txt" \
+                "$root/$payload/$mode/comparison.txt" \
+                | tee -a "$root/results.txt"
+            done
+          done
+
+      - name: Publish sweep summary
+        if: always()
+        run: |
+          root=.build/p6-iw-sweep
+          {
+            echo "## IW4 vs RFC 6928 IW10"
+            echo
+            echo "RTT=260ms rate=10Mbit/s payloads=4/16/32MiB; clean + exact 28 first-send drops"
+            if [ -f "$root/results.txt" ]; then
+              echo
+              echo '~~~text'
+              cat "$root/results.txt"
+              echo '~~~'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sweep evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-iw-sweep
+          path: .build/p6-iw-sweep
+          if-no-files-found: warn
+          include-hidden-files: true
