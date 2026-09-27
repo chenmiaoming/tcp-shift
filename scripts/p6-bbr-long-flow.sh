@@ -750,17 +750,18 @@ case "$LOSS_MODE" in
         }
         ;;
     deterministic-reorder)
-        [ "$rack_reordering_events" -ge 1 ] || {
-            echo "deterministic reorder path produced no RACK reordering observation" >&2
-            exit 1
-        }
         if [ "$RECOVERY_EXPECTATION" = reorder-safe ]; then
+            [ "$rack_reordering_events" -ge 1 ] &&
             [ "$retransmit_events" -eq 0 ] &&
             [ "$rack_dsack_events" -eq 0 ] || {
-                echo "safe reordering was retransmitted or D-SACKed: retrans=$retransmit_events dsack=$rack_dsack_events" >&2
+                echo "safe reordering was not learned cleanly: reordered=$rack_reordering_events retrans=$retransmit_events dsack=$rack_dsack_events" >&2
                 exit 1
             }
         else
+            # RFC 8985 calls out the case where a too-small reo_wnd causes
+            # retransmission before Step 3 can observe the original reorder.
+            # D-SACK is the recovery signal for exactly that case, so do not
+            # require reordering_seen/rack_reordering_events here.
             [ "$retransmit_events" -ge 1 ] &&
             [ "$rack_dsack_events" -ge 1 ] &&
             [ "$rack_reo_wnd_mult_max" -ge 2 ] &&
