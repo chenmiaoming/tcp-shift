@@ -55,6 +55,10 @@ struct tcp_shift_lwip_cc_hook_ops {
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
+    int (*rack_loss_status)(void *arg,
+                            struct tcp_pcb *pcb,
+                            const void *segment,
+                            u64_t *remaining_ns);
     u32_t (*effective_cwnd)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
@@ -157,6 +161,28 @@ tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
                    hook->recovery_controller_owned != 0U
                ? 1U
                : 0U;
+}
+
+/* Return 1 when RFC 8985 has declared segment lost, 0 when the
+ * RACK evidence exists but the reordering window has not expired, and -1 when
+ * RACK is unavailable for this PCB/segment. remaining_ns is meaningful only
+ * for the 0 result and is zero when no timer deadline can yet be derived. */
+static inline int
+tcp_shift_lwip_cc_hook_rack_loss_status(struct tcp_pcb *pcb,
+                                         const void *segment,
+                                         u64_t *remaining_ns)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (remaining_ns != NULL) {
+        *remaining_ns = 0U;
+    }
+    if (pcb == NULL || segment == NULL || hook == NULL || hook->ops == NULL ||
+        hook->ops->rack_loss_status == NULL) {
+        return -1;
+    }
+    return hook->ops->rack_loss_status(
+        hook->arg, pcb, segment, remaining_ns);
 }
 
 static inline u32_t
