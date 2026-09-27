@@ -97,6 +97,16 @@ jobs:
             exit 1
           fi
 
+      - name: Build SACK evidence without either recovery selector
+        run: |
+          cmake -S . -B .build-sack-evidence-only \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON
+          cmake --build .build-sack-evidence-only --target \
+            tcp-shift-p2 \
+            tcp-shift-tcp-memory-contract \
+            --parallel
+
       - name: Configure RFC 8985 qualification build
         run: |
           cmake -S . -B .build-rack \
