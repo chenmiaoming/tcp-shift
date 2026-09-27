@@ -44,6 +44,13 @@ struct tcp_shift_lwip_sack_range {
     u32_t right;
 };
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+/* Implemented by the controlled lwIP SACK patch. Requeue every segment whose
+ * RACK time evidence is mature, enter one fast-recovery episode if necessary,
+ * then drive ordinary tcp_output(). */
+err_t tcp_shift_tcp_rack_rexmit_due(struct tcp_pcb *pcb);
+#endif
+
 struct tcp_shift_lwip_cc_hook_ops {
     void (*on_ack_begin)(void *arg, struct tcp_pcb *pcb);
     int (*on_ack)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes);
