@@ -170,6 +170,8 @@ conn.close()
 server.close()
 print(
     f"backend-complete total_bytes={burst_bytes * 2} "
+    f"backend_first_done_ns={first_done_ns} "
+    f"backend_second_start_ns={second_start_ns} "
     f"backend_idle_ns={second_start_ns - first_done_ns} "
     f"burst1_sha256={hashlib.sha256(burst1).hexdigest()} "
     f"burst2_sha256={hashlib.sha256(burst2).hexdigest()}",
@@ -295,7 +297,9 @@ if burst1 != expected1 or burst2 != expected2:
 
 print(
     f"app-limited-client total_bytes={burst_bytes * 2} "
-    f"elapsed_ns={elapsed_ns} receiver_idle_gap_ns={second_first_ns - first_done_ns} "
+    f"elapsed_ns={elapsed_ns} receiver_first_done_ns={first_done_ns} "
+    f"receiver_second_first_ns={second_first_ns} "
+    f"receiver_idle_gap_ns={second_first_ns - first_done_ns} "
     f"goodput_mbps={burst_bytes * 2 * 8.0 * 1000.0 / elapsed_ns:.6f} "
     f"burst1_sha256={hashlib.sha256(burst1).hexdigest()} "
     f"burst2_sha256={hashlib.sha256(burst2).hexdigest()}"
@@ -363,9 +367,13 @@ if [ "$RECOVERY_EXPECTATION" = clean ]; then
         exit 1
     }
 else
-    [ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
+    # The TLP retransmission repairs the idle tail first. Once burst two
+    # advances ACK beyond TLP.end_seq, RFC 8985 confirms the original tail was
+    # lost and delivers exactly one congestion indication. That is not a fast
+    # recovery episode and must not be confused with RTO fallback.
+    [ -n "$loss_events" ] && [ "$loss_events" -eq 1 ] &&
     [ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
-        echo "app-limited tail loss triggered congestion/RTO fallback: loss=$loss_events timeout=$timeout_events" >&2
+        echo "app-limited TLP congestion response mismatch: loss=$loss_events timeout=$timeout_events" >&2
         exit 1
     }
 fi
@@ -427,23 +435,36 @@ else
 fi
 
 receiver_gap_ns=$(sed -n 's/.* receiver_idle_gap_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/client.stdout")
+receiver_first_done_ns=$(sed -n 's/.* receiver_first_done_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/client.stdout")
 backend_idle_ns=$(sed -n 's/.* backend_idle_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/backend.stdout")
-[ -n "$receiver_gap_ns" ] && [ -n "$backend_idle_ns" ] || {
+backend_second_start_ns=$(sed -n 's/.* backend_second_start_ns=\([0-9][0-9]*\).*/\1/p' "$OUT/backend.stdout")
+[ -n "$receiver_gap_ns" ] && [ -n "$receiver_first_done_ns" ] &&
+[ -n "$backend_idle_ns" ] && [ -n "$backend_second_start_ns" ] || {
     echo "missing app-limited idle timing" >&2
     exit 1
 }
+repair_before_second_burst=0
+repair_margin_ns=0
 if [ "$RECOVERY_EXPECTATION" = app-tail ]; then
-    min_receiver_gap_ns=$((IDLE_MS * 1000000 / 2))
-    [ "$receiver_gap_ns" -ge "$min_receiver_gap_ns" ] || {
-        echo "tail repair completed too late to prove app-limited recovery: receiver_gap_ns=$receiver_gap_ns minimum=$min_receiver_gap_ns" >&2
+    # Both Python processes use the host CLOCK_MONOTONIC. Comparing absolute
+    # monotonic timestamps proves the first burst became complete at the
+    # receiver before the backend made any second-burst byte available. A
+    # receiver-gap fraction is not equivalent because sender pacing can consume
+    # part of the configured application-idle interval before the lost tail is
+    # first transmitted.
+    [ "$receiver_first_done_ns" -lt "$backend_second_start_ns" ] || {
+        echo "tail repair waited for new application data: receiver_first_done_ns=$receiver_first_done_ns backend_second_start_ns=$backend_second_start_ns" >&2
         exit 1
     }
+    repair_before_second_burst=1
+    repair_margin_ns=$((backend_second_start_ns - receiver_first_done_ns))
 fi
 
-printf 'p6_bbr_app_limited=ok base_rtt_ms=%s rate_mbit=%s fault_mode=%s recovery_expectation=%s fault_drops=%s bdp_bytes=%s queue_pkts=%s burst_bytes=%s configured_idle_ms=%s backend_idle_ns=%s receiver_idle_gap_ns=%s app_limited_enters=%s app_limited_exits=%s app_limited_samples=%s valid_rate_samples=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
+printf 'p6_bbr_app_limited=ok base_rtt_ms=%s rate_mbit=%s fault_mode=%s recovery_expectation=%s fault_drops=%s bdp_bytes=%s queue_pkts=%s burst_bytes=%s configured_idle_ms=%s backend_idle_ns=%s receiver_idle_gap_ns=%s repair_before_second_burst=%s repair_margin_ns=%s app_limited_enters=%s app_limited_exits=%s app_limited_samples=%s valid_rate_samples=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
     "$RTT_MS" "$RATE_MBIT" "$FAULT_MODE" "$RECOVERY_EXPECTATION" "$fault_drops" \
     "$BDP_BYTES" "$QUEUE_PKTS" "$BURST_BYTES" "$IDLE_MS" \
-    "$backend_idle_ns" "$receiver_gap_ns" "$app_enters" "$app_exits" "$app_samples" \
+    "$backend_idle_ns" "$receiver_gap_ns" "$repair_before_second_burst" "$repair_margin_ns" \
+    "$app_enters" "$app_exits" "$app_samples" \
     "$valid_samples" "$pacing_deferrals" "$pacing_resumes" "$ifb_drops" "$tun_drops" \
     "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
 
