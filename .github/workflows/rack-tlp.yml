@@ -151,5 +151,5 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains disabled until the ACK/SACK and timer integration commits land."
+            echo "Runtime behavior remains experimental/default-OFF pending reordering, lost-retransmission, teardown, and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
