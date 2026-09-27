@@ -60,7 +60,7 @@ Implementation phases:
 
 6. **Qualification**
    - tail loss that previously requires RTO;
-      - lost retransmission, including the required additional congestion response;
+   - lost retransmission, including the required additional congestion response;
    - reordering below and above the reordering window;
    - DSACK adaptation;
    - deterministic 28-drop reference with exact retransmission accounting;
