@@ -1425,6 +1425,7 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
     struct tcp_shift_delivery_slot *slot;
     struct tcp_shift_rack_segment rack_segment;
     uint64_t now_ns;
+    uint64_t remaining64 = 0U;
     unsigned in_recovery;
 
     if (remaining_ns != NULL) {
@@ -1454,11 +1455,15 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
     rack_segment.lost = 0U;
     in_recovery = tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
 
-    return tcp_shift_rack_loss_remaining(
-               &adapter->rack_tlp, &rack_segment, now_ns, in_recovery,
-               (uint64_t *)remaining_ns)
-               ? 1
-               : 0;
+    if (tcp_shift_rack_loss_remaining(
+            &adapter->rack_tlp, &rack_segment, now_ns, in_recovery,
+            &remaining64)) {
+        return 1;
+    }
+    if (remaining_ns != NULL) {
+        *remaining_ns = (u64_t)remaining64;
+    }
+    return 0;
 }
 #endif
 
