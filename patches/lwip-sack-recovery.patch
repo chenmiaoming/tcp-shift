@@ -304,7 +304,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
  #if TCP_OVERSIZE
    if (seg->next == NULL) {
      /* the retransmitted segment is last in unsent, so reset unsent_oversize */
-@@ -1787,5 +1837,81 @@
+@@ -1787,5 +1837,113 @@
    return ERR_OK;
  }
  
@@ -328,10 +328,6 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      sacked_after++;
 +    }
 +  }
-+  if (sacked_after < 3U) {
-+    return ERR_VAL;
-+  }
-+
 +  unacked_link = &pcb->unacked;
 +  for (seg = pcb->unacked; seg != NULL; seg = seg->next) {
 +    if ((seg->flags & TCP_SHIFT_TF_SEG_SACKED) != 0U) {
@@ -382,6 +378,42 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
 +  return ERR_VAL;
 +}
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++err_t
++tcp_shift_tcp_rack_rexmit_due(struct tcp_pcb *pcb)
++{
++  err_t err;
++  u8_t moved = 0U;
++
++  if (pcb == NULL || (pcb->flags & TF_SACK) == 0U ||
++      pcb->unacked == NULL) {
++    return ERR_VAL;
++  }
++
++  /* Enter one ordinary fast-recovery episode if RACK found the first loss.
++     The project CC hook in tcp_rexmit_fast() owns the congestion response;
++     subsequent RACK-lost segments are repairs inside that same episode. */
++  if ((pcb->flags & TF_INFR) == 0U) {
++    tcp_rexmit_fast(pcb);
++    if ((pcb->flags & TF_INFR) == 0U) {
++      return ERR_VAL;
++    }
++    moved = 1U;
++  }
++
++  while (tcp_shift_tcp_rexmit_sack_hole(pcb) == ERR_OK) {
++    moved = 1U;
++  }
++  if (moved == 0U) {
++    return ERR_VAL;
++  }
++
++  pcb->rtime = 0;
++  err = tcp_output(pcb);
++  return err;
++}
++#endif /* TCP_SHIFT_EXPERIMENTAL_RACK_TLP */
 +#endif /* LWIP_TCP_SACK_OUT */
 +
  
