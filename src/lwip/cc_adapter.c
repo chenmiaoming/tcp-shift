@@ -831,6 +831,52 @@ static int tcp_shift_rack_seq_before_u32(uint32_t left, uint32_t right)
     return (int32_t)(left - right) < 0;
 }
 
+static int tcp_shift_rack_seq_after_eq_u32(uint32_t left, uint32_t right)
+{
+    return (int32_t)(left - right) >= 0;
+}
+
+static int tcp_shift_rack_sack_is_dsack(
+    uint32_t ack_seq,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    uint8_t range_count)
+{
+    if (ranges == NULL || range_count == 0U ||
+        !tcp_shift_rack_seq_before_u32(ranges[0].left, ranges[0].right)) {
+        return 0;
+    }
+
+    /* RFC 2883 section 4: classify from the cumulative ACK carried in the
+     * same packet, never from SND.UNA/pcb->lastack. The first block is D-SACK
+     * when it lies at/below that ACK, or when it is contained by the second
+     * SACK block above the ACK. */
+    if (tcp_shift_rack_seq_after_eq_u32(ack_seq, ranges[0].right)) {
+        return 1;
+    }
+    if (range_count >= 2U &&
+        tcp_shift_rack_seq_after_eq_u32(ranges[0].left, ranges[1].left) &&
+        tcp_shift_rack_seq_after_eq_u32(ranges[1].right, ranges[0].right)) {
+        return 1;
+    }
+    return 0;
+}
+
+static void tcp_shift_rack_record_stats(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    struct tcp_shift_lwip_cc_stats *stats;
+
+    if (adapter == NULL || adapter->stats == NULL) {
+        return;
+    }
+    stats = adapter->stats;
+    stats->rack_reo_wnd_mult = adapter->rack_tlp.reo_wnd_mult;
+    stats->rack_reo_wnd_persist = adapter->rack_tlp.reo_wnd_persist;
+    if (adapter->rack_tlp.reo_wnd_mult > stats->rack_reo_wnd_mult_max) {
+        stats->rack_reo_wnd_mult_max = adapter->rack_tlp.reo_wnd_mult;
+    }
+}
+
 static void tcp_shift_rack_slot_view(
     const struct tcp_shift_delivery_slot *slot,
     struct tcp_shift_rack_segment *segment)
@@ -950,9 +996,16 @@ static void tcp_shift_rack_process_delivered_slots(
 
         {
             struct tcp_shift_rack_segment segment;
+            uint8_t reordering_before = adapter->rack_tlp.reordering_seen;
 
             tcp_shift_rack_slot_view(next, &segment);
             tcp_shift_rack_detect_reordering(&adapter->rack_tlp, &segment);
+            if (reordering_before == 0U &&
+                adapter->rack_tlp.reordering_seen != 0U &&
+                adapter->stats != NULL) {
+                adapter->stats->rack_reordering_events++;
+            }
+            tcp_shift_rack_record_stats(adapter);
         }
         next->rack_delivered = 2U;
         processed++;
@@ -1814,6 +1867,7 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
 static int tcp_shift_lwip_cc_on_sack(
     void *arg,
     struct tcp_pcb *pcb,
+    u32_t ack_seq,
     const struct tcp_shift_lwip_sack_range *ranges,
     u8_t range_count)
 {
@@ -1830,7 +1884,19 @@ static int tcp_shift_lwip_cc_on_sack(
         return 0;
     }
 
+#if !defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) || !TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    (void)ack_seq;
+#endif
     memset(&ack, 0, sizeof(ack));
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (tcp_shift_rack_sack_is_dsack(ack_seq, ranges, range_count)) {
+        tcp_shift_rack_note_dsack(&adapter->rack_tlp, pcb->snd_nxt);
+        if (adapter->stats != NULL) {
+            adapter->stats->rack_dsack_events++;
+        }
+        tcp_shift_rack_record_stats(adapter);
+    }
+#endif
     newly_delivered = tcp_shift_delivery_build_sack_rate_sample(
         adapter, ranges, range_count, &ack.rate);
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
@@ -1841,9 +1907,9 @@ static int tcp_shift_lwip_cc_on_sack(
         for (index = 0U; index < range_count; index++) {
             if (ranges[index].left == adapter->rack_tlp.tlp_start_seq &&
                 ranges[index].right == adapter->rack_tlp.tlp_end_seq &&
-                (int32_t)(pcb->lastack - ranges[index].right) >= 0) {
+                (int32_t)(ack_seq - ranges[index].right) >= 0) {
                 (void)tcp_shift_tlp_process_ack(
-                    &adapter->rack_tlp, pcb->lastack, 1U, 0U);
+                    &adapter->rack_tlp, ack_seq, 1U, 0U);
                 break;
             }
         }
@@ -2077,6 +2143,28 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
 }
 #endif
 
+static int tcp_shift_lwip_cc_on_recovery_exit(
+    void *arg,
+    struct tcp_pcb *pcb,
+    u32_t ack_seq)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb) {
+        return 0;
+    }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_rack_note_recovery_exit(&adapter->rack_tlp, ack_seq);
+    tcp_shift_rack_record_stats(adapter);
+#else
+    (void)ack_seq;
+#endif
+    /* Reno/CUBIC keep native recovery-window ownership. This callback only
+     * advances RACK's DSACK persistence lifecycle for those controllers. */
+    return 0;
+}
+
 static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
@@ -2114,6 +2202,7 @@ static const struct tcp_shift_lwip_cc_hook_ops tcp_shift_lwip_cc_hook_ops = {
     .on_tlp_loss = tcp_shift_lwip_cc_on_tlp_loss,
     .on_tlp_dupack = tcp_shift_lwip_cc_on_tlp_dupack,
     .on_timeout = tcp_shift_lwip_cc_on_timeout,
+    .on_recovery_exit = tcp_shift_lwip_cc_on_recovery_exit,
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     .rack_loss_status = tcp_shift_lwip_cc_rack_loss_status,
 #endif

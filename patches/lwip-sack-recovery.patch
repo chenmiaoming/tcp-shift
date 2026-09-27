@@ -138,7 +138,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +          }
 +          if (sack_range_count != 0U) {
 +            (void)tcp_shift_lwip_cc_hook_sack(
-+                pcb, sack_ranges, sack_range_count);
++                pcb, ackno, sack_ranges, sack_range_count);
 +          }
 +          break;
  #endif /* LWIP_TCP_SACK_OUT */

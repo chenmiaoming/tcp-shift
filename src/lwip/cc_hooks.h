@@ -64,6 +64,7 @@ struct tcp_shift_lwip_cc_hook_ops {
                           tcpwnd_size_t acked_bytes);
     int (*on_sack)(void *arg,
                    struct tcp_pcb *pcb,
+                   u32_t ack_seq,
                    const struct tcp_shift_lwip_sack_range *ranges,
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
@@ -77,7 +78,9 @@ struct tcp_shift_lwip_cc_hook_ops {
                           struct tcp_pcb *pcb,
                           unsigned sack_seen);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
-    int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
+    int (*on_recovery_exit)(void *arg,
+                            struct tcp_pcb *pcb,
+                            u32_t ack_seq);
     int (*rack_loss_status)(void *arg,
                             struct tcp_pcb *pcb,
                             const void *segment,
@@ -276,6 +279,7 @@ tcp_shift_lwip_cc_hook_ack_observe(struct tcp_pcb *pcb,
 static inline int
 tcp_shift_lwip_cc_hook_sack(
     struct tcp_pcb *pcb,
+    u32_t ack_seq,
     const struct tcp_shift_lwip_sack_range *ranges,
     u8_t range_count)
 {
@@ -285,7 +289,8 @@ tcp_shift_lwip_cc_hook_sack(
         ranges == NULL || range_count == 0U) {
         return 0;
     }
-    return hook->ops->on_sack(hook->arg, pcb, ranges, range_count) != 0;
+    return hook->ops->on_sack(
+        hook->arg, pcb, ack_seq, ranges, range_count) != 0;
 }
 
 static inline int
@@ -350,7 +355,7 @@ tcp_shift_lwip_cc_hook_tlp_dupack(struct tcp_pcb *pcb,
 }
 
 static inline int
-tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb)
+tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb, u32_t ack_seq)
 {
     struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
     int handled = 0;
@@ -359,9 +364,9 @@ tcp_shift_lwip_cc_hook_recovery_exit(struct tcp_pcb *pcb)
         return 0;
     }
     if (hook->recovery_active != 0U &&
-        hook->recovery_controller_owned != 0U &&
         hook->ops != NULL && hook->ops->on_recovery_exit != NULL) {
-        handled = hook->ops->on_recovery_exit(hook->arg, pcb) != 0;
+        handled = hook->ops->on_recovery_exit(
+            hook->arg, pcb, ack_seq) != 0;
     }
     tcp_shift_lwip_cc_hook_recovery_mark_exit(hook);
     return handled;

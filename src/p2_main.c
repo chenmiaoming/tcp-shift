@@ -184,6 +184,9 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "retransmit_events=%llu unique_retransmit_events=%llu "
             "repeat_retransmit_events=%llu acked_segment_events=%llu "
             "sack_events=%llu sack_payload_bytes=%llu "
+            "rack_dsack_events=%llu rack_reordering_events=%llu "
+            "rack_reo_wnd_mult=%u rack_reo_wnd_mult_max=%u "
+            "rack_reo_wnd_persist=%u "
             "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
             "metadata_misses=%llu metadata_abandoned_slots=%llu "
             "clock_errors=%llu timestamp_regressions=%llu "
@@ -197,6 +200,11 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             (unsigned long long)stats->delivery_acked_segment_events,
             (unsigned long long)stats->delivery_sack_events,
             (unsigned long long)stats->delivery_sack_payload_bytes,
+            (unsigned long long)stats->rack_dsack_events,
+            (unsigned long long)stats->rack_reordering_events,
+            stats->rack_reo_wnd_mult,
+            stats->rack_reo_wnd_mult_max,
+            stats->rack_reo_wnd_persist,
             (unsigned long long)stats->delivery_payload_bytes,
             (unsigned long long)stats->delivery_metadata_alloc_failures,
             (unsigned long long)stats->delivery_metadata_misses,

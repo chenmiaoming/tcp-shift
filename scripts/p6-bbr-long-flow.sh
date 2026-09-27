@@ -21,6 +21,8 @@ FAULT_MARKER_COUNT=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT:-28}
 FAULT_MARKER_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS:-96}
 FAULT_MARKER_PREFIX=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX:-TSFS}
 RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
+REORDER_DELAY_MS=${TCP_SHIFT_P6_BBR_LONG_REORDER_DELAY_MS:-5}
+REORDER_GAP=${TCP_SHIFT_P6_BBR_LONG_REORDER_GAP:-4}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_LONG_TUN_NAME:-"tsp6lf$$"}
@@ -58,12 +60,12 @@ command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
 case "$FAULT_MODE" in
-    none|multi-loss|burst-loss|repeated-burst|lost-retransmission|first-send-loss) ;;
-    *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst, lost-retransmission or first-send-loss" >&2; exit 1;;
+    none|multi-loss|burst-loss|repeated-burst|lost-retransmission|first-send-loss|reorder) ;;
+    *) echo "FAULT_MODE must be none, multi-loss, burst-loss, repeated-burst, lost-retransmission, first-send-loss or reorder" >&2; exit 1;;
 esac
 case "$RECOVERY_EXPECTATION" in
-    strict|diagnostic|tlp|rack) ;;
-    *) echo "RECOVERY_EXPECTATION must be strict, diagnostic, tlp or rack" >&2; exit 1;;
+    strict|diagnostic|tlp|rack|reorder-safe|dsack) ;;
+    *) echo "RECOVERY_EXPECTATION must be strict, diagnostic, tlp, rack, reorder-safe or dsack" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -84,6 +86,8 @@ case "$FAULT_BURST_REPEATS" in ''|*[!0-9]*) echo "FAULT_BURST_REPEATS must be an
 case "$FAULT_BURST_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_BURST_GAP_PACKETS must be an integer" >&2; exit 1;; esac
 case "$FAULT_MARKER_COUNT" in ''|*[!0-9]*) echo "FAULT_MARKER_COUNT must be an integer" >&2; exit 1;; esac
 case "$FAULT_MARKER_GAP_PACKETS" in ''|*[!0-9]*) echo "FAULT_MARKER_GAP_PACKETS must be an integer" >&2; exit 1;; esac
+case "$REORDER_DELAY_MS" in ''|*[!0-9]*) echo "REORDER_DELAY_MS must be an integer" >&2; exit 1;; esac
+case "$REORDER_GAP" in ''|*[!0-9]*) echo "REORDER_GAP must be an integer" >&2; exit 1;; esac
 if [ "$FAULT_MODE" = multi-loss ]; then
     [ "$FAULT_SECOND_PACKET" -gt "$FAULT_FIRST_PACKET" ] || {
         echo "FAULT_SECOND_PACKET must be greater than FAULT_FIRST_PACKET" >&2
@@ -118,6 +122,21 @@ fi
     echo "RTT_MS must be a positive even integer" >&2
     exit 1
 }
+if [ "$FAULT_MODE" = reorder ]; then
+    [ "$REORDER_DELAY_MS" -gt 0 ] && [ "$REORDER_DELAY_MS" -lt "$RTT_MS" ] || {
+        echo "REORDER_DELAY_MS must be between 1 and RTT_MS-1" >&2
+        exit 1
+    }
+    [ "$REORDER_GAP" -ge 2 ] && [ "$REORDER_GAP" -le 64 ] || {
+        echo "REORDER_GAP must be between 2 and 64" >&2
+        exit 1
+    }
+    [ "$RECOVERY_EXPECTATION" = reorder-safe ] ||
+    [ "$RECOVERY_EXPECTATION" = dsack ] || {
+        echo "reorder FAULT_MODE requires RECOVERY_EXPECTATION=reorder-safe or dsack" >&2
+        exit 1
+    }
+fi
 [ "$RATE_MBIT" -gt 0 ] || { echo "RATE_MBIT must be positive" >&2; exit 1; }
 [ "$PAYLOAD_BYTES" -gt 0 ] || { echo "PAYLOAD_BYTES must be positive" >&2; exit 1; }
 
@@ -325,6 +344,12 @@ elif [ "$FAULT_MODE" = first-send-loss ]; then
     LOSS_MODE=deterministic-first-send
     tc qdisc replace dev "$IFB_NAME" root netem \
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
+elif [ "$FAULT_MODE" = reorder ]; then
+    LOSS_MODE=deterministic-reorder
+    REORDER_RETURN_DELAY_MS=$((RTT_MS - REORDER_DELAY_MS))
+    tc qdisc replace dev "$IFB_NAME" root netem \
+        delay "${REORDER_DELAY_MS}ms" reorder 100% gap "$REORDER_GAP" \
+        rate "${RATE_MBIT}mbit" limit "$QUEUE_PKTS"
 elif [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ]; then
     LOSS_MODE=none
     tc qdisc replace dev "$IFB_NAME" root netem \
@@ -335,8 +360,13 @@ else
         delay "${HALF_RTT_MS}ms" rate "${RATE_MBIT}mbit" \
         loss random "${LOSS_PCT}%" limit "$QUEUE_PKTS"
 fi
-tc qdisc replace dev "$TUN_NAME" root netem \
-    delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
+if [ "$LOSS_MODE" = deterministic-reorder ]; then
+    tc qdisc replace dev "$TUN_NAME" root netem \
+        delay "${REORDER_RETURN_DELAY_MS}ms" limit "$QUEUE_PKTS"
+else
+    tc qdisc replace dev "$TUN_NAME" root netem \
+        delay "${HALF_RTT_MS}ms" limit "$QUEUE_PKTS"
+fi
 
 if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burst ] || [ "$LOSS_MODE" = deterministic-repeated-burst ] || [ "$LOSS_MODE" = deterministic-lost-retransmission ] || [ "$LOSS_MODE" = deterministic-first-send ]; then
     iptables -N "$FAULT_CHAIN"
@@ -490,6 +520,12 @@ case "$LOSS_MODE" in
             exit 1
         }
         ;;
+    deterministic-reorder)
+        [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
+            echo "P6 BBR deterministic reorder path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
+            exit 1
+        }
+        ;;
     deterministic-multi)
         [ "$ifb_drops" -eq 0 ] && [ "$tun_drops" -eq 0 ] || {
             echo "P6 BBR deterministic-loss path had qdisc drops: ifb=$ifb_drops tun=$tun_drops" >&2
@@ -632,6 +668,21 @@ case "$LOSS_MODE" in
             }
         fi
         ;;
+    deterministic-reorder)
+        if [ "$RECOVERY_EXPECTATION" = reorder-safe ]; then
+            [ "$loss_events" -eq 0 ] && [ "$timeout_events" -eq 0 ] || {
+                echo "RACK safe reordering caused recovery: loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        else
+            [ "$loss_events" -ge 1 ] &&
+            [ "$loss_events" -le 3 ] &&
+            [ "$timeout_events" -eq 0 ] || {
+                echo "RACK DSACK reordering exceeded bounded spurious recovery: expected_loss=1..3 loss=$loss_events timeout=$timeout_events" >&2
+                exit 1
+            }
+        fi
+        ;;
     deterministic-lost-retransmission)
         if [ "$RECOVERY_EXPECTATION" = rack ]; then
             [ "$loss_events" -eq 2 ] && [ "$timeout_events" -eq 0 ] || {
@@ -666,11 +717,21 @@ esac
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
 delivered_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* delivered_payload_bytes=\([0-9][0-9]*\).*/\1/p')
 retransmit_events=$(printf '%s\n' "$delivery" | sed -n 's/.* retransmit_events=\([0-9][0-9]*\).*/\1/p')
+rack_dsack_events=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_dsack_events=\([0-9][0-9]*\).*/\1/p')
+rack_reordering_events=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reordering_events=\([0-9][0-9]*\).*/\1/p')
+rack_reo_wnd_mult=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_mult=\([0-9][0-9]*\).*/\1/p')
+rack_reo_wnd_mult_max=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_mult_max=\([0-9][0-9]*\).*/\1/p')
+rack_reo_wnd_persist=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_persist=\([0-9][0-9]*\).*/\1/p')
 metadata_failures=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_alloc_failures=\([0-9][0-9]*\).*/\1/p')
 metadata_misses=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_misses=\([0-9][0-9]*\).*/\1/p')
 live_slots=$(printf '%s\n' "$delivery" | sed -n 's/.* live_slots=\([0-9][0-9]*\).*/\1/p')
 [ -n "$delivered_bytes" ] && [ "$delivered_bytes" -eq "$PAYLOAD_BYTES" ] &&
 [ -n "$retransmit_events" ] &&
+[ -n "$rack_dsack_events" ] &&
+[ -n "$rack_reordering_events" ] &&
+[ -n "$rack_reo_wnd_mult" ] &&
+[ -n "$rack_reo_wnd_mult_max" ] &&
+[ -n "$rack_reo_wnd_persist" ] &&
 [ -n "$metadata_failures" ] && [ "$metadata_failures" -eq 0 ] &&
 [ -n "$metadata_misses" ] && [ "$metadata_misses" -eq 0 ] &&
 [ -n "$live_slots" ] && [ "$live_slots" -eq 0 ] || {
@@ -689,6 +750,30 @@ case "$LOSS_MODE" in
             echo "random-loss BBR long-flow observed no retransmission" >&2
             exit 1
         }
+        ;;
+    deterministic-reorder)
+        if [ "$RECOVERY_EXPECTATION" = reorder-safe ]; then
+            [ "$rack_reordering_events" -ge 1 ] &&
+            [ "$retransmit_events" -eq 0 ] &&
+            [ "$rack_dsack_events" -eq 0 ] || {
+                echo "safe reordering was not learned cleanly: reordered=$rack_reordering_events retrans=$retransmit_events dsack=$rack_dsack_events" >&2
+                exit 1
+            }
+        else
+            # RFC 8985 calls out the case where a too-small reo_wnd causes
+            # retransmission before Step 3 can observe the original reorder.
+            # D-SACK is the recovery signal for exactly that case, so do not
+            # require reordering_seen/rack_reordering_events here.
+            [ "$retransmit_events" -ge 1 ] &&
+            [ "$retransmit_events" -le 12 ] &&
+            [ "$rack_dsack_events" -ge 1 ] &&
+            [ "$rack_reo_wnd_mult_max" -ge 2 ] &&
+            [ "$rack_reo_wnd_mult" -ge 2 ] &&
+            [ "$rack_reo_wnd_persist" -ge 1 ] || {
+                echo "D-SACK adaptation gate failed or amplified retransmissions: retrans=$retransmit_events dsack=$rack_dsack_events mult=$rack_reo_wnd_mult max=$rack_reo_wnd_mult_max persist=$rack_reo_wnd_persist" >&2
+                exit 1
+            }
+        fi
         ;;
     deterministic-multi)
         [ "$retransmit_events" -ge 2 ] || {
@@ -806,12 +891,10 @@ if [ "$CC" = bbr-internal ]; then
             echo "clean BBR long-flow recorded recovery diagnostics unexpectedly" >&2
             exit 1
         }
-    elif [ "$RECOVERY_EXPECTATION" = tlp ]; then
-        # RFC 8985 section 7.4.2 permits a retransmitted TLP to repair the
-        # only tail loss before ordinary fast recovery starts. The dedicated
-        # TLP gate checks exact retransmission and zero-RTO behavior; a later
-        # ACK beyond TLP.end_seq is what triggers the special congestion
-        # response when such an ACK exists.
+    elif [ "$RECOVERY_EXPECTATION" = tlp ] ||
+         [ "$RECOVERY_EXPECTATION" = reorder-safe ]; then
+        # TLP can repair a tail loss outside fast recovery, and reordering
+        # below reo_wnd must not enter Recovery at all.
         :
     else
         [ "$recovery_enter_events" -ge 1 ] || {
@@ -829,16 +912,18 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s pacing_max_tx_gap_ns=%s retransmit_events=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s recovery_enter_events=%s recovery_exit_events=%s recovery_total_ns=%s recovery_max_ns=%s recovery_packet_conservation_acks=%s recovery_last_enter_cwnd_bytes=%s recovery_last_enter_inflight_bytes=%s recovery_min_cwnd_bytes=%s payload_integrity=ok\n' \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s pacing_max_tx_gap_ns=%s retransmit_events=%s rack_dsack_events=%s rack_reordering_events=%s rack_reo_wnd_mult=%s rack_reo_wnd_mult_max=%s rack_reo_wnd_persist=%s reorder_delay_ms=%s reorder_gap=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s recovery_enter_events=%s recovery_exit_events=%s recovery_total_ns=%s recovery_max_ns=%s recovery_packet_conservation_acks=%s recovery_last_enter_cwnd_bytes=%s recovery_last_enter_inflight_bytes=%s recovery_min_cwnd_bytes=%s payload_integrity=ok\n' \
     "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$pacing_max_tx_gap_ns" "$retransmit_events" \
+    "$rack_dsack_events" "$rack_reordering_events" "$rack_reo_wnd_mult" \
+    "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$REORDER_DELAY_MS" "$REORDER_GAP" \
     "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" \
     "$recovery_enter_events" "$recovery_exit_events" "$recovery_total_ns" "$recovery_max_ns" \
     "$recovery_packet_conservation_acks" "$recovery_last_enter_cwnd_bytes" \
     "$recovery_last_enter_inflight_bytes" "$recovery_min_cwnd_bytes" | tee "$OUT/summary.txt"
 
-printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_marker_count=%s\nfault_marker_gap_packets=%s\nfault_marker_prefix=%s\nfault_drops=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$fault_drops" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_marker_count=%s\nfault_marker_gap_packets=%s\nfault_marker_prefix=%s\nfault_drops=%s\nreorder_delay_ms=%s\nreorder_gap=%s\nrack_dsack_events=%s\nrack_reordering_events=%s\nrack_reo_wnd_mult=%s\nrack_reo_wnd_mult_max=%s\nrack_reo_wnd_persist=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$fault_drops" "$REORDER_DELAY_MS" "$REORDER_GAP" "$rack_dsack_events" "$rack_reordering_events" "$rack_reo_wnd_mult" "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"

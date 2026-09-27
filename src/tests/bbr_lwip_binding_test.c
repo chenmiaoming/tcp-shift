@@ -175,7 +175,7 @@ int main(void)
     CHECK((uint32_t)pcb->cwnd == 3U * payload);
     CHECK(stats.loss_events == 1U);
     CHECK(adapter.pacing_rate_bytes_per_sec != 0U);
-    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(pcb) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_recovery_exit(pcb, pcb->snd_nxt) != 0);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&adapter.hook) == 0U);
     CHECK(tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) == 0U);
     CHECK((uint32_t)pcb->cwnd == prior_cwnd);
