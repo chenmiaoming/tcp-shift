@@ -160,7 +160,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +                                  u16_t sacked_after)
 +{
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-+  u64_t remaining_ns = 0U;
++  uint64_t remaining_ns = 0U;
 +  int rack_status =
 +      tcp_shift_lwip_cc_hook_rack_loss_status(pcb, seg, &remaining_ns);
 +
