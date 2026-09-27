@@ -1893,6 +1893,13 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
         return 0;
     }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_tlp_reset(&adapter->rack_tlp);
+    if (adapter->recovery_timer_scheduled != 0U &&
+        adapter->recovery_timer_kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
+        tcp_shift_recovery_timer_cancel(adapter);
+    }
+#endif
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     loss.lost_bytes = lost_bytes;
     if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
@@ -1971,6 +1978,10 @@ static int tcp_shift_lwip_cc_on_timeout(void *arg, struct tcp_pcb *pcb)
         return 0;
     }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_tlp_reset(&adapter->rack_tlp);
+    tcp_shift_recovery_timer_cancel(adapter);
+#endif
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     if (tcp_shift_cc_on_timeout(&adapter->controller, &transport, &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
