@@ -1505,6 +1505,13 @@ static int tcp_shift_lwip_cc_prepare_ack(
         }
     }
     ack->smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_rack_set_rtt_estimates(
+        &adapter->rack_tlp,
+        adapter->rack_tlp.min_rtt_ns,
+        adapter->srtt.smoothed_rtt_ns);
+    tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
+#endif
     if (adapter->stats != NULL) {
         if (ack_time_ns != 0U) {
             adapter->stats->ack_observation_events++;
@@ -1604,6 +1611,13 @@ static int tcp_shift_lwip_cc_on_sack(
         }
     }
     ack.smoothed_rtt_ns = adapter->srtt.smoothed_rtt_ns;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    tcp_shift_rack_set_rtt_estimates(
+        &adapter->rack_tlp,
+        adapter->rack_tlp.min_rtt_ns,
+        adapter->srtt.smoothed_rtt_ns);
+    tcp_shift_rack_arm_detection_timer(adapter, pcb, ack_time_ns);
+#endif
     if (adapter->stats != NULL) {
         adapter->stats->ack_observation_events++;
         adapter->stats->ack_last_time_ns = ack_time_ns;
