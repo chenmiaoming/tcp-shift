@@ -132,10 +132,10 @@
  * Two 8-byte ranges are the minimum warning-clean value for the pinned lwIP
  * implementation under the project's -Werror build.
  */
-#ifndef TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
-#define TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY 0
+#ifndef TCP_SHIFT_SENDER_SACK
+#define TCP_SHIFT_SENDER_SACK 0
 #endif
-#if TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#if TCP_SHIFT_SENDER_SACK
 #define LWIP_TCP_SACK_OUT 1
 #define LWIP_TCP_MAX_SACK_NUM 2
 #else
