@@ -144,6 +144,8 @@ static int test_pto_and_probe_state(void)
     tcp_shift_rack_tlp_init(&state);
     tcp_shift_rack_set_rtt_estimates(
         &state, UINT64_C(80000000), UINT64_C(100000000));
+    CHECK(tcp_shift_tlp_probe_allowed(&state) == 0);
+    tcp_shift_tlp_note_rtt_sample(&state);
 
     CHECK(tcp_shift_tlp_calc_pto_ns(
               &state, 0U, UINT64_C(1000000000), 2U,
