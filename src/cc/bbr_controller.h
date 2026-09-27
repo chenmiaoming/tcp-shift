@@ -64,6 +64,10 @@ int tcp_shift_bbr_controller_on_ack(
  * packet-timed round marker to the latest cumulative delivered snapshot before
  * enabling packet conservation, equivalent to Linux BBR assigning
  * next_rtt_delivered=delivered on Recovery entry. */
+int tcp_shift_bbr_controller_note_loss(
+    struct tcp_shift_bbr_controller_state *state,
+    uint32_t lost_bytes);
+
 int tcp_shift_bbr_controller_recovery_enter(
     struct tcp_shift_bbr_controller_state *state,
     const struct tcp_shift_cc_transport *transport,
