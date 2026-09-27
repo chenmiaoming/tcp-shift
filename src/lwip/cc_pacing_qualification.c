@@ -227,6 +227,24 @@ static int tcp_shift_pacing_qualification_quantum_on_loss(
     return result;
 }
 
+static int tcp_shift_pacing_qualification_quantum_on_rack_retrans_loss(
+    void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+    struct tcp_shift_pacing_qualification_quantum_flow *flow;
+    int result = 0;
+
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops
+                ->on_rack_retrans_loss != NULL) {
+        result = tcp_shift_pacing_qualification_base_hook_ops
+                     ->on_rack_retrans_loss(arg, pcb, lost_bytes);
+    }
+    flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    tcp_shift_pacing_qualification_quantum_refresh(flow);
+    return result;
+}
+
 static void tcp_shift_pacing_qualification_quantum_on_tlp_dupack(
     void *arg, struct tcp_pcb *pcb, unsigned sack_seen)
 {
@@ -357,6 +375,8 @@ static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_pacing_qualification_quantum_hook_ops = {
         .on_ack = tcp_shift_pacing_qualification_quantum_on_ack,
         .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
+        .on_rack_retrans_loss =
+            tcp_shift_pacing_qualification_quantum_on_rack_retrans_loss,
         .on_tlp_loss =
             tcp_shift_pacing_qualification_quantum_on_tlp_loss,
         .on_tlp_dupack =
