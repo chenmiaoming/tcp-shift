@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -826,6 +827,15 @@ static uint32_t tcp_shift_delivery_outstanding_payload(
  * so signed modular distance gives a wrap-safe position of ack_seq relative to
  * this slot's first payload byte. */
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_rack_loss_trace_enabled(void)
+{
+    const char *value = getenv("TCP_SHIFT_RACK_LOSS_TRACE");
+    return value != NULL && value[0] != '\0' &&
+                   !(value[0] == '0' && value[1] == '\0');
+}
+
+static unsigned tcp_shift_rack_loss_trace_events;
+
 static int tcp_shift_rack_seq_before_u32(uint32_t left, uint32_t right)
 {
     return (int32_t)(left - right) < 0;
@@ -2134,6 +2144,27 @@ static int tcp_shift_lwip_cc_rack_loss_status(void *arg,
     if (tcp_shift_rack_loss_remaining(
             &adapter->rack_tlp, &rack_segment, now_ns, in_recovery,
             &remaining64)) {
+        if (tcp_shift_rack_loss_trace_enabled() &&
+            tcp_shift_rack_loss_trace_events < 128U) {
+            fprintf(stderr,
+                    "tcp-shift-rack-loss-trace: seq=%u end=%u xmit_ns=%llu "
+                    "now_ns=%llu rack_xmit_ns=%llu rack_end=%u rack_rtt_ns=%llu "
+                    "min_rtt_ns=%llu srtt_ns=%llu reo_wnd_ns=%llu "
+                    "segs_sacked=%u reordering=%u in_recovery=%u retrans=%u\n",
+                    rack_segment.seq_start, rack_segment.end_seq,
+                    (unsigned long long)rack_segment.xmit_ts_ns,
+                    (unsigned long long)now_ns,
+                    (unsigned long long)adapter->rack_tlp.rack_xmit_ts_ns,
+                    adapter->rack_tlp.rack_end_seq,
+                    (unsigned long long)adapter->rack_tlp.rack_rtt_ns,
+                    (unsigned long long)adapter->rack_tlp.min_rtt_ns,
+                    (unsigned long long)adapter->rack_tlp.srtt_ns,
+                    (unsigned long long)adapter->rack_tlp.reo_wnd_ns,
+                    adapter->rack_tlp.segs_sacked,
+                    adapter->rack_tlp.reordering_seen,
+                    in_recovery, rack_segment.retransmitted);
+            tcp_shift_rack_loss_trace_events++;
+        }
         return 1;
     }
     if (remaining_ns != NULL) {
