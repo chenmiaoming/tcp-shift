@@ -117,11 +117,16 @@ results = [None] * flows
 
 
 def worker(index, conn):
-    start.wait()
+    # Match the Linux reference harness: finish CPU-heavy payload construction
+    # before synchronizing the send start. Building 2 MiB after the barrier
+    # serializes under the Python GIL and accidentally staggers the four flows,
+    # allowing later flows to take their first RTT sample behind an already
+    # populated bottleneck queue.
     payload = bytes((((offset * 73) + 19 + index * 17) & 0xFF)
                     for offset in range(payload_bytes))
     header = struct.pack("!IQ", index, payload_bytes)
     digest = hashlib.sha256(payload).hexdigest()
+    start.wait()
     conn.sendall(header)
     conn.sendall(payload)
     conn.shutdown(socket.SHUT_WR)
