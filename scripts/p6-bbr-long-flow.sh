@@ -16,6 +16,7 @@ FAULT_BURST_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_PACKETS:-3}
 FAULT_BURST_REPEATS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_REPEATS:-1}
 FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_BURST_GAP_PACKETS:-300}
 FAULT_RETRANS_MARKER=${TCP_SHIFT_P6_BBR_LONG_FAULT_RETRANS_MARKER:-TCP_SHIFT_SACK_RETRANS_LOSS}
+FAULT_FOLLOWUP_MARKER=${TCP_SHIFT_P6_BBR_LONG_FAULT_FOLLOWUP_MARKER:-TCP_SHIFT_RACK_FOLLOWUP_LOSS}
 FAULT_MARKER_COUNT=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT:-28}
 FAULT_MARKER_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS:-96}
 FAULT_MARKER_PREFIX=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX:-TSFS}
@@ -166,6 +167,7 @@ trap cleanup EXIT HUP INT TERM
 
 python3 - "$BACKEND_PORT" "$PAYLOAD_BYTES" "$FAULT_MODE" "$FAULT_FIRST_PACKET" "$FAULT_RETRANS_MARKER" \
     "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
+    "$FAULT_SECOND_PACKET" "$FAULT_FOLLOWUP_MARKER" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -179,6 +181,8 @@ fault_marker = sys.argv[5].encode("ascii")
 fault_marker_count = int(sys.argv[6])
 fault_marker_gap_packets = int(sys.argv[7])
 fault_marker_prefix = sys.argv[8]
+fault_second_packet = int(sys.argv[9])
+fault_followup_marker = sys.argv[10].encode("ascii")
 payload = bytearray(((index * 73 + 19) & 0xFF) for index in range(length))
 
 if fault_mode == "first-send-loss":
@@ -214,9 +218,23 @@ if fault_mode == "lost-retransmission":
             f"offset={marker_offset} marker={len(marker_region)} length={length}"
         )
     payload[marker_offset : marker_offset + len(marker_region)] = marker_region
+
+    # RFC 8985's lost-retransmission inference needs a later transmission to
+    # be delivered. Embed a second, distinct marker so the RACK qualification
+    # can drop another original segment and obtain a later successful repair
+    # as timing evidence after the first retransmission is lost.
+    followup_offset = fault_second_packet * 1460 + 256
+    followup_region = fault_followup_marker * 4
+    if followup_offset + len(followup_region) >= length:
+        raise SystemExit(
+            f"RACK follow-up marker exceeds payload: "
+            f"offset={followup_offset} marker={len(followup_region)} length={length}"
+        )
+    payload[followup_offset : followup_offset + len(followup_region)] = followup_region
     print(
         f"backend-fault-marker offset={marker_offset} "
-        f"bytes={len(marker_region)} marker={sys.argv[5]}",
+        f"bytes={len(marker_region)} marker={sys.argv[5]} "
+        f"followup_offset={followup_offset} followup_marker={sys.argv[10]}",
         flush=True,
     )
 
@@ -349,6 +367,15 @@ if [ "$LOSS_MODE" = deterministic-multi ] || [ "$LOSS_MODE" = deterministic-burs
                 -m statistic --mode nth --every 10000 --packet 0 -j DROP
             fault_drop_i=$((fault_drop_i + 1))
         done
+        if [ "$RECOVERY_EXPECTATION" = rack ]; then
+            # RFC 8985 Figure 1 detects a lost retransmission from a later
+            # delivered retransmission. Drop one additional original segment
+            # so its successful repair provides that later xmit timestamp.
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m string --algo bm --string "$FAULT_FOLLOWUP_MARKER" \
+                -m statistic --mode nth --every 10000 --packet 0 -j DROP
+        fi
     elif [ "$LOSS_MODE" = deterministic-multi ]; then
         # Keep several successful packets between two one-shot losses so the
         # second hole is exposed by a partial ACK inside one recovery flight.
@@ -510,9 +537,13 @@ case "$LOSS_MODE" in
         }
         fault_drops=$(awk '$1 ~ /^[0-9]+$/ && $3 == "DROP" {sum += $1} END {print sum + 0}' \
             "$OUT/iptables-fault.txt")
-        [ "$fault_drops" -eq 2 ] || {
+        expected_fault_drops=2
+        if [ "$RECOVERY_EXPECTATION" = rack ]; then
+            expected_fault_drops=3
+        fi
+        [ "$fault_drops" -eq "$expected_fault_drops" ] || {
             cat "$OUT/iptables-fault.txt" >&2 || true
-            echo "P6 BBR lost-retransmission expected original + first retransmission drops: drops=$fault_drops" >&2
+            echo "P6 BBR lost-retransmission expected $expected_fault_drops deterministic drops: drops=$fault_drops" >&2
             exit 1
         }
         ;;
@@ -687,8 +718,8 @@ case "$LOSS_MODE" in
         ;;
     deterministic-lost-retransmission)
         if [ "$RECOVERY_EXPECTATION" = rack ]; then
-            [ "$retransmit_events" -eq 2 ] || {
-                echo "RACK lost-retransmission repair amplified retransmissions: expected=2 actual=$retransmit_events" >&2
+            [ "$retransmit_events" -eq 3 ] || {
+                echo "RACK lost-retransmission repair count mismatch: expected=3 actual=$retransmit_events" >&2
                 exit 1
             }
         else
