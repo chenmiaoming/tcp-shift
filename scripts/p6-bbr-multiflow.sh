@@ -20,7 +20,6 @@ BACKEND_PORT=${TCP_SHIFT_P6_BBR_MULTI_BACKEND_PORT:-19163}
 
 RUNTIME_PID=
 BACKEND_PID=
-QDISC_SAMPLER_PID=
 
 mkdir -p "$OUT"
 : > "$OUT/backend.stdout"
@@ -29,7 +28,6 @@ mkdir -p "$OUT"
 : > "$OUT/runtime.stderr"
 : > "$OUT/client.stdout"
 : > "$OUT/client.stderr"
-: > "$OUT/qdisc-sampler.stderr"
 
 [ "$(id -u)" -eq 0 ] || {
     echo "P6 BBR multi-flow harness must run as root for TUN, IFB and netem" >&2
@@ -75,7 +73,6 @@ stop_pid()
 cleanup()
 {
     set +e
-    stop_pid "${QDISC_SAMPLER_PID:-}"
     stop_pid "${RUNTIME_PID:-}"
     stop_pid "${BACKEND_PID:-}"
     tc qdisc del dev "$TUN_NAME" root >/dev/null 2>&1 || true
@@ -117,11 +114,9 @@ results = [None] * flows
 
 
 def worker(index, conn):
-    # Match the Linux reference harness: finish CPU-heavy payload construction
-    # before synchronizing the send start. Building 2 MiB after the barrier
-    # serializes under the Python GIL and accidentally staggers the four flows,
-    # allowing later flows to take their first RTT sample behind an already
-    # populated bottleneck queue.
+    # Match the Linux reference harness: complete CPU-heavy payload setup
+    # before synchronizing the send start. Otherwise CPython's GIL can stagger
+    # the flows after the barrier and contaminate early RTT observations.
     payload = bytes((((offset * 73) + 19 + index * 17) & 0xFF)
                     for offset in range(payload_bytes))
     header = struct.pack("!IQ", index, payload_bytes)
@@ -216,73 +211,6 @@ tc qdisc replace dev "$TUN_NAME" root netem \
 
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-before.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-before.txt"
-
-python3 - "$IFB_NAME" "$OUT/ifb-qdisc-samples.tsv" \
-    2> "$OUT/qdisc-sampler.stderr" <<'PY' &
-import re
-import signal
-import subprocess
-import sys
-import time
-
-device = sys.argv[1]
-path = sys.argv[2]
-running = True
-sent_re = re.compile(
-    r"Sent ([0-9]+) bytes ([0-9]+) pkt \(dropped ([0-9]+),"
-)
-backlog_re = re.compile(r"backlog ([0-9]+)([KMG]?b) ([0-9]+)p")
-units = {"b": 1, "Kb": 1024, "Mb": 1024 * 1024, "Gb": 1024 * 1024 * 1024}
-
-
-def stop(_signum, _frame):
-    global running
-    running = False
-
-
-signal.signal(signal.SIGTERM, stop)
-signal.signal(signal.SIGINT, stop)
-started_ns = time.monotonic_ns()
-next_sample_ns = started_ns
-interval_ns = 10_000_000
-
-with open(path, "w", buffering=1) as out:
-    out.write(
-        "monotonic_ns\telapsed_ms\tsent_bytes\tsent_packets"
-        "\tdropped_packets\tbacklog_bytes\tbacklog_packets\n"
-    )
-    while running:
-        sample = subprocess.run(
-            ["tc", "-s", "qdisc", "show", "dev", device],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        ).stdout
-        now_ns = time.monotonic_ns()
-        sent = sent_re.search(sample)
-        backlog = backlog_re.search(sample)
-        sent_bytes = int(sent.group(1)) if sent else -1
-        sent_packets = int(sent.group(2)) if sent else -1
-        dropped = int(sent.group(3)) if sent else -1
-        backlog_bytes = (
-            int(backlog.group(1)) * units[backlog.group(2)] if backlog else -1
-        )
-        backlog_packets = int(backlog.group(3)) if backlog else -1
-        out.write(
-            f"{now_ns}\t{(now_ns - started_ns) / 1_000_000.0:.3f}\t"
-            f"{sent_bytes}\t{sent_packets}\t{dropped}\t"
-            f"{backlog_bytes}\t{backlog_packets}\n"
-        )
-        next_sample_ns += interval_ns
-        sleep_ns = next_sample_ns - time.monotonic_ns()
-        if sleep_ns > 0:
-            time.sleep(sleep_ns / 1_000_000_000.0)
-PY
-QDISC_SAMPLER_PID=$!
-# Keep sampler stderr in the artifact without interleaving it into the runtime
-# trace; a premature sampler exit is treated as a qualification failure.
-exec 3>&2
 
 python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOWS" "$PAYLOAD_BYTES" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
@@ -401,37 +329,17 @@ if ! wait "$BACKEND_PID"; then
 fi
 BACKEND_PID=
 
-if ! kill -0 "$QDISC_SAMPLER_PID" 2>/dev/null; then
-    wait "$QDISC_SAMPLER_PID" >/dev/null 2>&1 || true
-    QDISC_SAMPLER_PID=
-    cat "$OUT/qdisc-sampler.stderr" >&3 || true
-    echo "P6 BBR multi-flow qdisc sampler exited early" >&3
-    exit 1
-fi
-kill -TERM "$QDISC_SAMPLER_PID"
-if ! wait "$QDISC_SAMPLER_PID"; then
-    QDISC_SAMPLER_PID=
-    cat "$OUT/qdisc-sampler.stderr" >&3 || true
-    echo "P6 BBR multi-flow qdisc sampler failed" >&3
-    exit 1
-fi
-QDISC_SAMPLER_PID=
-sample_lines=$(wc -l < "$OUT/ifb-qdisc-samples.tsv")
-[ "$sample_lines" -ge 2 ] || {
-    echo "P6 BBR multi-flow qdisc sampler produced no data" >&3
-    exit 1
-}
-
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
 ifb_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/ifb-qdisc-after.txt" | head -n 1)
 tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.txt" | head -n 1)
+qdisc_failed=0
 [ -n "$ifb_drops" ] && [ "$ifb_drops" -eq 0 ] &&
 [ -n "$tun_drops" ] && [ "$tun_drops" -eq 0 ] || {
+    qdisc_failed=1
     cat "$OUT/ifb-qdisc-after.txt" >&2 || true
     cat "$OUT/tun-qdisc-after.txt" >&2 || true
     echo "P6 BBR multi-flow qdisc dropped packets: ifb=${ifb_drops:-missing} tun=${tun_drops:-missing}" >&2
-    exit 1
 }
 
 sleep 0.2
@@ -447,6 +355,11 @@ RUNTIME_PID=
 cat "$OUT/client.stdout"
 cat "$OUT/backend.stdout"
 cat "$OUT/runtime.stderr" >&2
+
+if [ "$qdisc_failed" -ne 0 ]; then
+    echo "P6 BBR multi-flow qdisc gate failed after runtime telemetry capture" >&2
+    exit 1
+fi
 
 grep -F "bridge_peak_active_flows=$FLOWS" "$OUT/runtime.stderr" >/dev/null
 grep -F 'bridge_active_flows=0' "$OUT/runtime.stderr" >/dev/null
