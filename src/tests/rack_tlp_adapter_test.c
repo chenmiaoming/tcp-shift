@@ -135,7 +135,9 @@ int main(void)
     pcb->snd_nxt = seq;
 
     CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
-    adapter.sack_delivery_policy = 1U;
+    CHECK(adapter.sack_delivery_policy == 0U);
+    CHECK(stats.ack_events == 0U);
+    CHECK(stats.policy_updates == 0U);
 
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment1, seq, payload);
     pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
@@ -151,6 +153,12 @@ int main(void)
     sack.left = seq + payload;
     sack.right = seq + (2U * payload);
     CHECK(tcp_shift_lwip_cc_hook_sack(pcb, seq, &sack, 1U) != 0);
+    /* Generic Reno does not consume SACK-only ACK credit, but RFC 8985 must
+     * still receive the delivery/timing evidence and arm loss detection. */
+    CHECK(stats.delivery_sack_events == 1U);
+    CHECK(stats.delivery_sack_payload_bytes == payload);
+    CHECK(stats.ack_events == 0U);
+    CHECK(stats.policy_updates == 0U);
     CHECK(adapter.rack_tlp.rack_xmit_ts_ns != 0U);
     CHECK(adapter.rack_tlp.rack_end_seq == sack.right);
     CHECK(adapter.rack_tlp.rack_rtt_ns != 0U);

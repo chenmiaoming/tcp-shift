@@ -1,6 +1,6 @@
 # RFC 8985 RACK-TLP
 
-Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, application-limited tail repair, lost-retransmission recovery, deterministic 28-drop recovery, and reordering/D-SACK adaptation are live-qualified, experimental/default-OFF.
+Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, application-limited tail repair, lost-retransmission recovery, deterministic 28-drop recovery across Reno/CUBIC/internal-BBR, and reordering/D-SACK adaptation are live-qualified, experimental/default-OFF.
 
 tcp-shift is moving sender loss detection from a fixed DupAck/SACK-count heuristic toward RFC 8985 RACK-TLP. This work is deliberately transport-level and independent of Reno, CUBIC, and BBR controller policy.
 
@@ -84,7 +84,10 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - the lost-retransmission gate requires exactly three injected drops, three retransmission events, two congestion-loss events, zero timeout fallback, zero unrelated qdisc drops, and exact payload integrity;
 - the 28-drop gate exposed and now prevents a same-ACK ordering bug: lwIP parses SACK options before tcp_receive() advances the cumulative ACK, so processing each source as a separate RFC 8985 pass could advance RACK.fack from a higher SACK block and then misclassify the lower cumulatively ACKed segment from that same ACK as reordering; advancing mixed ACKs now defer RACK Step 2/Step 3 until both cumulative and selective delivery are marked, preserving the RFC-required combined ordering;
 - after that fix, the established 260 ms / 10 Mbit/s / 4 MiB deterministic first-send reference is live-qualified with RACK-TLP enabled: 28 explicit drops, exactly 28 retransmissions, zero false reordering events, zero timeout/RTO fallback, zero unrelated qdisc drops, exact payload integrity, 7 controller recovery episodes, and 5.279809 Mbit/s goodput;
-- on the same PR head, the sender-SACK-only tcp-shift reference measured 5.457767 Mbit/s with the same 7 recovery episodes, while the Linux BBR reference measured 5.493823 Mbit/s. The false recovery fragmentation is therefore closed; the remaining RACK-enabled goodput delta is retained for the controller-matrix/performance follow-up rather than treated as an RFC correctness failure;
+- on the same PR head, the sender-SACK-only tcp-shift reference measured 5.457767 Mbit/s with the same 7 recovery episodes, while the Linux BBR reference measured 5.493823 Mbit/s. The false recovery fragmentation is therefore closed; the remaining RACK-enabled goodput delta is retained as a performance follow-up rather than treated as an RFC correctness failure;
+- the Reno/CUBIC controller-matrix gate exposed a second integration bug: the production transport-pacing selector replaced the base hook table without forwarding `on_sack` or `on_recovery_exit`, while the base SACK callback itself was incorrectly gated by the internal-BBR-only `sack_delivery_policy`; as a result, loss-based controllers negotiated SACK but RACK received no selective-delivery evidence and fell back to repeated RTO recovery;
+- the selector now forwards the transport-recovery hooks, and RACK SACK observation is independent of whether the congestion controller consumes SACKed bytes as ACK credit. Reno/CUBIC continue to grow cwnd from cumulative ACKs, while RACK still receives the RFC 8985 scoreboard/timing evidence;
+- the deterministic controller matrix is now live-qualified on the same 260 ms / 10 Mbit/s / 4 MiB / 28-drop shape: Reno completed with 28 retransmissions, zero false reordering, zero timeout fallback, zero qdisc drops, and exact payload integrity; CUBIC met the same invariants; internal BBR also met the same transport invariants. The measured Reno/CUBIC goodput on this roughly 1% deterministic-loss shape is intentionally not a parity target for BBR because their loss-based congestion responses differ by design;
 - congestion-control callbacks kept separate from the transport loss detector; RACK reports the second congestion indication without moving the existing fast-recovery boundary;
 - deterministic reordering below the active reordering window is live-qualified with observed reordering, zero retransmissions, zero congestion-loss events, zero RTOs, zero qdisc drops, and exact payload delivery;
 - RFC 2883 D-SACK classification uses the cumulative ACK carried in the same packet rather than stale sender state;
@@ -93,7 +96,6 @@ The implementation is beyond the core-math-only stage. The experimental build no
 The feature remains **experimental/default-OFF** because the current live qualification is still narrow. Before considering production/default enablement, add fail-closed live gates for:
 
 - recovery-timer cancellation/stale-release lifecycle under connection teardown;
-- incremental memory and wakeup/timer cost;
-- Reno, CUBIC, and internal BBR recovery behavior with RACK-TLP enabled, while preserving unchanged production behavior when it is disabled.
+- incremental memory and wakeup/timer cost.
 
-Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, ordinary and application-limited tail-loss TLP, lost-retransmission recovery, exact 28-drop recovery accounting, and reordering/D-SACK adaptation qualified on deterministic paths**, not complete RFC 8985 or production conformance.
+Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, ordinary and application-limited tail-loss TLP, lost-retransmission recovery, exact 28-drop recovery accounting across Reno/CUBIC/internal-BBR, and reordering/D-SACK adaptation qualified on deterministic paths**, not complete RFC 8985 or production conformance.

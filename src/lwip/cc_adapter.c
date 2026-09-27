@@ -1885,13 +1885,15 @@ static int tcp_shift_lwip_cc_on_sack(
     unsigned defer_rack = 0U;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
-        adapter->sack_delivery_policy == 0U || ranges == NULL ||
-        range_count == 0U) {
+        ranges == NULL || range_count == 0U) {
         return 0;
     }
 
 #if !defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) || !TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     (void)ack_seq;
+    if (adapter->sack_delivery_policy == 0U) {
+        return 0;
+    }
 #endif
     memset(&ack, 0, sizeof(ack));
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
@@ -1974,6 +1976,15 @@ static int tcp_shift_lwip_cc_on_sack(
         adapter->stats->ack_observation_events++;
         adapter->stats->ack_last_time_ns = ack_time_ns;
         adapter->stats->ack_last_smoothed_rtt_ns = ack.smoothed_rtt_ns;
+    }
+
+    /* RFC 8985 needs SACK delivery/timing evidence regardless of the
+     * congestion controller. sack_delivery_policy only means the controller
+     * itself consumes selectively delivered bytes as ACK credit (internal
+     * BBR). Reno/CUBIC keep cumulative-ACK cwnd accounting, so stop after the
+     * RACK/TLP observation and timer updates above. */
+    if (adapter->sack_delivery_policy == 0U) {
+        return 1;
     }
 
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);

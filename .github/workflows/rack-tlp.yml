@@ -274,6 +274,70 @@ jobs:
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
           grep -F 'payload_integrity=ok' "$out/summary.txt"
 
+      - name: Prove Reno survives deterministic 28-drop RACK recovery
+        run: |
+          out="$PWD/.build/rack-tlp-first-send-28-reno"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=reno \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=RACKR \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrack28r \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifb28r \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18184 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19184 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'cc=reno' "$out/summary.txt"
+          grep -F 'fault_drops=28' "$out/summary.txt"
+          grep -F 'retransmit_events=28' "$out/summary.txt"
+          grep -E 'tcp-shift-p2-delivery: .*sack_events=[1-9][0-9]*' "$out/runtime.stderr"
+          grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+          grep -F 'qdisc_drops=0/0' "$out/summary.txt"
+          grep -F 'payload_integrity=ok' "$out/summary.txt"
+
+      - name: Prove CUBIC survives deterministic 28-drop RACK recovery
+        run: |
+          out="$PWD/.build/rack-tlp-first-send-28-cubic"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=RACKC \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrack28c \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifb28c \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18185 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19185 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'cc=cubic' "$out/summary.txt"
+          grep -F 'fault_drops=28' "$out/summary.txt"
+          grep -F 'retransmit_events=28' "$out/summary.txt"
+          grep -E 'tcp-shift-p2-delivery: .*sack_events=[1-9][0-9]*' "$out/runtime.stderr"
+          grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+          grep -F 'qdisc_drops=0/0' "$out/summary.txt"
+          grep -F 'payload_integrity=ok' "$out/summary.txt"
+
       - name: Prove reordering below reo_wnd causes no recovery
         run: |
           out="$PWD/.build/rack-tlp-reorder-safe"
@@ -357,6 +421,12 @@ jobs:
             if [ -f .build/rack-tlp-first-send-28/summary.txt ]; then
               cat .build/rack-tlp-first-send-28/summary.txt
             fi
+            if [ -f .build/rack-tlp-first-send-28-reno/summary.txt ]; then
+              cat .build/rack-tlp-first-send-28-reno/summary.txt
+            fi
+            if [ -f .build/rack-tlp-first-send-28-cubic/summary.txt ]; then
+              cat .build/rack-tlp-first-send-28-cubic/summary.txt
+            fi
             if [ -f .build/rack-tlp-reorder-safe/summary.txt ]; then
               cat .build/rack-tlp-reorder-safe/summary.txt
             fi
@@ -365,7 +435,7 @@ jobs:
             fi
             echo '~~~'
             echo
-            echo "Runtime behavior remains experimental/default-OFF pending teardown, controller-matrix, and resource-cost qualification."
+            echo "Runtime behavior remains experimental/default-OFF pending teardown and resource-cost qualification."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload RACK-TLP diagnostics
@@ -380,6 +450,8 @@ jobs:
             .build/rack-tlp-clean-long-rtt
             .build/rack-tlp-lost-retransmission
             .build/rack-tlp-first-send-28
+            .build/rack-tlp-first-send-28-reno
+            .build/rack-tlp-first-send-28-cubic
             .build/rack-tlp-reorder-safe
             .build/rack-tlp-reorder-dsack
           if-no-files-found: warn
