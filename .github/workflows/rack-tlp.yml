@@ -172,6 +172,7 @@ jobs:
             TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
             TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=lost-retransmission \
             TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET=84 \
             TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=rack \
             TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsrackrtx \
             TCP_SHIFT_P6_BBR_LONG_IFB_NAME=rackifbrtx \
@@ -182,8 +183,8 @@ jobs:
           sudo chown -R "$USER:$USER" "$out"
           grep -F 'loss_mode=deterministic-lost-retransmission' "$out/summary.txt"
           grep -F 'recovery_expectation=rack' "$out/summary.txt"
-          grep -F 'fault_drops=2' "$out/summary.txt"
-          grep -F 'retransmit_events=2' "$out/summary.txt"
+          grep -F 'fault_drops=3' "$out/summary.txt"
+          grep -F 'retransmit_events=3' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
 
       - name: Record qualification boundary
