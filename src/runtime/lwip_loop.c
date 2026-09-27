@@ -195,6 +195,66 @@ static int tcp_shift_lwip_loop_pacer_ready(void *arg, uint32_t events)
     return 0;
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_lwip_loop_recovery_ready(void *arg, uint32_t events)
+{
+    struct tcp_shift_lwip_loop *loop = arg;
+    struct tcp_shift_pacer_event raw;
+    struct tcp_shift_lwip_loop_recovery_event event;
+    uint64_t expirations;
+    uint64_t now_ns;
+    int result;
+
+    if ((events & (EPOLLERR | EPOLLHUP)) != 0U) {
+        errno = EIO;
+        return -1;
+    }
+    if ((events & EPOLLIN) == 0U) {
+        return 0;
+    }
+
+    loop->recovery_timer_wakeups++;
+    result = tcp_shift_pacer_consume_timer(
+        &loop->recovery_timer, &expirations);
+    if (result < 0) {
+        return -1;
+    }
+    if (result == 0 || expirations == 0U) {
+        return 0;
+    }
+    if (tcp_shift_lwip_loop_monotonic_ns(&now_ns) < 0) {
+        return -1;
+    }
+
+    for (;;) {
+        result = tcp_shift_pacer_pop_due(
+            &loop->recovery_timer, now_ns, &raw);
+        if (result < 0) {
+            return -1;
+        }
+        if (result == 0) {
+            break;
+        }
+        if (loop->recovery_release == NULL) {
+            errno = EIO;
+            return -1;
+        }
+
+        event.deadline_ns = raw.deadline_ns;
+        event.flow_id = raw.flow_id;
+        event.generation = raw.generation;
+        event.kind = raw.bytes;
+        loop->recovery_release_callbacks++;
+        if (loop->recovery_release(
+                loop->recovery_release_arg, &event, now_ns) < 0) {
+            loop->recovery_callback_errors++;
+            return -1;
+        }
+    }
+    return 0;
+}
+#endif
+
 static int tcp_shift_lwip_loop_sync_interest(struct tcp_shift_lwip_loop *loop)
 {
     uint32_t wanted = tcp_shift_lwip_loop_tun_events(loop);
@@ -237,6 +297,10 @@ int tcp_shift_lwip_loop_init(struct tcp_shift_lwip_loop *loop,
     loop->tun_watch.fd = -1;
     loop->pacer.timer_fd = -1;
     loop->pacer_watch.fd = -1;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    loop->recovery_timer.timer_fd = -1;
+    loop->recovery_timer_watch.fd = -1;
+#endif
 
     loop->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (loop->epoll_fd < 0) {
@@ -264,9 +328,28 @@ int tcp_shift_lwip_loop_init(struct tcp_shift_lwip_loop *loop,
         saved_errno = errno;
         goto fail;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (tcp_shift_pacer_init(&loop->recovery_timer,
+                             TCP_SHIFT_LWIP_LOOP_PACER_MAX_EVENTS) < 0) {
+        saved_errno = errno;
+        goto fail;
+    }
+    if (tcp_shift_lwip_loop_watch_add(
+            loop, &loop->recovery_timer_watch,
+            tcp_shift_pacer_fd(&loop->recovery_timer), EPOLLIN,
+            tcp_shift_lwip_loop_recovery_ready, loop) < 0) {
+        saved_errno = errno;
+        goto fail;
+    }
+#endif
     return 0;
 
 fail:
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (loop->recovery_timer.timer_fd >= 0) {
+        tcp_shift_pacer_close(&loop->recovery_timer);
+    }
+#endif
     if (loop->pacer.timer_fd >= 0) {
         tcp_shift_pacer_close(&loop->pacer);
     }
