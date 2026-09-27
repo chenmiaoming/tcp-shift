@@ -103,8 +103,21 @@ int tcp_shift_rack_note_delivered(struct tcp_shift_rack_tlp_state *state,
         state->rack_end_seq = segment->end_seq;
     }
 
-    /* RFC 8985 section 6.2 step 3: only an original transmission delivered
-     * below the forward ACK is evidence of reordering. */
+    state->rtt_sample_since_probe = 1U;
+    return 1;
+}
+
+void tcp_shift_rack_detect_reordering(
+    struct tcp_shift_rack_tlp_state *state,
+    const struct tcp_shift_rack_segment *segment)
+{
+    if (state == NULL || segment == NULL) {
+        return;
+    }
+
+    /* RFC 8985 section 6.2 step 3 is a distinct pass in ascending end_seq
+     * order. Keeping it separate from the xmit_ts-ordered RACK.segment update
+     * avoids treating multiple segments delivered by one ACK as reordering. */
     if (state->fack == 0U || tcp_shift_rack_seq_after(segment->end_seq,
                                                        state->fack)) {
         state->fack = segment->end_seq;
@@ -112,9 +125,6 @@ int tcp_shift_rack_note_delivered(struct tcp_shift_rack_tlp_state *state,
                segment->retransmitted == 0U) {
         state->reordering_seen = 1U;
     }
-
-    state->rtt_sample_since_probe = 1U;
-    return 1;
 }
 
 void tcp_shift_rack_note_dsack(struct tcp_shift_rack_tlp_state *state,
