@@ -1,6 +1,6 @@
 # RFC 8985 RACK-TLP
 
-Status: active transport-recovery implementation; core RFC state plus live RACK timer and tail-loss TLP paths are present, experimental/default-OFF.
+Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, lost-retransmission recovery, and deterministic reordering/D-SACK adaptation are live-qualified, experimental/default-OFF.
 
 tcp-shift is moving sender loss detection from a fixed DupAck/SACK-count heuristic toward RFC 8985 RACK-TLP. This work is deliberately transport-level and independent of Reno, CUBIC, and BBR controller policy.
 
@@ -80,16 +80,17 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
 - an RFC-shaped lost-retransmission gate: one original segment and its first retransmission are dropped, a later lost original segment is successfully retransmitted to provide newer RACK timing evidence, and the first hole is then repaired again without RTO;
 - the lost-retransmission gate requires exactly three injected drops, three retransmission events, two congestion-loss events, zero timeout fallback, zero unrelated qdisc drops, and exact payload integrity;
-- congestion-control callbacks kept separate from the transport loss detector; RACK reports the second congestion indication without moving the existing fast-recovery boundary.
+- congestion-control callbacks kept separate from the transport loss detector; RACK reports the second congestion indication without moving the existing fast-recovery boundary;
+- deterministic reordering below the active reordering window is live-qualified with observed reordering, zero retransmissions, zero congestion-loss events, zero RTOs, zero qdisc drops, and exact payload delivery;
+- RFC 2883 D-SACK classification uses the cumulative ACK carried in the same packet rather than stale sender state;
+- deterministic reordering beyond the initial reordering window is live-qualified to trigger bounded spurious recovery, D-SACK feedback, RACK.reo_wnd_mult growth, and persistence without RTO or qdisc loss.
 
 The feature remains **experimental/default-OFF** because the current live qualification is still narrow. Before considering production/default enablement, add fail-closed live gates for:
 
-- packet reordering both below and above the computed reordering window;
-- DSACK-driven reordering-window adaptation;
 - application-limited loss;
 - the deterministic 28-drop reference under RACK-TLP with exact retransmission accounting;
 - recovery-timer cancellation/stale-release lifecycle under connection teardown;
 - incremental memory and wakeup/timer cost;
 - Reno, CUBIC, and internal BBR recovery behavior with RACK-TLP enabled, while preserving unchanged production behavior when it is disabled.
 
-Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, tail-loss TLP, and lost-retransmission recovery qualified on deterministic paths**, not complete RFC 8985 or production conformance.
+Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, tail-loss TLP, lost-retransmission recovery, and reordering/D-SACK adaptation qualified on deterministic paths**, not complete RFC 8985 or production conformance.
