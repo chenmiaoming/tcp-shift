@@ -121,6 +121,14 @@ pacer_adapter_lifecycle=ok schedules=1 cancels=1 stale_release_safe=1
 
 This test caught a real ext-arg API misuse in manual unbind. The fix keeps pinned lwIP's required non-NULL callback table and clears only ext-arg data.
 
+RACK-TLP adds a parallel recovery-timer lifecycle contract. It queues and cancels an exact recovery `(flow_id, generation)` before teardown, proves a late old-generation adapter callback is harmless after registry-slot reuse, and exercises the real epoll-owned recovery heap/timerfd:
+
+```text
+rack_recovery_loop_lifecycle=ok timerfd_creates=1 cancelled=1 releases=1 wakeups=1 callbacks=1 heap_final=0
+```
+
+The recovery scheduler therefore has the same scalar-identity teardown property as pacing while retaining a separate single process-wide one-shot timerfd.
+
 ### Epoll contract
 
 The timerfd is registered with the existing single-owner loop. The gate requires a real pacing wake/release and then zero idle pacing wakeups after the heap drains. Normal lwIP timeout wakeups remain intact.
