@@ -511,7 +511,7 @@ static int tcp_shift_lwip_bbr_hook_rack_loss_status(
     void *arg,
     struct tcp_pcb *pcb,
     const void *segment,
-    u64_t *remaining_ns)
+    uint64_t *remaining_ns)
 {
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_lwip_bbr_binding *binding =
