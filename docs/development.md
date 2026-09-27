@@ -5,10 +5,11 @@ This repository is the durable project memory. A human or coding agent should be
 ## Read order
 
 1. `ARCHITECTURE.md` — architecture and ownership boundaries.
-2. `docs/lwip-roadmap.md` — milestone order, exit evidence, stop criteria.
-3. `docs/ci.md` — qualification model and retained runs.
-4. active milestone document under `docs/milestones/`.
-5. relevant source and validation scripts.
+2. `docs/standards-conformance.md` — normative RFC, upstream, Linux-reference, and project-policy hierarchy.
+3. `docs/lwip-roadmap.md` — milestone order, exit evidence, stop criteria.
+4. `docs/ci.md` — qualification model and retained runs.
+5. active milestone document under `docs/milestones/`.
+6. relevant source and validation scripts.
 
 Historical milestone documents explain design evolution; they do not override `ARCHITECTURE.md`.
 
@@ -20,6 +21,7 @@ Historical milestone documents explain design evolution; they do not override `A
 - Do not trust a workflow's green conclusion if logs contradict the intended assertion; fix the harness and rerun fail-closed.
 - If CI exposes a harness assumption, fix the harness while retaining or strengthening the product assertion.
 - Behavior/architecture/CI milestone changes update repository docs in the same PR.
+- When an applicable RFC exists, treat it as the normative source and scope claims to the implemented/qualified subset; use Linux as the primary behavioral source only for non-RFC implementation mechanisms or protocols without an RFC target, as defined in `docs/standards-conformance.md`.
 - Keep source modules separate even while the product remains one process.
 - Keep public TCP and backend TCP semantics distinct.
 - Prefer readiness/deadline-driven runtime work over fixed polling.
