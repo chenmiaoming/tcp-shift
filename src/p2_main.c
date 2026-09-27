@@ -120,6 +120,63 @@ static int tcp_shift_p2_configure_pacer(struct tcp_shift_lwip_loop *loop)
     return tcp_shift_lwip_cc_configure_pacer(&tcp_shift_p2_pacer_ops, loop);
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_p2_recovery_schedule(void *arg,
+                                           uint64_t flow_id,
+                                           uint32_t generation,
+                                           uint64_t deadline_ns,
+                                           uint32_t kind)
+{
+    struct tcp_shift_lwip_loop_recovery_event event;
+
+    event.deadline_ns = deadline_ns;
+    event.flow_id = flow_id;
+    event.generation = generation;
+    event.kind = kind;
+    return tcp_shift_lwip_loop_recovery_schedule(arg, &event);
+}
+
+static int tcp_shift_p2_recovery_cancel(void *arg,
+                                        uint64_t flow_id,
+                                        uint32_t generation,
+                                        size_t *cancelled)
+{
+    return tcp_shift_lwip_loop_recovery_cancel(
+        arg, flow_id, generation, cancelled);
+}
+
+static int tcp_shift_p2_recovery_release(
+    void *arg,
+    const struct tcp_shift_lwip_loop_recovery_event *event,
+    uint64_t actual_release_ns)
+{
+    (void)arg;
+    if (event == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    return tcp_shift_lwip_cc_resume_recovery_timer(
+        event->flow_id, event->generation, event->kind, actual_release_ns);
+}
+
+static const struct tcp_shift_lwip_recovery_timer_ops
+    tcp_shift_p2_recovery_timer_ops = {
+        .schedule = tcp_shift_p2_recovery_schedule,
+        .cancel = tcp_shift_p2_recovery_cancel,
+};
+
+static int tcp_shift_p2_configure_recovery_timer(
+    struct tcp_shift_lwip_loop *loop)
+{
+    if (tcp_shift_lwip_loop_set_recovery_release(
+            loop, tcp_shift_p2_recovery_release, NULL) < 0) {
+        return -1;
+    }
+    return tcp_shift_lwip_cc_configure_recovery_timer(
+        &tcp_shift_p2_recovery_timer_ops, loop);
+}
+#endif
+
 static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
 {
     fprintf(stderr,
@@ -407,6 +464,13 @@ int main(int argc, char **argv)
     }
     pacer_configured = 1;
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (tcp_shift_p2_configure_recovery_timer(&loop) < 0) {
+        fprintf(stderr, "configure RFC 8985 recovery timer failed\n");
+        goto out;
+    }
+#endif
+
     if (tcp_shift_bridge_start_ipv4(&bridge, &loop, public_port,
                                     backend_port) < 0) {
         perror("start TCP bridge");
@@ -499,6 +563,12 @@ out:
                 (unsigned long long)bridge.active_flows,
                 (unsigned long long)bridge.pending_public_bytes);
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (tcp_shift_lwip_cc_clear_recovery_timer() < 0) {
+        fprintf(stderr,
+                "tcp-shift-p2: recovery_timer_service_retained_until_process_exit=1\n");
+    }
+#endif
     if (pacer_configured != 0 && tcp_shift_lwip_cc_clear_pacer() < 0) {
         fprintf(stderr,
                 "tcp-shift-p2: pacer_service_retained_until_process_exit=1\n");
