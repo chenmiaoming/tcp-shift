@@ -70,7 +70,7 @@ int main(void)
     CHECK(sleep_ns(4000000L) == 0);
     sack.left = seq + payload;
     sack.right = seq + (2U * payload);
-    CHECK(tcp_shift_lwip_cc_hook_sack(pcb, &sack, 1U) != 0);
+    CHECK(tcp_shift_lwip_cc_hook_sack(pcb, seq, &sack, 1U) != 0);
     CHECK(adapter.rack_tlp.rack_xmit_ts_ns != 0U);
     CHECK(adapter.rack_tlp.rack_end_seq == sack.right);
     CHECK(adapter.rack_tlp.rack_rtt_ns != 0U);
