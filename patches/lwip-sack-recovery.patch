@@ -161,17 +161,23 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +{
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 +  uint64_t remaining_ns = 0U;
-+  int rack_status =
++  int rack_status;
++
++  LWIP_UNUSED_ARG(sacked_after);
++  rack_status =
 +      tcp_shift_lwip_cc_hook_rack_loss_status(pcb, seg, &remaining_ns);
 +
-+  if (rack_status >= 0) {
-+    return rack_status != 0;
-+  }
++  /* RFC 8985 is the sole fast-loss oracle in a RACK build. If transport
++     timestamp/scoreboard state is not available yet, fail closed and let the
++     RACK reordering timer or ordinary RTO establish loss later. Falling back
++     to the legacy fixed three-later-SACK proof would silently mix the
++     DupThresh/RFC 6675-style detector back into RACK-TLP. */
++  return rack_status > 0;
 +#else
 +  LWIP_UNUSED_ARG(pcb);
 +  LWIP_UNUSED_ARG(seg);
-+#endif
 +  return sacked_after >= 3U;
++#endif
 +}
 +#endif
  
