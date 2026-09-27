@@ -40,6 +40,7 @@ Implementation phases:
 
 3. **Loss detection and recovery selection**
    - make RACK time evidence the loss oracle instead of the current fixed three-later-SACK proof;
+   - fail closed when RACK timing/sidecar state is unavailable instead of silently falling back to the legacy three-later-SACK detector;
    - preserve the SACK scoreboard as required input;
    - do not run RFC 6675's recovery selection algorithm unchanged alongside RACK-TLP: RFC 8985 section 9.2 explicitly prohibits that combination because RFC 6675 does not handle lost retransmissions;
    - drive a modified retransmission selector from RACK-marked loss state;
@@ -75,6 +76,7 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - cumulative/SACK delivery processing in the RFC-required timing pass followed by the reordering pass;
 - RACK loss deadlines and a process-wide one-shot recovery timer integrated with the existing epoll owner;
 - timer-driven RACK repair when loss matures below the ordinary DupThresh path;
+- RACK-enabled retransmission selection now treats RFC 8985 time evidence as the sole fast-loss oracle: an unavailable RACK status is "not yet proven lost", not permission to fall back to the legacy fixed three-later-SACK rule; ordinary RTO remains the conservative terminal fallback;
 - PTO/TLP scheduling with ordinary RTO as the conservative fallback;
 - live tail-loss qualification proving one TLP retransmission repairs the tested tail loss without an RTO;
 - live application-limited tail qualification where the final packet is first transmitted after the prior flight drains: the application-limited transition re-evaluates PTO, one TLP retransmission completes burst one before burst two is made available, the later ACK produces exactly one congestion indication, and the path records zero RTOs, zero unrelated qdisc drops, and exact payload integrity;
