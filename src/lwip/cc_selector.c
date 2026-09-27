@@ -427,6 +427,18 @@ static int tcp_shift_cc_selector_pacing_on_loss(void *arg,
     return tcp_shift_cc_selector_call_paced_loss(arg, pcb, lost_bytes);
 }
 
+static void tcp_shift_cc_selector_pacing_on_tlp_dupack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    unsigned sack_seen)
+{
+    if (tcp_shift_cc_selector_base_hook_ops != NULL &&
+        tcp_shift_cc_selector_base_hook_ops->on_tlp_dupack != NULL) {
+        tcp_shift_cc_selector_base_hook_ops->on_tlp_dupack(
+            arg, pcb, sack_seen);
+    }
+}
+
 static int tcp_shift_cc_selector_pacing_on_tlp_loss(
     void *arg,
     struct tcp_pcb *pcb,
@@ -522,6 +534,7 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
         .on_tlp_loss = tcp_shift_cc_selector_pacing_on_tlp_loss,
+        .on_tlp_dupack = tcp_shift_cc_selector_pacing_on_tlp_dupack,
         .on_timeout = tcp_shift_cc_selector_pacing_on_timeout,
         .rack_loss_status =
             tcp_shift_cc_selector_pacing_rack_loss_status,
