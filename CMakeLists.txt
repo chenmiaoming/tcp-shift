@@ -403,6 +403,7 @@ target_link_libraries(tcp-shift-rack-tlp-contract PRIVATE tcp_shift_rack_tlp)
 if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
     add_executable(tcp-shift-rack-tlp-adapter-contract
         src/tests/rack_tlp_adapter_test.c
+        src/platform.c
     )
     target_include_directories(tcp-shift-rack-tlp-adapter-contract PRIVATE
         ${LWIP_INCLUDE_DIRS}
