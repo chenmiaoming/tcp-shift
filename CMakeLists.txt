@@ -21,10 +21,9 @@ option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
     OFF
 )
 
-if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
-   NOT TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
-    message(FATAL_ERROR
-        "RFC 8985 RACK-TLP requires TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=ON")
+set(TCP_SHIFT_SENDER_SACK_ENABLED OFF)
+if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY OR TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
+    set(TCP_SHIFT_SENDER_SACK_ENABLED ON)
 endif()
 
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
@@ -78,10 +77,17 @@ target_compile_options(tcp_shift_lwip PRIVATE
     -ffunction-sections -fdata-sections
 )
 
+if(TCP_SHIFT_SENDER_SACK_ENABLED)
+    # RFC 8985 requires sender-side SACK information, and the legacy
+    # compatibility experiment also needs the same lwIP SACK-enabled PCB
+    # layout. Keep the ABI-changing transport capability separate from the
+    # temporary legacy recovery selector and propagate it to every consumer.
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_SENDER_SACK=1
+    )
+endif()
+
 if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
-    # lwipopts.h changes struct tcp_pcb when SACK is enabled. This definition is
-    # an ABI requirement, not an implementation detail: every project target
-    # that includes lwIP headers must see the same layout as tcp_shift_lwip.
     target_compile_definitions(tcp_shift_lwip PUBLIC
         TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY=1
     )
