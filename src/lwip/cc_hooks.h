@@ -66,6 +66,9 @@ struct tcp_shift_lwip_cc_hook_ops {
                    const struct tcp_shift_lwip_sack_range *ranges,
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
+    int (*on_tlp_loss)(void *arg,
+                       struct tcp_pcb *pcb,
+                       tcpwnd_size_t lost_bytes);
     int (*on_timeout)(void *arg, struct tcp_pcb *pcb);
     int (*on_recovery_exit)(void *arg, struct tcp_pcb *pcb);
     int (*rack_loss_status)(void *arg,
@@ -292,6 +295,21 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
         tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_tlp_loss(struct tcp_pcb *pcb,
+                                tcpwnd_size_t lost_bytes)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_tlp_loss == NULL || lost_bytes == 0U) {
+        return 0;
+    }
+    /* A retransmitted TLP that proves a real loss gets the congestion
+     * response without creating a fast-recovery episode. */
+    return hook->ops->on_tlp_loss(hook->arg, pcb, lost_bytes) != 0;
 }
 
 static inline int
