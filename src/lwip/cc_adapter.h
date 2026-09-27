@@ -24,6 +24,25 @@ struct tcp_shift_lwip_cc_pacer_ops {
                   size_t *cancelled);
 };
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+enum tcp_shift_lwip_recovery_timer_kind {
+    TCP_SHIFT_LWIP_RECOVERY_TIMER_RACK = 1U,
+    TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP = 2U
+};
+
+struct tcp_shift_lwip_recovery_timer_ops {
+    int (*schedule)(void *arg,
+                    uint64_t flow_id,
+                    uint32_t generation,
+                    uint64_t deadline_ns,
+                    uint32_t kind);
+    int (*cancel)(void *arg,
+                  uint64_t flow_id,
+                  uint32_t generation,
+                  size_t *cancelled);
+};
+#endif
+
 struct tcp_shift_lwip_cc_stats {
     uint64_t bindings;
     uint64_t bind_failures;
@@ -166,10 +185,16 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t pacing_rate_bytes_per_sec;
     uint64_t pacing_next_send_ns;
     uint64_t pacing_flow_id;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    uint64_t rack_timer_deadline_ns;
+#endif
     uint32_t pacing_generation;
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned pacing_scheduled;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    unsigned rack_timer_scheduled;
+#endif
     unsigned bound;
     unsigned heap_owned;
     unsigned sack_delivery_policy;
@@ -184,6 +209,17 @@ int tcp_shift_lwip_cc_configure_pacer(
     const struct tcp_shift_lwip_cc_pacer_ops *ops,
     void *arg);
 int tcp_shift_lwip_cc_clear_pacer(void);
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+int tcp_shift_lwip_cc_configure_recovery_timer(
+    const struct tcp_shift_lwip_recovery_timer_ops *ops,
+    void *arg);
+int tcp_shift_lwip_cc_clear_recovery_timer(void);
+int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
+                                            uint32_t generation,
+                                            uint32_t kind,
+                                            uint64_t actual_release_ns);
+#endif
 
 int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
                                    uint32_t generation,
