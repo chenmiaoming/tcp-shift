@@ -38,9 +38,11 @@ Implementation phases:
    - expose Segment.end_seq and RACK lost state;
    - update RACK.segment on cumulative and selective delivery.
 
-3. **Loss detection**
-   - allow RACK time evidence to replace the current fixed three-later-SACK proof;
-   - preserve SACK scoreboard semantics;
+3. **Loss detection and recovery selection**
+   - make RACK time evidence the loss oracle instead of the current fixed three-later-SACK proof;
+   - preserve the SACK scoreboard as required input;
+   - do not run RFC 6675's recovery selection algorithm unchanged alongside RACK-TLP: RFC 8985 section 9.2 explicitly prohibits that combination because RFC 6675 does not handle lost retransmissions;
+   - drive a modified retransmission selector from RACK-marked loss state;
    - use the RACK reordering timer when loss is not yet mature.
 
 4. **TLP / PTO**
@@ -66,7 +68,7 @@ Implementation phases:
 
 ## Current boundary
 
-The first commit set implements the transport-neutral RFC state/math and deterministic contracts. It does **not** enable RACK-TLP on production flows yet.
+The current implementation provides the transport-neutral RFC state/math, feeds cumulative/SACK delivery into RACK using separate RFC-ordered timing and reordering passes, and lets the experimental SACK retransmission selector query RACK time evidence. It does **not** enable RACK-TLP in default production builds, and the reordering timer/TLP PTO path is not complete yet.
 
 The feature remains default-OFF until live lwIP integration proves:
 
