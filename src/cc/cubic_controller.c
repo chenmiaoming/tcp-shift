@@ -112,6 +112,22 @@ static int tcp_shift_cubic_controller_on_loss(
     return result;
 }
 
+static int tcp_shift_cubic_controller_on_ecn(
+    void *opaque_state,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy)
+{
+    struct tcp_shift_cubic_model *model =
+        (struct tcp_shift_cubic_model *)opaque_state;
+    int result;
+
+    result = tcp_shift_cubic_model_on_ecn(model, transport, policy);
+    if (result == 0) {
+        tcp_shift_cubic_hystart_disable(model);
+    }
+    return result;
+}
+
 static int tcp_shift_cubic_controller_on_timeout(
     void *opaque_state,
     const struct tcp_shift_cc_transport *transport,
@@ -136,5 +152,6 @@ const struct tcp_shift_cc_ops tcp_shift_cubic_ops = {
     .init = tcp_shift_cubic_controller_init,
     .on_ack = tcp_shift_cubic_controller_on_ack,
     .on_loss = tcp_shift_cubic_controller_on_loss,
+    .on_ecn = tcp_shift_cubic_controller_on_ecn,
     .on_timeout = tcp_shift_cubic_controller_on_timeout,
 };
