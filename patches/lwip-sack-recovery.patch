@@ -35,32 +35,6 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif /* LWIP_TCP_SACK_OUT */
  
  /**
-@@ -1223,10 +1247,10 @@
-               if (pcb->dupacks > 3) {
-                 /* Inflate the congestion window */
-                 if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
-                   TCP_WND_INC(pcb->cwnd, pcb->mss);
-                 }
-               }
-               if (pcb->dupacks >= 3) {
-                 /* Do fast retransmit (checked via TF_INFR, not via dupacks count) */
-                 tcp_rexmit_fast(pcb);
-               }
-@@ -1355,14 +1379,14 @@
-       } else {
-         pcb->rtime = 0;
-       }
- 
-       if (recovery_partial && pcb->unacked != NULL) {
-         /* A partial ACK identifies the next hole without waiting for another
-            three duplicate ACKs. tcp_rexmit() only requeues the first unacked
-            segment; tcp_input() will drive ordinary tcp_output() afterwards. */
-         if (tcp_rexmit(pcb) == ERR_OK) {
-           pcb->rtime = 0;
-         }
-       }
- 
-       pcb->polltmr = 0;
 @@ -1928,8 +1952,14 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
