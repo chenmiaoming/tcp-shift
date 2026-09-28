@@ -612,7 +612,7 @@ jobs:
               sh scripts/p6-bbr-long-flow.sh
           done
 
-      - name: Exercise lost selective retransmission fallback
+      - name: Exercise lost RACK retransmission repair
         run: |
           out="$PWD/.build/p6-bbr-repeated-burst/tcp-shift/lost-retransmission"
           sudo env \
@@ -624,6 +624,7 @@ jobs:
             TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
             TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=lost-retransmission \
             TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=rack \
             TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsp6rtxloss \
             TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18320 \
             TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19320 \
@@ -685,7 +686,7 @@ jobs:
             done
             if [ -f "$root/tcp-shift/lost-retransmission/summary.txt" ]; then
               echo
-              echo "### lost selective retransmission fallback"
+              echo "### lost RACK retransmission repair"
               echo '~~~text'
               cat "$root/tcp-shift/lost-retransmission/summary.txt"
               echo '~~~'
@@ -733,7 +734,7 @@ jobs:
           sh -n scripts/linux-cubic-pacing-reference.sh
           python3 -m py_compile scripts/p6-bbr-first-send-loss-evaluate.py
 
-      - name: Build internal BBR with sender SACK
+      - name: Build internal BBR with RACK recovery
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build-p6-bbr-first-send \
