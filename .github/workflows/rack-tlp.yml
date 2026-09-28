@@ -77,11 +77,28 @@ jobs:
           assert "tcp_shift_lwip_cc_hook_rack_loss_status" in rack_body
           assert "+tcp_shift_tcp_rexmit_rack_loss(struct tcp_pcb *pcb)" in text
           assert "+  while (tcp_shift_tcp_rexmit_rack_loss(pcb) == ERR_OK)" in text
-          print("rack_selector_boundary=ok legacy_selector=absent requeue=shared")
+          assert "tcp_shift_tcp_rack_owns_fast_loss" in text
+          assert "tcp_shift_lwip_cc_hook_tlp_dupack" in text
+          print("rack_selector_boundary=ok legacy_selector=absent dupack_owner=rack requeue=shared")
           PY
 
       - name: Fetch pinned lwIP
         run: sh scripts/fetch-lwip.sh
+
+      - name: Enforce RACK ownership of DupAck fast-loss entry
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path(".deps/lwip/src/core/tcp_in.c").read_text()
+          start = source.index("if (tcp_shift_tcp_rack_owns_fast_loss(pcb))")
+          end = source.index("} else", start)
+          rack_branch = source[start:end]
+          assert "tcp_shift_lwip_cc_hook_tlp_dupack" in rack_branch
+          assert "tcp_rexmit_fast(pcb)" not in rack_branch
+          assert "(pcb->flags & TF_INFR) != 0U && pcb->dupacks > 3" in rack_branch
+          print("rack_dupack_ownership=ok native_fast_loss_entry=disabled tlp_dupack=connected")
+          PY
 
       - name: Reject invalid RACK/SACK build combinations
         run: |

@@ -1,7 +1,7 @@
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -100,9 +100,33 @@
+@@ -100,9 +100,43 @@
  #if LWIP_TCP_SACK_OUT
  static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
  static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
@@ -14,6 +14,16 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#define TCP_SHIFT_TF_SEG_SACKED       ((u8_t)0x20U)
 +#define TCP_SHIFT_TF_SEG_SACK_REXMIT  ((u8_t)0x40U)
 +#define TCP_SHIFT_TCP_OPT_SACK        5U
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++static u8_t tcp_shift_sack_seen;
++
++static u8_t
++tcp_shift_tcp_rack_owns_fast_loss(const struct tcp_pcb *pcb)
++{
++  return pcb != NULL && (pcb->flags & TF_SACK) != 0U ? 1U : 0U;
++}
++#endif
 +
 +static void
 +tcp_shift_tcp_mark_sack_range(struct tcp_pcb *pcb, u32_t left, u32_t right)
@@ -35,7 +45,52 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif /* LWIP_TCP_SACK_OUT */
  
  /**
-@@ -1928,8 +1952,14 @@
+@@ -853,5 +887,8 @@ tcp_process(struct tcp_pcb *pcb)
+   if (flags & TCP_ACK) {
+     tcp_shift_lwip_cc_hook_ack_begin(pcb);
+   }
++#if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++  tcp_shift_sack_seen = 0U;
++#endif
+   tcp_parseopt(pcb);
+ 
+@@ -1220,18 +1257,35 @@ tcp_receive(struct tcp_pcb *pcb)
+             if (pcb->lastack == ackno) {
+               if ((u8_t)(pcb->dupacks + 1) > pcb->dupacks) {
+                 ++pcb->dupacks;
+               }
++#if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++              if (tcp_shift_tcp_rack_owns_fast_loss(pcb)) {
++                /* RFC 8985 section 7.4.2 still needs a no-SACK DupAck to
++                   disambiguate a retransmitted tail-loss probe. */
++                tcp_shift_lwip_cc_hook_tlp_dupack(
++                    pcb, tcp_shift_sack_seen != 0U ? 1U : 0U);
++                /* RACK owns fast-loss entry on a SACK-negotiated RACK flow.
++                   DupAck counting remains only for native recovery-window
++                   inflation after RACK has already entered TF_INFR. */
++                if ((pcb->flags & TF_INFR) != 0U && pcb->dupacks > 3 &&
++                    !tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++                  TCP_WND_INC(pcb->cwnd, pcb->mss);
++                }
++              } else
++#endif
++              {
+               if (pcb->dupacks > 3) {
+                 /* Inflate the congestion window */
+                 if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+                   TCP_WND_INC(pcb->cwnd, pcb->mss);
+                 }
+               }
+               if (pcb->dupacks >= 3) {
+                 /* Do fast retransmit (checked via TF_INFR, not via dupacks count) */
+                 tcp_rexmit_fast(pcb);
+               }
++              }
+             }
+           }
+         }
+       }
+@@ -1928,8 +1982,14 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
  {
@@ -50,7 +105,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #if LWIP_TCP_TIMESTAMPS
    u32_t tsval;
  #endif
-@@ -2016,15 +2046,49 @@
+@@ -2016,15 +2076,52 @@
  #if LWIP_TCP_SACK_OUT
          case LWIP_TCP_OPT_SACK_PERM:
            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
@@ -66,6 +121,9 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
            }
            break;
 +        case TCP_SHIFT_TCP_OPT_SACK:
++#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++          tcp_shift_sack_seen = 1U;
++#endif
 +          data = tcp_get_next_optbyte();
 +          sack_range_count = 0U;
 +          LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK len=%"U16_F"\n",

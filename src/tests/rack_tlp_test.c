@@ -176,6 +176,14 @@ static int test_pto_and_probe_state(void)
     tcp_shift_tlp_note_probe_sent(&state, 6000U, 7000U, 1U);
     result = tcp_shift_tlp_process_ack(&state, 7000U, 1U, 0U);
     CHECK(result == TCP_SHIFT_TLP_ACK_CLEARED);
+
+    /* RFC 8985 section 7.4.2 case 2: a DupAck without any SACK option
+     * proves that both the original tail segment and TLP retransmission
+     * arrived, so the probe must not be reported as congestion loss. */
+    tcp_shift_tlp_note_probe_sent(&state, 7000U, 8000U, 1U);
+    result = tcp_shift_tlp_process_ack(&state, 8000U, 0U, 1U);
+    CHECK(result == TCP_SHIFT_TLP_ACK_CLEARED);
+    CHECK(state.tlp_end_seq == 0U);
     return 0;
 }
 
