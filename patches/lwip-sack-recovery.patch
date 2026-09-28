@@ -45,7 +45,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif /* LWIP_TCP_SACK_OUT */
  
  /**
-@@ -853,5 +856,8 @@ tcp_process(struct tcp_pcb *pcb)
+@@ -853,5 +887,8 @@ tcp_process(struct tcp_pcb *pcb)
    if (flags & TCP_ACK) {
      tcp_shift_lwip_cc_hook_ack_begin(pcb);
    }
@@ -54,7 +54,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif
    tcp_parseopt(pcb);
  
-@@ -1220,18 +1223,35 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1220,18 +1257,35 @@ tcp_receive(struct tcp_pcb *pcb)
              if (pcb->lastack == ackno) {
                if ((u8_t)(pcb->dupacks + 1) > pcb->dupacks) {
                  ++pcb->dupacks;
@@ -90,7 +90,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
            }
          }
        }
-@@ -1928,8 +1952,14 @@
+@@ -1928,8 +1982,14 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)
  {
@@ -105,7 +105,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #if LWIP_TCP_TIMESTAMPS
    u32_t tsval;
  #endif
-@@ -2016,15 +2046,52 @@
+@@ -2016,15 +2076,52 @@
  #if LWIP_TCP_SACK_OUT
          case LWIP_TCP_OPT_SACK_PERM:
            LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_parseopt: SACK_PERM\n"));
