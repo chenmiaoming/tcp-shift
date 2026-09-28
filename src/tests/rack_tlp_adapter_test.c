@@ -394,6 +394,37 @@ int main(void)
     CHECK(timer_state.cancel_flow_id == stale_flow_id);
     CHECK(timer_state.cancel_generation == active_generation);
     tcp_abort(pcb);
+
+    /* RFC 8985 section 7.3 requires a PTO opportunity that cannot send a
+     * probe (here: no fresh RTT sample) to restart the ordinary RTO while
+     * FlightSize remains nonzero. A stale pre-PTO rtime must not survive. */
+    memset(&adapter, 0, sizeof(adapter));
+    memset(&stats, 0, sizeof(stats));
+    pcb = tcp_new();
+    CHECK(pcb != NULL);
+    payload = pcb->mss;
+    seq = UINT32_C(900000);
+    pcb->cwnd = (tcpwnd_size_t)(payload * 8U);
+    pcb->ssthresh = (tcpwnd_size_t)(payload * 16U);
+    pcb->snd_wnd = (tcpwnd_size_t)(payload * 16U);
+    pcb->lastack = seq;
+    pcb->snd_nxt = seq + payload;
+    pcb->rtime = 7;
+    CHECK(tcp_shift_lwip_cc_adapter_bind(&adapter, pcb, &stats) == 0);
+    CHECK(pcb->rtime == 7);
+    CHECK(adapter.rack_tlp.rtt_sample_since_probe == 0U);
+    pcb->unacked = (struct tcp_seg *)(void *)&outstanding_sentinel;
+    CHECK(tcp_shift_lwip_cc_resume_recovery_timer(
+              adapter.pacing_flow_id, adapter.pacing_generation,
+              TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP,
+              UINT64_C(123456789)) == 0);
+    CHECK(pcb->rtime == 0);
+    CHECK(adapter.rack_tlp.tlp_end_seq == 0U);
+
+    pcb->unacked = NULL;
+    tcp_shift_lwip_cc_adapter_unbind(&adapter);
+    tcp_abort(pcb);
+
     CHECK(tcp_shift_lwip_cc_clear_recovery_timer() == 0);
     CHECK(tcp_shift_lwip_cc_clear_pacer() == 0);
 
