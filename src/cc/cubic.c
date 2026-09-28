@@ -352,13 +352,16 @@ static void tcp_shift_cubic_update_w_est(struct tcp_shift_cubic_model *model,
 }
 
 static uint32_t tcp_shift_cubic_beta_flight_bytes(
-    const struct tcp_shift_cc_transport *transport)
+    const struct tcp_shift_cc_transport *transport,
+    uint32_t floor_segments)
 {
     uint64_t reduced =
         ((uint64_t)transport->inflight_bytes * TCP_SHIFT_CUBIC_BETA_NUM) /
         TCP_SHIFT_CUBIC_BETA_DEN;
-    uint32_t floor = tcp_shift_cubic_mul2_cap(transport->mss_bytes,
-                                              transport->cwnd_limit_bytes);
+    uint64_t floor64 = (uint64_t)transport->mss_bytes * floor_segments;
+    uint32_t floor = floor64 > transport->cwnd_limit_bytes
+                         ? transport->cwnd_limit_bytes
+                         : (uint32_t)floor64;
     uint32_t value = reduced > UINT32_MAX ? UINT32_MAX : (uint32_t)reduced;
 
     value = tcp_shift_cubic_max_u32(value, floor);
@@ -560,7 +563,7 @@ int tcp_shift_cubic_model_on_loss(struct tcp_shift_cubic_model *model,
     model->has_w_max = 1U;
     model->cwnd_prior_q16 = prior_cwnd_q16;
 
-    reduced_bytes = tcp_shift_cubic_beta_flight_bytes(transport);
+    reduced_bytes = tcp_shift_cubic_beta_flight_bytes(transport, 2U);
     minimum_bytes = tcp_shift_cubic_effective_min_bytes(model, transport);
     reduced_bytes = tcp_shift_cubic_max_u32(reduced_bytes, minimum_bytes);
     model->ssthresh_q16 = tcp_shift_cubic_q16_from_bytes(
@@ -572,6 +575,54 @@ int tcp_shift_cubic_model_on_loss(struct tcp_shift_cubic_model *model,
     model->after_timeout = 0U;
     model->k_q10 = 0U;
     model->loss_events++;
+    tcp_shift_cubic_publish(model, transport, policy);
+    return 0;
+}
+
+int tcp_shift_cubic_model_on_ecn(
+    struct tcp_shift_cubic_model *model,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy)
+{
+    uint64_t prior_cwnd_q16;
+    uint32_t reduced_bytes;
+    uint32_t minimum_bytes;
+
+    if (model == NULL || transport == NULL || policy == NULL ||
+        transport->mss_bytes == 0U ||
+        transport->cwnd_limit_bytes < transport->mss_bytes ||
+        tcp_shift_cubic_sync_mss(model, transport->mss_bytes) != 0) {
+        return -1;
+    }
+
+    tcp_shift_cubic_normalize(model, transport);
+    prior_cwnd_q16 = model->cwnd_q16;
+    if (model->fast_convergence != 0U && model->has_w_max != 0U &&
+        prior_cwnd_q16 < model->w_max_q16) {
+        model->w_max_q16 =
+            (prior_cwnd_q16 * TCP_SHIFT_CUBIC_FAST_CONVERGENCE_NUM) /
+            TCP_SHIFT_CUBIC_FAST_CONVERGENCE_DEN;
+    } else {
+        model->w_max_q16 = prior_cwnd_q16;
+    }
+    model->has_w_max = 1U;
+    model->cwnd_prior_q16 = prior_cwnd_q16;
+
+    /* RFC 9438 requires repeated ECE congestion events to keep reducing
+     * CUBIC down to one SMSS. The packet-loss path retains its conventional
+     * two-SMSS recovery floor. */
+    reduced_bytes = tcp_shift_cubic_beta_flight_bytes(transport, 1U);
+    minimum_bytes = tcp_shift_cubic_effective_min_bytes(model, transport);
+    reduced_bytes = tcp_shift_cubic_max_u32(reduced_bytes, minimum_bytes);
+    model->ssthresh_q16 = tcp_shift_cubic_q16_from_bytes(
+        reduced_bytes, transport->mss_bytes);
+    model->cwnd_q16 = model->ssthresh_q16;
+    model->epoch_active = 0U;
+    model->app_limited_paused = 0U;
+    model->app_limited_since_ns = 0U;
+    model->after_timeout = 0U;
+    model->k_q10 = 0U;
+    model->ecn_events++;
     tcp_shift_cubic_publish(model, transport, policy);
     return 0;
 }
@@ -593,7 +644,7 @@ int tcp_shift_cubic_model_on_timeout(
 
     tcp_shift_cubic_normalize(model, transport);
     model->cwnd_prior_q16 = model->cwnd_q16;
-    reduced_bytes = tcp_shift_cubic_beta_flight_bytes(transport);
+    reduced_bytes = tcp_shift_cubic_beta_flight_bytes(transport, 2U);
     model->ssthresh_q16 = tcp_shift_cubic_q16_from_bytes(
         reduced_bytes, transport->mss_bytes);
     minimum_bytes = tcp_shift_cubic_effective_min_bytes(model, transport);
