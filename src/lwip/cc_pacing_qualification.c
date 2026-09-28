@@ -266,6 +266,16 @@ static int tcp_shift_pacing_qualification_quantum_on_tlp_loss(
         arg, pcb, lost_bytes);
 }
 
+static int tcp_shift_pacing_qualification_quantum_on_ecn(
+    void *arg, struct tcp_pcb *pcb)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->on_ecn == NULL) {
+        return 0;
+    }
+    return tcp_shift_pacing_qualification_base_hook_ops->on_ecn(arg, pcb);
+}
+
 static int tcp_shift_pacing_qualification_quantum_on_timeout(
     void *arg, struct tcp_pcb *pcb)
 {
@@ -375,6 +385,7 @@ static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_pacing_qualification_quantum_hook_ops = {
         .on_ack = tcp_shift_pacing_qualification_quantum_on_ack,
         .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
+        .on_ecn = tcp_shift_pacing_qualification_quantum_on_ecn,
         .on_rack_retrans_loss =
             tcp_shift_pacing_qualification_quantum_on_rack_retrans_loss,
         .on_tlp_loss =
