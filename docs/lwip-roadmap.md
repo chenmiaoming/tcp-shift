@@ -157,14 +157,15 @@ CC controller
     -> Reno / CUBIC / internal BBR congestion response only
 ```
 
-The old fixed-count sender-SACK recovery selector is therefore a compatibility path, not the target architecture. The next development steps are:
+The old fixed-count sender-SACK recovery selector and compatibility alias have been removed. SACK evidence remains independent, and RFC 8985 RACK-TLP is now the sole project-owned selective-recovery path. Teardown/stale-generation safety and the incremental memory/timer/CPU resource gate are also qualified.
 
-1. split RFC-required SACK parsing/scoreboard/delivery evidence from the old fixed three-later-SACK retransmission selector;
-2. remove the old selector after equivalent RACK coverage and rollback/differential evidence exist;
-3. qualify RACK recovery-timer cancellation, connection teardown, and stale-release/generation safety;
-4. rerun P3 memory plus wakeup/timer/CPU qualification with RACK-TLP enabled;
-5. keep RACK-TLP experimental/default-OFF until those lifecycle/resource gates pass;
-6. only after transport semantics are closed, continue provider/OpenVZ qualification and decide whether an experimental public `bbr` selector is justified.
+The next development steps are:
+
+1. complete an RFC 8985 exposure-readiness audit, prioritizing normative MUST/SHOULD timer and recovery semantics over performance tuning;
+2. close the section 7.3 PTO/RTO lifecycle requirement so every valid PTO probe opportunity re-arms the ordinary RTO after the attempt, including the no-probe path when the RTT/probe guard blocks transmission;
+3. keep RACK-TLP experimental/default-OFF while rerunning the full RACK, resource, controller, and Linux-reference regression set;
+4. after transport semantics are closed, perform provider/OpenVZ qualification and make a separate explicit decision about RACK default exposure;
+5. keep public `bbr` exposure separate from transport recovery, and do not tune BBR gains to compensate for recovery defects.
 
 BBR remains a compact BBRv1-style controller rather than a Linux-BBR implementation. Because BBR has no published RFC target, Linux BBR remains the primary behavioral/differential reference; the current IETF BBR draft is secondary semantic guidance. Do not compensate for transport defects by tuning BBR gains.
 

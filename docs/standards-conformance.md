@@ -24,8 +24,8 @@ This document defines the reference hierarchy for protocol and congestion-contro
 | Window scaling | RFC 7323 via upstream lwIP | enabled and live-qualified; tcp-shift currently advertises receive scale 0 while retaining 32-bit sender-side accounting |
 | CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; Linux CUBIC is a differential reference |
 | HyStart++ | RFC 9406 | RFC 9406 HyStart++ with qualified recommended constants; delivery-domain round representation remains a documented abstraction |
-| Sender SACK evidence / legacy selector | SACK semantics from the TCP standards/upstream lwIP; project compatibility selector | SACK negotiation/scoreboard/delivery evidence is independently buildable for RACK; the fixed three-later-SACK selector is a separate experimental/default-OFF non-RACK compatibility path and is not an RFC 6675 conformance claim |
-| RACK-TLP | RFC 8985; RFC 2883 for D-SACK interpretation | experimental/default-OFF RFC-driven implementation; RFC 8985 time evidence is the sole fast-loss oracle in RACK builds with no fallback to the legacy three-later-SACK detector; core math, delivery ordering, reordering timer integration, timer-driven repair, live tail-loss TLP, deterministic lost-retransmission repair, below-window reordering tolerance, D-SACK-driven reordering-window adaptation, and deterministic Reno/CUBIC/internal-BBR controller-matrix recovery are present, but teardown/resource qualification and production qualification are not complete |
+| Sender SACK evidence | SACK semantics from the TCP standards/upstream lwIP | SACK negotiation/scoreboard/delivery evidence is independently buildable as transport input for RACK; the former fixed three-later-SACK compatibility selector and its old build alias are removed and fail closed |
+| RACK-TLP | RFC 8985; RFC 2883 for D-SACK interpretation | experimental/default-OFF RFC-driven implementation; RFC 8985 time evidence is the sole fast-loss oracle and RACK is the sole project-owned selective-retransmission policy; core math, mixed ACK/SACK delivery ordering, reordering timer integration, timer-driven repair, TLP/PTO tail probing, lost-retransmission repair, TLP RTO re-arm semantics, reordering/D-SACK adaptation, generation-safe timer teardown, resource-cost qualification, and deterministic Reno/CUBIC/internal-BBR recovery are covered; provider/OpenVZ production qualification and explicit exposure review remain separate |
 | BBR | Linux mainline BBRv1 behavior; current IETF BBR draft as secondary semantic reference | compact BBRv1-style controller with selected independently justified newer semantics; never describe it as Linux-BBR-equivalent or RFC-conformant |
 | Generic TCP pacing | Linux TCP pacing behavior | Linux-derived implementation mechanism, not an RFC protocol requirement |
 | Delivery-rate sampling / app-limited accounting | Linux TCP/BBR rate-sampling semantics | Linux-derived transport observation mechanism used by internal BBR qualification |
@@ -67,7 +67,7 @@ Avoid:
 - "fully RFC-conformant TCP stack" unless a dedicated end-to-end conformance effort proves that claim;
 - "Linux BBR implementation" for tcp-shift's compact BBR controller;
 - "RFC 6298 implementation" for the CC-only SRTT estimator;
-- "RFC 6675 recovery" for the current bounded sender-SACK experiment.
+- "RFC 6675 recovery" for tcp-shift's current recovery path; RACK-TLP is the project-owned selective-recovery implementation.
 
 ## Change-review rule
 

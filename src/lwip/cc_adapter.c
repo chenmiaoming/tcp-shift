@@ -559,18 +559,33 @@ int tcp_shift_lwip_cc_resume_recovery_timer(uint64_t flow_id,
     }
 
     if (kind == TCP_SHIFT_LWIP_RECOVERY_TIMER_TLP) {
-        if (!tcp_shift_tlp_probe_allowed(&adapter->rack_tlp) ||
-            tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) ||
+        if (tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) ||
             adapter->rack_tlp.segs_sacked != 0U) {
+            return 0;
+        }
+
+        if (!tcp_shift_tlp_probe_allowed(&adapter->rack_tlp)) {
+            /* RFC 8985 section 7.3: even when the PTO cannot send a probe
+             * because the probe/RTT-sample guard fails, RTO must be restarted
+             * from this PTO event while data remains in flight. */
+            if (adapter->pcb->unacked != NULL) {
+                adapter->pcb->rtime = 0;
+            }
             return 0;
         }
 
         err = tcp_shift_tcp_tlp_probe(
             adapter->pcb, &probe_start_seq, &probe_end_seq,
             &probe_is_retrans);
+
+        /* RFC 8985 section 7.3 requires the RTO to be re-armed after the
+         * probe attempt regardless of whether a probe was actually sent.
+         * lwIP expresses that restart by resetting rtime; keep the ordinary
+         * RTO as the conservative last resort whenever FlightSize is nonzero. */
+        if (adapter->pcb->unacked != NULL) {
+            adapter->pcb->rtime = 0;
+        }
         if (err != ERR_OK) {
-            /* PTO is only a probe opportunity. If it cannot transmit, leave
-             * the ordinary RTO as the conservative final fallback. */
             return err == ERR_VAL ? 0 : -1;
         }
         if (probe_end_seq != 0U) {
