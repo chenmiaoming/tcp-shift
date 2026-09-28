@@ -81,7 +81,7 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 make build
 ```
 
-The repository carries two controlled lwIP patches on the same three-file TCP surface. `patches/lwip-p4-cc-hooks.patch` provides the generic ACK/loss/RTO, delivery, and pacing hooks. `patches/lwip-sack-recovery.patch` contains SACK/RACK transport integration, but its build features are now separated: `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON` enables SACK negotiation/scoreboard/delivery evidence, while `TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON` separately enables the old fixed-count compatibility selector. RFC 8985 RACK builds use SACK evidence with the legacy selector prohibited. Production/default builds keep all of these experimental features disabled. Provenance CI hashes pristine critical TCP sources, verifies both patch identities and modified-file scope, reverse-applies the chain, and independently reapplies it to a fresh worktree.
+The repository carries two controlled lwIP patches on the same three-file TCP surface. `patches/lwip-p4-cc-hooks.patch` provides the generic ACK/loss/RTO, delivery, and pacing hooks. `patches/lwip-sack-recovery.patch` contains SACK/RACK transport integration: `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON` enables SACK negotiation/scoreboard/delivery evidence, while RFC 8985 recovery is selected only by `TCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON`. The old fixed-count selective-retransmission selector and its compatibility alias have been removed. Production/default builds keep the experimental RACK path disabled. Provenance CI hashes pristine critical TCP sources, verifies both patch identities and modified-file scope, reverse-applies the chain, and independently reapplies it to a fresh worktree.
 
 Both patches remain confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. P4/P5 keep policy, observations, and pacing behind the project hook boundary; the SACK increment still leaves sequence space, retransmission execution, queues, ACK processing, and RTO ownership in lwIP. Unbound/default PCBs retain the previously qualified behavior.
 
@@ -183,7 +183,7 @@ Reno / CUBIC / internal BBR
     -> congestion response only
 ```
 
-The old fixed-count sender-SACK selector remains only as a temporary non-RACK compatibility/differential path. The next transport work is to separate the RFC-required SACK scoreboard/evidence from that legacy selector, then delete the selector once RACK teardown and resource-cost gates are complete.
+The old fixed-count sender-SACK selector has been deleted after RACK teardown and incremental resource-cost qualification. SACK scoreboard/evidence remains independently buildable because it is required transport input for RFC 8985 RACK-TLP; it no longer implies a second recovery policy.
 
 On the qualified 260 ms / 10 Mbit/s / 4 MiB / 28-drop RACK path, the transport invariants are exact: 28 injected first-send drops, 28 retransmissions, zero false reordering, zero RTO fallback, zero unrelated qdisc drops, and exact payload delivery. The same recovery path is qualified across Reno, CUBIC, and internal BBR.
 
