@@ -59,7 +59,7 @@ jobs:
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build-sack-layout-default -DCMAKE_BUILD_TYPE=Release
           cmake --build .build-sack-layout-default --target tcp-shift-tcp-memory-contract --parallel
-          cmake -S . -B .build-sack-layout-on -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON
+          cmake -S . -B .build-sack-layout-on -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON
           cmake --build .build-sack-layout-on --target tcp-shift-tcp-memory-contract --parallel
           .build-sack-layout-default/tcp-shift-tcp-memory-contract | tee .build/sack-layout-default.txt
           .build-sack-layout-on/tcp-shift-tcp-memory-contract | tee .build/sack-layout-on.txt
@@ -458,7 +458,7 @@ jobs:
       - name: Build internal BBR qualification target
         run: |
           sh scripts/fetch-lwip.sh
-          cmake -S . -B .build-p6-bbr-loss -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON
+          cmake -S . -B .build-p6-bbr-loss -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
           cmake --build .build-p6-bbr-loss --target tcp-shift-p6-bbr tcp-shift-p2 --parallel
 
       - name: Run tcp-shift BBR with moderate random loss
@@ -585,7 +585,7 @@ jobs:
       - name: Build internal BBR qualification target
         run: |
           sh scripts/fetch-lwip.sh
-          cmake -S . -B .build-p6-bbr-repeated -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON
+          cmake -S . -B .build-p6-bbr-repeated -DCMAKE_BUILD_TYPE=Release -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
           cmake --build .build-p6-bbr-repeated --target tcp-shift-p6-bbr --parallel
 
       - name: Run tcp-shift BBR repeated-burst matrix
@@ -738,7 +738,7 @@ jobs:
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
-            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
           cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr --parallel
 
       - name: Run tcp-shift deterministic first-send loss
