@@ -717,6 +717,13 @@ int tcp_shift_lwip_cc_apply_internal_bbr(
                         (u8_t)TCP_SHIFT_LWIP_BBR_EXT_ARG_ID) != NULL) {
         return -1;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+    /* This PR defines ECN response only for loss-based Reno/CUBIC. Do not
+     * silently negotiate ECN on the experimental internal BBR path. */
+    if ((adapter->pcb->flags & TF_ECN) != 0U) {
+        return -1;
+    }
+#endif
 
     binding = calloc(1U, sizeof(*binding));
     if (binding == NULL) {
