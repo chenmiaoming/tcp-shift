@@ -168,7 +168,7 @@ Before #40, the same 3/4-burst cases had produced 919 / 1406 retransmissions plu
 
 ## Bounded sender SACK recovery — merged PR #41
 
-PR #41 keeps sender SACK separate from the compact BBR controller and gated by `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY`, which remains OFF by default. Legacy/production qualification therefore retains the previous NewReno path unless a dedicated experiment explicitly opts in.
+PR #41 originally kept sender SACK separate from the compact BBR controller behind the historical `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` experiment. That flag and its fixed-count selective-retransmission path have since been removed. Current SACK evidence uses `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE`; loss/recovery experiments that require selective recovery use RFC 8985 RACK-TLP instead.
 
 The controlled `patches/lwip-sack-recovery.patch` stays on the same pinned three-file lwIP surface. It:
 

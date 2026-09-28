@@ -124,28 +124,19 @@
 #define TCP_QUEUE_OOSEQ 1
 
 /*
- * Sender SACK evidence is separate from retransmission policy.
+ * Sender SACK evidence is transport input for RFC 8985 RACK-TLP, not a
+ * retransmission policy of its own.
  *
  * TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE enables SACK negotiation, scoreboard
- * tagging, and delivery evidence required by RFC 8985 RACK-TLP. The legacy
- * fixed-count selective retransmission selector has its own build flag and is
- * not part of the RACK path.
- *
- * The old TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY macro remains a source-level
- * compatibility alias for non-CMake consumers during the migration.
+ * tagging, and delivery evidence. The former fixed-count selective-
+ * retransmission compatibility selector has been removed.
  *
  * Enabling upstream SACK negotiation also needs receive-side SACK storage.
  * Two 8-byte ranges are the minimum warning-clean value for the pinned lwIP
  * implementation under the project's -Werror build.
  */
-#ifndef TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
-#define TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY 0
-#endif
 #ifndef TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
-#define TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
-#endif
-#ifndef TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
-#define TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
+#define TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE 0
 #endif
 #if TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
 #define LWIP_TCP_SACK_OUT 1

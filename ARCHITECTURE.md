@@ -120,7 +120,7 @@ Pinned lwIP remains at:
 d08f4773edd0182b7910fc8f046eed82ffcd67c9
 ```
 
-`tcp-shift` does not vendor a broad lwIP fork. `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies the controlled patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. The second patch now separates SACK evidence from recovery policy: `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON` enables SACK negotiation/scoreboard/delivery evidence and is propagated through the lwIP target because enabling upstream SACK changes the public `struct tcp_pcb` layout. `TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=ON` separately opts into the old fixed-count selective-retransmission compatibility path. RFC 8985 RACK-TLP requires SACK evidence and rejects the legacy selector.
+`tcp-shift` does not vendor a broad lwIP fork. `scripts/fetch-lwip.sh` records pristine critical-source hashes and then applies the controlled patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. The second patch keeps SACK evidence separate from recovery policy: `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON` enables SACK negotiation/scoreboard/delivery evidence and is propagated through the lwIP target because enabling upstream SACK changes the public `struct tcp_pcb` layout. RFC 8985 RACK-TLP requires that evidence and is the only project-owned selective-retransmission policy. The former fixed-count selector and compatibility alias have been removed; attempts to configure either old build flag fail closed.
 
 The permitted upstream modification surface remains exactly:
 

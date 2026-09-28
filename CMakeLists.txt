@@ -11,16 +11,6 @@ option(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
     OFF
 )
 
-option(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR
-    "Enable the legacy fixed-count selective-retransmission compatibility path"
-    OFF
-)
-
-option(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY
-    "Deprecated alias: enable SACK evidence plus the legacy fixed-count selector"
-    OFF
-)
-
 option(TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     "Enable experimental RFC 8985 RACK-TLP sender loss detection"
     OFF
@@ -31,31 +21,18 @@ option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
     OFF
 )
 
-if(TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY)
-    message(DEPRECATION
-        "TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY is a compatibility alias; "
-        "use TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE and, only for legacy "
-        "differential tests, TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR")
-    set(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE ON)
-    set(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR ON)
-endif()
-
-if(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR AND
-   NOT TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
+if(DEFINED TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY OR
+   DEFINED TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
     message(FATAL_ERROR
-        "The legacy SACK selector requires TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON")
+        "The legacy fixed-count SACK recovery selector has been removed; "
+        "use TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON with "
+        "TCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON for RFC 8985 recovery")
 endif()
 
 if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
    NOT TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
     message(FATAL_ERROR
         "RFC 8985 RACK-TLP requires TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON")
-endif()
-
-if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP AND
-   TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
-    message(FATAL_ERROR
-        "RFC 8985 RACK-TLP must not be combined with the legacy fixed-count SACK selector")
 endif()
 
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
@@ -115,12 +92,6 @@ if(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE)
     # that includes lwIP headers must see the same layout as tcp_shift_lwip.
     target_compile_definitions(tcp_shift_lwip PUBLIC
         TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=1
-    )
-endif()
-
-if(TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR)
-    target_compile_definitions(tcp_shift_lwip PUBLIC
-        TCP_SHIFT_EXPERIMENTAL_LEGACY_SACK_SELECTOR=1
     )
 endif()
 
