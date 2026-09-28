@@ -177,7 +177,8 @@ Merged 2026-09-27 recovery work establishes the new baseline:
 
 - PR #67 fixed RFC 8985 mixed cumulative-ACK/SACK ordering and restored the deterministic 28-drop path from fragmented recovery to the same recovery-episode count as the sender-SACK reference;
 - PR #68 made RFC 8985 time evidence the sole fast-loss oracle whenever RACK-TLP is enabled. An unavailable RACK status now fails closed instead of falling back to the legacy fixed three-later-SACK detector;
-- PR #69 proved the same RACK transport path across Reno, CUBIC, and internal BBR and fixed a selector integration bug that had dropped `on_sack` / `on_recovery_exit` transport hooks for loss-based controllers.
+- PR #69 proved the same RACK transport path across Reno, CUBIC, and internal BBR and fixed a selector integration bug that had dropped `on_sack` / `on_recovery_exit` transport hooks for loss-based controllers;
+- PR #75 deleted the legacy fixed three-later-SACK retransmission selector, its build option, and the deprecated compatibility alias, leaving SACK evidence separate from RACK recovery policy.
 
 The intended transport ownership is:
 
@@ -200,13 +201,14 @@ Development therefore proceeds by replacement, not accumulation:
 3. **Legacy BBR loss experiments are migrated to RACK.** SACK layout qualification remains evidence-only; moderate-loss, repeated-burst, and deterministic first-send-loss BBR references use SACK evidence plus RACK-TLP.
 4. **RACK recovery-timer lifecycle is qualified.** Teardown cancels the exact flow generation, stale releases are harmless across registry-slot reuse, and the real epoll-owned recovery scheduler reuses one process-wide timerfd without per-flow timers/threads/polling.
 5. **Incremental RACK resource cost is qualified.** The fail-closed A/B gate compares the same commit with default transport versus SACK-evidence+RACK. On the qualified 128-flow run, RACK added 120 bytes of static per-flow transport state, 248 bytes of process-wide loop state, 15 KiB of staged-idle PSS beyond the default build, and 12 KiB of incremental post-drain PSS retention. Idle CPU remained zero ticks, the small-operation CPU result matched the default build, and RACK added exactly one process-wide timerfd with zero lossless-workload timer wakeups/callbacks/expirations.
-6. **Review RACK exposure next.** With the legacy selector removed, keep RACK-TLP experimental/default-OFF until the exposure decision explicitly reviews the qualified RFC 8985 subset and provider/OpenVZ evidence boundary. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
-7. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
+6. **Remove native DupAck recovery ownership from RACK flows.** On a RACK-enabled connection that negotiated SACK, the pinned lwIP `dupacks >= 3 -> tcp_rexmit_fast()` threshold must not independently enter recovery. RFC 8985 still uses the SACKed-segment count to collapse `RACK.reo_wnd` to zero when appropriate, and a DupAck without SACK remains evidence for the TLP retransmission ambiguity case in section 7.4.2. Once RACK has already entered `TF_INFR`, Reno/CUBIC may retain native recovery-window inflation. Non-RACK or non-SACK connections retain the ordinary DupAck fallback.
+7. **Review RACK exposure next.** After recovery ownership is qualified, keep RACK-TLP experimental/default-OFF until the exposure decision explicitly reviews the qualified RFC 8985 subset and provider/OpenVZ evidence boundary. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
+8. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
 
-Current main checkpoint after merged PR #74:
+Current main checkpoint after merged PR #75:
 
 ```text
-main: 5587abe2b62f8235d3f44669291bf03752cc7b6b
+main: 8831caaa4993a850455399a115b7d13cdc04e219
 
 RACK-TLP:
 - RFC 8985 is the sole fast-loss oracle in RACK builds
@@ -217,7 +219,8 @@ RACK-TLP:
 - 28-drop exact recovery qualified
 - Reno / CUBIC / internal BBR controller matrix qualified
 - incremental RACK resource gate: +120 B static per flow, +248 B loop state, +15 KiB staged-idle PSS at 128 flows, +12 KiB incremental post-drain PSS, zero idle timer wakeups
-- current RFC-first cleanup branch deletes the legacy fixed-count selector and deprecated compatibility alias while preserving SACK evidence for RACK
+- PR #75 deleted the legacy fixed-count selector and deprecated compatibility alias while preserving SACK evidence for RACK
+- current RFC-first cleanup branch removes the remaining native DupAck-threshold recovery entry from RACK+SACK flows and connects RFC 8985 section 7.4.2 no-SACK DupAck handling
 ```
 
 The compact internal BBR controller remains an internal/experimental controller. The remaining deterministic performance delta is a measurement topic, not permission to reintroduce non-RFC transport shortcuts.
