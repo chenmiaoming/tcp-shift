@@ -190,6 +190,23 @@ static int tcp_shift_cc_selector_paced_reno_loss(
         adapter, &tcp_shift_reno_ops, transport, policy);
 }
 
+static int tcp_shift_cc_selector_paced_reno_ecn(
+    void *state,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = state;
+    int result;
+
+    result = tcp_shift_reno_ops.on_ecn(
+        &adapter->controller_state, transport, policy);
+    if (result != 0) {
+        return result;
+    }
+    return tcp_shift_cc_selector_apply_transport_pacing(
+        adapter, &tcp_shift_reno_ops, transport, policy);
+}
+
 static int tcp_shift_cc_selector_paced_reno_timeout(
     void *state,
     const struct tcp_shift_cc_transport *transport,
@@ -243,6 +260,23 @@ static int tcp_shift_cc_selector_paced_cubic_loss(
         adapter, &tcp_shift_cubic_ops, transport, policy);
 }
 
+static int tcp_shift_cc_selector_paced_cubic_ecn(
+    void *state,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = state;
+    int result;
+
+    result = tcp_shift_cubic_ops.on_ecn(
+        &adapter->controller_state, transport, policy);
+    if (result != 0) {
+        return result;
+    }
+    return tcp_shift_cc_selector_apply_transport_pacing(
+        adapter, &tcp_shift_cubic_ops, transport, policy);
+}
+
 static int tcp_shift_cc_selector_paced_cubic_timeout(
     void *state,
     const struct tcp_shift_cc_transport *transport,
@@ -272,6 +306,7 @@ static const struct tcp_shift_cc_ops tcp_shift_cc_selector_paced_reno_ops = {
     .init = NULL,
     .on_ack = tcp_shift_cc_selector_paced_reno_ack,
     .on_loss = tcp_shift_cc_selector_paced_reno_loss,
+    .on_ecn = tcp_shift_cc_selector_paced_reno_ecn,
     .on_timeout = tcp_shift_cc_selector_paced_reno_timeout,
 };
 
@@ -281,6 +316,7 @@ static const struct tcp_shift_cc_ops tcp_shift_cc_selector_paced_cubic_ops = {
     .init = NULL,
     .on_ack = tcp_shift_cc_selector_paced_cubic_ack,
     .on_loss = tcp_shift_cc_selector_paced_cubic_loss,
+    .on_ecn = tcp_shift_cc_selector_paced_cubic_ecn,
     .on_timeout = tcp_shift_cc_selector_paced_cubic_timeout,
 };
 
@@ -404,6 +440,38 @@ static int tcp_shift_cc_selector_call_paced_rack_retrans_loss(
     return result;
 }
 
+static int tcp_shift_cc_selector_call_paced_ecn(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb)
+{
+    const struct tcp_shift_cc_ops *inner;
+    const struct tcp_shift_cc_ops *wrapper;
+    void *inner_state;
+    int result;
+
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->on_ecn == NULL) {
+        return 0;
+    }
+    if (adapter == NULL || adapter->controller.ops == NULL ||
+        tcp_shift_cc_selector_is_loss_based_ops(adapter->controller.ops) == 0) {
+        return tcp_shift_cc_selector_base_hook_ops->on_ecn(adapter, pcb);
+    }
+
+    inner = adapter->controller.ops;
+    wrapper = tcp_shift_cc_selector_wrapper_for(inner);
+    if (wrapper == NULL) {
+        return tcp_shift_cc_selector_base_hook_ops->on_ecn(adapter, pcb);
+    }
+    inner_state = adapter->controller.state;
+    adapter->controller.ops = wrapper;
+    adapter->controller.state = adapter;
+    result = tcp_shift_cc_selector_base_hook_ops->on_ecn(adapter, pcb);
+    adapter->controller.ops = inner;
+    adapter->controller.state = inner_state;
+    return result;
+}
+
 static int tcp_shift_cc_selector_call_paced_timeout(
     struct tcp_shift_lwip_cc_adapter *adapter,
     struct tcp_pcb *pcb)
@@ -476,6 +544,12 @@ static int tcp_shift_cc_selector_pacing_on_loss(void *arg,
                                                  tcpwnd_size_t lost_bytes)
 {
     return tcp_shift_cc_selector_call_paced_loss(arg, pcb, lost_bytes);
+}
+
+static int tcp_shift_cc_selector_pacing_on_ecn(void *arg,
+                                                struct tcp_pcb *pcb)
+{
+    return tcp_shift_cc_selector_call_paced_ecn(arg, pcb);
 }
 
 static int tcp_shift_cc_selector_pacing_on_rack_retrans_loss(
@@ -607,6 +681,7 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_sack = tcp_shift_cc_selector_pacing_on_sack,
         .on_loss = tcp_shift_cc_selector_pacing_on_loss,
+        .on_ecn = tcp_shift_cc_selector_pacing_on_ecn,
         .on_rack_retrans_loss =
             tcp_shift_cc_selector_pacing_on_rack_retrans_loss,
         .on_tlp_loss = tcp_shift_cc_selector_pacing_on_tlp_loss,
