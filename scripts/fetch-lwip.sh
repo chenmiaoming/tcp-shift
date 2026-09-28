@@ -9,6 +9,7 @@ BUILD="$ROOT/.build"
 LWIP_DIR="$DEPS/lwip"
 PATCH="$ROOT/patches/lwip-p4-cc-hooks.patch"
 SACK_PATCH="$ROOT/patches/lwip-sack-recovery.patch"
+ECN_PATCH="$ROOT/patches/lwip-ecn.patch"
 mkdir -p "$DEPS" "$BUILD"
 
 if [ ! -d "$LWIP_DIR/.git" ]; then
@@ -21,6 +22,10 @@ fi
 }
 [ -f "$SACK_PATCH" ] || {
     echo "missing lwIP SACK recovery patch: $SACK_PATCH" >&2
+    exit 1
+}
+[ -f "$ECN_PATCH" ] || {
+    echo "missing lwIP ECN patch: $ECN_PATCH" >&2
     exit 1
 }
 
@@ -58,6 +63,7 @@ EOF
 
 PATCH_SHA256=$(sha256sum "$PATCH" | awk '{print $1}')
 SACK_PATCH_SHA256=$(sha256sum "$SACK_PATCH" | awk '{print $1}')
+ECN_PATCH_SHA256=$(sha256sum "$ECN_PATCH" | awk '{print $1}')
 git -C "$LWIP_DIR" apply --check "$PATCH"
 git -C "$LWIP_DIR" apply "$PATCH"
 if ! git -C "$LWIP_DIR" apply --check "$SACK_PATCH"; then
@@ -66,12 +72,20 @@ if ! git -C "$LWIP_DIR" apply --check "$SACK_PATCH"; then
     exit 1
 fi
 git -C "$LWIP_DIR" apply "$SACK_PATCH"
+if ! git -C "$LWIP_DIR" apply --check "$ECN_PATCH"; then
+    echo "ECN patch context after P4+SACK:" >&2
+    git -C "$LWIP_DIR" diff --check >&2 || true
+    exit 1
+fi
+git -C "$LWIP_DIR" apply "$ECN_PATCH"
 git -C "$LWIP_DIR" diff --check
 cat > "$BUILD/lwip-patch.env" <<EOF
 LWIP_PATCH=patches/lwip-p4-cc-hooks.patch
 LWIP_PATCH_SHA256=$PATCH_SHA256
 LWIP_SACK_PATCH=patches/lwip-sack-recovery.patch
 LWIP_SACK_PATCH_SHA256=$SACK_PATCH_SHA256
+LWIP_ECN_PATCH=patches/lwip-ecn.patch
+LWIP_ECN_PATCH_SHA256=$ECN_PATCH_SHA256
 EOF
 
 git -C "$LWIP_DIR" diff -- src/core/tcp.c src/core/tcp_in.c src/core/tcp_out.c \
