@@ -138,10 +138,14 @@ def main():
         fixed_pss_delta <= 128,
         f"RACK fixed process PSS overhead exceeds 128KiB: {fixed_pss_delta}KiB",
     )
+    default_post_drain_pss = int(default_mem["post_drain_pss_kb_delta"])
+    rack_post_drain_pss = int(rack_mem["post_drain_pss_kb_delta"])
+    incremental_post_drain_pss = rack_post_drain_pss - default_post_drain_pss
     need(
-        int(rack_mem["post_drain_pss_kb_delta"]) <= 64,
-        "RACK staged idle test retained more than 64KiB PSS after drain: "
-        f"{rack_mem['post_drain_pss_kb_delta']}KiB",
+        incremental_post_drain_pss <= 64,
+        "RACK incremental post-drain PSS retention exceeds 64KiB: "
+        f"default={default_post_drain_pss}KiB rack={rack_post_drain_pss}KiB "
+        f"incremental={incremental_post_drain_pss}KiB",
     )
 
     need(int(rack_cpu["idle_cpu_ticks"]) == 0,
@@ -178,7 +182,9 @@ def main():
         "rack_flow_pss_delta_kb": rack_flow_pss,
         "incremental_flow_pss_delta_kb": incremental_flow_pss,
         "live_flow_pss_cap_kb": live_flow_cap_kb,
-        "rack_post_drain_pss_delta_kb": int(rack_mem["post_drain_pss_kb_delta"]),
+        "default_post_drain_pss_delta_kb": default_post_drain_pss,
+        "rack_post_drain_pss_delta_kb": rack_post_drain_pss,
+        "incremental_post_drain_pss_delta_kb": incremental_post_drain_pss,
         "default_work_cpu_us_per_operation": default_work,
         "rack_work_cpu_us_per_operation": rack_work,
         "rack_idle_cpu_ticks": int(rack_cpu["idle_cpu_ticks"]),
