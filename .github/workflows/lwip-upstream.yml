@@ -60,6 +60,8 @@ jobs:
             src/core/tcp.c \
             src/core/tcp_in.c \
             src/core/tcp_out.c \
+            src/include/lwip/prot/tcp.h \
+            src/include/lwip/tcp.h \
             > .build/lwip-expected-modified-files.txt
           cmp .build/lwip-expected-modified-files.txt .build/lwip-modified-files.txt
           test -z "$(git -C .deps/lwip ls-files --others --exclude-standard)"
@@ -69,7 +71,12 @@ jobs:
           git -C "$expected" apply "$PWD/$LWIP_PATCH"
           git -C "$expected" apply "$PWD/$LWIP_SACK_PATCH"
           git -C "$expected" apply "$PWD/$LWIP_ECN_PATCH"
-          for source in               src/core/tcp.c               src/core/tcp_in.c               src/core/tcp_out.c               src/include/lwip/prot/tcp.h               src/include/lwip/tcp.h; do
+          for source in \
+              src/core/tcp.c \
+              src/core/tcp_in.c \
+              src/core/tcp_out.c \
+              src/include/lwip/prot/tcp.h \
+              src/include/lwip/tcp.h; do
             cmp ".deps/lwip/$source" "$expected/$source"
           done
           git -C .deps/lwip worktree remove --force "$expected"
