@@ -199,14 +199,14 @@ Development therefore proceeds by replacement, not accumulation:
 2. **RACK and legacy selection are now separate code paths.** RFC 8985 RACK timing evidence and the fixed three-later-SACK heuristic no longer share a policy helper; they share only neutral segment requeue/accounting mechanics.
 3. **Delete the legacy fixed-count selector once rollback evidence is no longer needed.** The compatibility selector remains available only for explicit non-RACK differential qualification. Do not route new functionality through it.
 4. **RACK recovery-timer lifecycle is qualified.** Teardown cancels the exact flow generation, stale releases are harmless across registry-slot reuse, and the real epoll-owned recovery scheduler reuses one process-wide timerfd without per-flow timers/threads/polling.
-5. **Measure the incremental RACK cost next.** Rerun P3 memory/capacity and timer/wakeup/CPU gates with RACK-TLP enabled. Do not widen budgets to make the feature fit.
-6. **Only then consider exposure or final legacy-selector deletion.** RACK-TLP remains experimental/default-OFF until resource qualification is complete. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
+5. **Incremental RACK resource cost is qualified.** The fail-closed A/B gate compares the same commit with default transport versus SACK-evidence+RACK. On the qualified 128-flow run, RACK added 120 bytes of static per-flow transport state, 248 bytes of process-wide loop state, 15 KiB of staged-idle PSS beyond the default build, and 12 KiB of incremental post-drain PSS retention. Idle CPU remained zero ticks, the small-operation CPU result matched the default build, and RACK added exactly one process-wide timerfd with zero lossless-workload timer wakeups/callbacks/expirations.
+6. **Delete the legacy fixed-count selector next, then review exposure.** The compatibility selector is no longer on the forward RFC-first path. Remove it and its deprecated compatibility alias without disturbing the SACK evidence substrate, then review whether RACK-TLP is ready for production/default exposure. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
 7. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
 
-Current main checkpoint after PR #69:
+Current main checkpoint after PR #73, with PR #74 resource qualification validated on behavioral head `64282eff9dcd13ff1c23c6aa21bd378bc24aaa66`:
 
 ```text
-main: 7bd0e310b50ed8595e6e8abb77488d131f35fc77
+main: c851b884caa8547d437412e920551b500902bd07
 
 RACK-TLP:
 - RFC 8985 is the sole fast-loss oracle in RACK builds
@@ -216,7 +216,8 @@ RACK-TLP:
 - below/above-reordering-window behavior + D-SACK adaptation qualified
 - 28-drop exact recovery qualified
 - Reno / CUBIC / internal BBR controller matrix qualified
-- remaining production blocker before the next exposure/delete review: incremental RACK memory/wakeup/timer cost
+- incremental RACK resource gate: +120 B static per flow, +248 B loop state, +15 KiB staged-idle PSS at 128 flows, +12 KiB incremental post-drain PSS, zero idle timer wakeups
+- next RFC-first cleanup: delete the legacy fixed-count selector and deprecated compatibility alias, preserving SACK evidence for RACK
 ```
 
 The compact internal BBR controller remains an internal/experimental controller. The remaining deterministic performance delta is a measurement topic, not permission to reintroduce non-RFC transport shortcuts.
