@@ -169,63 +169,64 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: replace legacy recovery heuristics with RFC-defined transport recovery
+## Active next milestone: RFC 3168 ECN transport and RFC 9438 CUBIC ECN response
 
-The current development target is no longer "tune BBR until the deterministic-loss benchmark improves." Transport semantics come first.
+The RFC 8985 recovery replacement is now closed on main for the current experimental scope:
 
-Merged 2026-09-27 recovery work establishes the new baseline:
+- PR #75 deleted the legacy fixed-count SACK recovery selector;
+- PR #77 made RACK the fast-loss/recovery-entry owner on RACK+SACK flows and connected the RFC 8985 section 7.4.2 no-SACK DupAck TLP ambiguity signal;
+- PR #76 restarted ordinary RTO timing after every valid PTO probe opportunity while flight remains, including no-probe and failed-probe paths.
 
-- PR #67 fixed RFC 8985 mixed cumulative-ACK/SACK ordering and restored the deterministic 28-drop path from fragmented recovery to the same recovery-episode count as the sender-SACK reference;
-- PR #68 made RFC 8985 time evidence the sole fast-loss oracle whenever RACK-TLP is enabled. An unavailable RACK status now fails closed instead of falling back to the legacy fixed three-later-SACK detector;
-- PR #69 proved the same RACK transport path across Reno, CUBIC, and internal BBR and fixed a selector integration bug that had dropped `on_sack` / `on_recovery_exit` transport hooks for loss-based controllers;
-- PR #75 deleted the legacy fixed three-later-SACK retransmission selector, its build option, and the deprecated compatibility alias, leaving SACK evidence separate from RACK recovery policy.
-
-The intended transport ownership is:
+Current main checkpoint after merged PR #76:
 
 ```text
-SACK parsing / scoreboard / delivery evidence
-        -> RFC 8985 RACK loss detection
-        -> RACK retransmission selection
-        -> RFC 8985 TLP/PTO tail probing
-        -> ordinary RTO only as conservative terminal fallback
-
-Reno / CUBIC / internal BBR
-        -> consume transport loss/recovery events
-        -> do not own loss detection or retransmission selection
-```
-
-Development therefore proceeds by replacement, not accumulation:
-
-1. **SACK evidence is separate from recovery policy.** SACK parsing, scoreboard state, per-segment delivery evidence, D-SACK interpretation, and retransmission identity remain an independently buildable transport substrate required by RACK.
-2. **RFC 8985 RACK is now the sole project-owned selective-retransmission path.** The fixed three-later-SACK selector, its helper/wrapper functions, build option, and deprecated compatibility alias are deleted. Old flags fail closed instead of silently selecting a non-RFC path.
-3. **Legacy BBR loss experiments are migrated to RACK.** SACK layout qualification remains evidence-only; moderate-loss, repeated-burst, and deterministic first-send-loss BBR references use SACK evidence plus RACK-TLP.
-4. **RACK recovery-timer lifecycle is qualified.** Teardown cancels the exact flow generation, stale releases are harmless across registry-slot reuse, and the real epoll-owned recovery scheduler reuses one process-wide timerfd without per-flow timers/threads/polling.
-5. **Incremental RACK resource cost is qualified.** The fail-closed A/B gate compares the same commit with default transport versus SACK-evidence+RACK. On the qualified 128-flow run, RACK added 120 bytes of static per-flow transport state, 248 bytes of process-wide loop state, 15 KiB of staged-idle PSS beyond the default build, and 12 KiB of incremental post-drain PSS retention. Idle CPU remained zero ticks, the small-operation CPU result matched the default build, and RACK added exactly one process-wide timerfd with zero lossless-workload timer wakeups/callbacks/expirations.
-6. **Remove native DupAck recovery ownership from RACK flows.** On a RACK-enabled connection that negotiated SACK, the pinned lwIP `dupacks >= 3 -> tcp_rexmit_fast()` threshold must not independently enter recovery. RFC 8985 still uses the SACKed-segment count to collapse `RACK.reo_wnd` to zero when appropriate, and a DupAck without SACK remains evidence for the TLP retransmission ambiguity case in section 7.4.2. Once RACK has already entered `TF_INFR`, Reno/CUBIC may retain native recovery-window inflation. Non-RACK or non-SACK connections retain the ordinary DupAck fallback.
-7. **Close RFC 8985 PTO/RTO re-arm semantics.** The exposure-readiness audit found a section 7.3 gap: when a PTO opportunity could not send because the fresh-RTT/probe guard failed, tcp-shift left lwIP's pre-existing RTO age untouched. Restart the ordinary RTO from the PTO event whenever data remains in flight, including failed probe attempts, and keep RTO as the conservative terminal fallback.
-8. **Review RACK exposure next.** After recovery ownership and PTO/RTO semantics are qualified, keep RACK-TLP experimental/default-OFF until the exposure decision explicitly reviews the qualified RFC 8985 subset and provider/OpenVZ evidence boundary. Public BBR selection remains a separate exposure decision and still requires provider/OpenVZ evidence.
-9. **Keep BBR reference discipline.** BBR has no published RFC target; use Linux BBR behavior as the primary differential/reference implementation and the current IETF BBR draft only as a secondary semantic reference. Do not tune BBR gains to compensate for a transport/recovery defect.
-
-Current main checkpoint after merged PR #77:
-
-```text
-main: 2cb2bbb4dfe4f27953306d1b441d7f8b13714485
+main: 3dd4fefe2b9bfdbfc02616e6c65b417a63c17830
 
 RACK-TLP:
-- RFC 8985 is the sole fast-loss oracle in RACK builds
+- RFC 8985 time evidence is the sole fast-loss oracle in RACK builds
+- RACK owns selective retransmission and fast-loss entry on SACK-negotiated RACK flows
 - mixed cumulative ACK + SACK ordering qualified
-- ordinary tail loss and application-limited tail loss qualified
+- ordinary and application-limited tail loss qualified
 - lost retransmission qualified without RTO
 - below/above-reordering-window behavior + D-SACK adaptation qualified
 - 28-drop exact recovery qualified
 - Reno / CUBIC / internal BBR controller matrix qualified
-- incremental RACK resource gate: +120 B static per flow, +248 B loop state, +15 KiB staged-idle PSS at 128 flows, +12 KiB incremental post-drain PSS, zero idle timer wakeups
-- PR #75 deleted the legacy fixed-count selector and deprecated compatibility alias while preserving SACK evidence for RACK
-- PR #77 removed native DupAck-threshold recovery entry from RACK+SACK flows and connected RFC 8985 section 7.4.2 no-SACK DupAck handling
-- current readiness branch closes RFC 8985 section 7.3 RTO restart semantics after a TLP probe opportunity
+- generation-safe recovery timer teardown qualified
+- incremental resource cost qualified
+- TLP probe opportunity -> ordinary RTO restart semantics qualified
 ```
 
-The compact internal BBR controller remains an internal/experimental controller. The remaining deterministic performance delta is a measurement topic, not permission to reintroduce non-RFC transport shortcuts.
+RACK-TLP stays experimental/default-OFF pending provider/OpenVZ evidence and a separate exposure decision. Recovery work should not be reopened to compensate for congestion-controller performance.
+
+The next standards milestone is ECN, split by ownership rather than folded into CUBIC:
+
+```text
+IP/TCP transport
+    RFC 3168 negotiation + ECT/CE/ECE/CWR
+        -> explicit ECN congestion event
+            -> Reno / CUBIC congestion response
+
+loss path
+    RACK loss evidence
+        -> retransmission + congestion event
+
+ECN path
+    no packet-loss fact
+    no retransmission trigger
+```
+
+PR #78 is the first ECN transport increment and remains experimental/default-OFF. Its contract is:
+
+1. **Keep ECN distinct from loss.** The generic CC boundary has an explicit `on_ecn` event; ECN must never synthesize a RACK loss or retransmission.
+2. **Use the RFC 3168 baseline first.** Active SYN uses ECE+CWR, a supporting SYN-ACK uses ECE, CE on valid negotiated data latches ECE, and CWR closes the receiver echo episode.
+3. **Mark only eligible first-transmission data ECT(0).** Pure ACK/control traffic and retransmitted data remain Not-ECT. Preserve DSCP bits when changing the two ECN bits. RFC 8311 relaxations are not part of this profile.
+4. **Keep state bounded.** The ECN build reuses free PCB flag bits plus one conditional CWR response boundary; no per-packet heap allocation, polling, thread, or timer is introduced.
+5. **Give CUBIC the RFC 9438 ECN reduction semantics.** ECN uses beta=0.7 and repeated congestion events may reduce cwnd to 1 SMSS. The packet-loss path retains its existing recovery floor.
+6. **Do not overclaim completion.** RFC 9438 additionally requires reducing the sending rate when ECE persists at cwnd=1 SMSS. That pacing/rate behavior plus deterministic/live CE qualification must land before tcp-shift calls CUBIC ECN complete.
+7. **Do not silently extend internal BBR.** The compact internal BBR path has no ECN response in this increment and must reject an ECN-negotiated PCB in the experimental ECN build.
+8. **Preserve provenance.** ECN lives in a third controlled lwIP patch after P4 hooks and SACK/RACK integration; default builds compile the patch with ECN disabled.
+
+After ECN transport + CUBIC ECN are qualified, return to BBR performance/reference work. BBR still has no published RFC target; Linux BBR remains the primary differential reference and the IETF BBR draft only a secondary semantic reference.
 
 ## Merge discipline
 
