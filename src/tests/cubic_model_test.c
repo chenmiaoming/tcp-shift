@@ -99,6 +99,17 @@ static int test_slow_start_app_limited_loss_and_timeout(void)
     CHECK(policy.ssthresh_bytes >= 4899U && policy.ssthresh_bytes <= 4900U);
     CHECK(policy.cwnd_bytes == policy.ssthresh_bytes);
 
+    /* RFC 9438: repeated ECE congestion events may reduce CUBIC below the
+     * loss path's two-SMSS floor, down to one SMSS. */
+    transport.inflight_bytes = 2000U;
+    CHECK(tcp_shift_cubic_model_on_ecn(&model, &transport, &policy) == 0);
+    CHECK(model.ecn_events == 1U);
+    CHECK(policy.cwnd_bytes >= 1399U && policy.cwnd_bytes <= 1400U);
+    transport.inflight_bytes = 1400U;
+    CHECK(tcp_shift_cubic_model_on_ecn(&model, &transport, &policy) == 0);
+    CHECK(model.ecn_events == 2U);
+    CHECK(policy.cwnd_bytes == 1000U);
+
     transport.inflight_bytes = 9000U;
     CHECK(tcp_shift_cubic_model_on_timeout(&model, &transport, &policy) == 0);
     CHECK(model.timeout_events == 1U);
