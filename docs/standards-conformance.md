@@ -22,8 +22,9 @@ This document defines the reference hierarchy for protocol and congestion-contro
 | NewReno partial-ACK recovery | RFC 6582 | transport-owned RFC 6582-style continuation across partial ACKs; do not claim broader SACK/RACK recovery conformance from this alone |
 | CC-side SRTT observation | RFC 6298-style estimator with Karn filtering | only the SRTT observation subset is project-owned; the transport RTO implementation remains lwIP-owned |
 | Window scaling | RFC 7323 via upstream lwIP | enabled and live-qualified; tcp-shift currently advertises receive scale 0 while retaining 32-bit sender-side accounting |
-| CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; Linux CUBIC is a differential reference |
+| CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; the experimental ECN path has an explicit congestion-event API and beta reduction down to 1 SMSS, but persistent ECE at 1 SMSS still needs the RFC 9438 sending-rate response and live CE qualification before an ECN-complete claim; Linux CUBIC remains a differential reference |
 | HyStart++ | RFC 9406 | RFC 9406 HyStart++ with qualified recommended constants; delivery-domain round representation remains a documented abstraction |
+| TCP ECN | RFC 3168; RFC 8311 only as context for later experimental relaxations | experimental/default-OFF transport substrate: ECE/CWR negotiation/state, CE echo, and ECT(0)-only first-transmission data are being qualified; pure ACK/control and retransmitted data remain Not-ECT under the RFC 3168 baseline; RFC 8311 relaxations are intentionally not used by this profile |
 | Sender SACK evidence | SACK semantics from the TCP standards/upstream lwIP | SACK negotiation/scoreboard/delivery evidence is independently buildable as transport input for RACK; the former fixed three-later-SACK compatibility selector and its old build alias are removed and fail closed |
 | RACK-TLP | RFC 8985; RFC 2883 for D-SACK interpretation | experimental/default-OFF RFC-driven implementation; RFC 8985 time evidence is the sole fast-loss oracle and RACK is the sole project-owned selective-retransmission policy; core math, mixed ACK/SACK delivery ordering, reordering timer integration, timer-driven repair, TLP/PTO tail probing, lost-retransmission repair, TLP RTO re-arm semantics, reordering/D-SACK adaptation, generation-safe timer teardown, resource-cost qualification, and deterministic Reno/CUBIC/internal-BBR recovery are covered; provider/OpenVZ production qualification and explicit exposure review remain separate |
 | BBR | Linux mainline BBRv1 behavior; current IETF BBR draft as secondary semantic reference | compact BBRv1-style controller with selected independently justified newer semantics; never describe it as Linux-BBR-equivalent or RFC-conformant |
@@ -42,6 +43,8 @@ Normative/reference links:
 - RFC 6298: https://www.rfc-editor.org/rfc/rfc6298.html
 - RFC 6928: https://www.rfc-editor.org/rfc/rfc6928.html
 - RFC 7323: https://www.rfc-editor.org/rfc/rfc7323.html
+- RFC 3168: https://www.rfc-editor.org/rfc/rfc3168.html
+- RFC 8311: https://www.rfc-editor.org/rfc/rfc8311.html
 - RFC 8201: https://www.rfc-editor.org/rfc/rfc8201.html
 - RFC 2883: https://www.rfc-editor.org/rfc/rfc2883.html
 - RFC 8985: https://www.rfc-editor.org/rfc/rfc8985.html
@@ -57,6 +60,7 @@ Good examples:
 
 - "RFC 6928 IW10 formula implemented as the default initial-window policy."
 - "RFC 9438 core-algorithm aligned with RFC 9406 HyStart++."
+- "RFC 3168 ECN transport substrate experimental/default-OFF; packet and live CE qualification incomplete."
 - "RFC 6582-style NewReno partial-ACK recovery."
 - "RFC 6298-style SRTT observation; RTO remains transport-owned."
 - "RFC 8985 RACK-TLP experimental/default-OFF; current qualified subset documented separately."
