@@ -82,6 +82,7 @@ static int test_invalid_inputs(void)
     CHECK(tcp_shift_cc_on_ack(&cc, &transport, &ack, &policy) == -1);
     loss.lost_bytes = 0U;
     CHECK(tcp_shift_cc_on_loss(&cc, &transport, &loss, &policy) == -1);
+    CHECK(tcp_shift_cc_on_ecn(NULL, &transport, &policy) == -1);
     CHECK(tcp_shift_cc_on_timeout(NULL, &transport, &policy) == -1);
     return 0;
 }
@@ -145,6 +146,14 @@ static int test_reno_transitions(void)
     CHECK(policy.ssthresh_bytes == 3000U);
     CHECK(policy.cwnd_bytes == 3000U);
     CHECK(state.ca_acked_bytes == 0U);
+
+    /* ECN is an explicit congestion event without loss/retransmission state.
+     * Reno applies its normal multiplicative reduction. */
+    transport.inflight_bytes = 3000U;
+    transport.send_window_bytes = 3000U;
+    CHECK(tcp_shift_cc_on_ecn(&cc, &transport, &policy) == 0);
+    CHECK(policy.ssthresh_bytes == 2000U);
+    CHECK(policy.cwnd_bytes == 2000U);
 
     /* Timeout keeps the reduced ssthresh but collapses cwnd to the configured
      * minimum. */
