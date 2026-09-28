@@ -16,6 +16,11 @@ option(TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     OFF
 )
 
+option(TCP_SHIFT_EXPERIMENTAL_ECN
+    "Enable experimental RFC 3168 TCP ECN transport support"
+    OFF
+)
+
 option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
     "Use the pinned lwIP legacy initial window instead of RFC 6928 IW10"
     OFF
@@ -98,6 +103,14 @@ endif()
 if(TCP_SHIFT_EXPERIMENTAL_RACK_TLP)
     target_compile_definitions(tcp_shift_lwip PUBLIC
         TCP_SHIFT_EXPERIMENTAL_RACK_TLP=1
+    )
+endif()
+
+if(TCP_SHIFT_EXPERIMENTAL_ECN)
+    # The ECN patch conditionally extends struct tcp_pcb, so every target that
+    # includes lwIP headers must share the same definition.
+    target_compile_definitions(tcp_shift_lwip PUBLIC
+        TCP_SHIFT_EXPERIMENTAL_ECN=1
     )
 endif()
 
