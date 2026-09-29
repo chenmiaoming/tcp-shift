@@ -221,6 +221,27 @@ target_link_libraries(tcp_shift_lwip_cc_adapter_pacing_bypass_qualification PUBL
     tcp_shift_rack_tlp
 )
 
+add_library(tcp_shift_lwip_cc_adapter_cubic_trace_qualification STATIC
+    src/lwip/cc_adapter.c
+    src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
+)
+target_include_directories(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PRIVATE
+    TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION=1
+)
+target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PUBLIC
+    tcp_shift_cc
+    tcp_shift_lwip
+    tcp_shift_pacer
+    tcp_shift_rack_tlp
+)
+
 add_library(tcp_shift_lwip_cc_bbr_qualification STATIC
     src/lwip/cc_bbr_accept.c
 )
@@ -281,6 +302,27 @@ target_link_libraries(tcp_shift_bridge_cubic_pacing_bypass PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter_pacing_bypass_qualification
+    tcp_shift_lwip_tcp_memory
+)
+
+add_library(tcp_shift_bridge_cubic_trace STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_cubic_trace PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_bridge_cubic_trace PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_bridge_cubic_trace PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_selected
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
+)
+target_link_libraries(tcp_shift_bridge_cubic_trace PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter_cubic_trace_qualification
     tcp_shift_lwip_tcp_memory
 )
 
@@ -386,6 +428,25 @@ target_link_libraries(tcp-shift-p6-cubic-pacing-bypass PRIVATE
     tcp_shift_bridge_cubic_pacing_bypass
 )
 target_link_options(tcp-shift-p6-cubic-pacing-bypass PRIVATE
+    -Wl,--gc-sections
+)
+
+add_executable(tcp-shift-p6-cubic-recovery-trace
+    src/p2_main.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p6-cubic-recovery-trace PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-p6-cubic-recovery-trace PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p6-cubic-recovery-trace PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_cubic_trace
+)
+target_link_options(tcp-shift-p6-cubic-recovery-trace PRIVATE
     -Wl,--gc-sections
 )
 
