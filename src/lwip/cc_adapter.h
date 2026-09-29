@@ -49,6 +49,8 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t ack_events;
     uint64_t loss_events;
     uint64_t ecn_events;
+    uint64_t ecn_rto_wait_enters;
+    uint64_t ecn_rto_wait_releases;
     uint64_t timeout_events;
     uint64_t policy_updates;
     uint64_t controller_errors;
@@ -113,6 +115,7 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t rack_reo_wnd_mult;
     uint32_t rack_reo_wnd_mult_max;
     uint32_t rack_reo_wnd_persist;
+    uint32_t ecn_min_cwnd_bytes;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
 
