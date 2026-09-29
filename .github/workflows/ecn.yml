@@ -75,6 +75,9 @@ jobs:
           assert "(flags & (TCP_ECE | TCP_CWR)) != TCP_ECE" in tin
           assert "tcp_shift_tcp_input_ecn() == TCP_SHIFT_IP_ECN_CE" in tin
           assert "tcp_shift_lwip_cc_hook_ecn(pcb)" in tin
+          assert "(pcb->flags & TF_ECN) != 0U" in tin
+          assert "(flags & TCP_ECE) != 0U" in tin
+          assert "tcp_shift_lwip_cc_hook_ack_observe(pcb, acked)" in tin
           assert "tcp_clear_flags(pcb, TF_ECN_ECE)" in tin
           assert "cwnd_was_one" in tin
           assert "pcb->ecn_rto_wait = 1U" in tin
