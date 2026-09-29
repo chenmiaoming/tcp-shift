@@ -62,7 +62,7 @@ diff --git a/src/include/lwip/tcp.h b/src/include/lwip/tcp.h
 diff --git a/src/core/tcp.c b/src/core/tcp.c
 --- a/src/core/tcp.c
 +++ b/src/core/tcp.c
-@@ -1276,46 +1276,64 @@
+@@ -1276,46 +1276,65 @@
            ++pcb->rtime;
          }
  
@@ -112,6 +112,7 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 +            /* RFC 3168 section 6.1.2: this expiry only releases new data.
 +             * It is not evidence that an outstanding segment was lost. */
 +            pcb->ecn_rto_wait = 0U;
++            tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 0U);
 +            pcb->rtime = pcb->unacked != NULL ? 0 : -1;
 +            if (pcb->unsent != NULL) {
 +              (void)tcp_output(pcb);
@@ -182,7 +183,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #include "lwip/mem.h"
  #include "lwip/memp.h"
  #include "lwip/inet_chksum.h"
-@@ -137,10 +138,83 @@
+@@ -137,10 +138,84 @@
      }
    }
  }
@@ -253,6 +254,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    if (cwnd_was_one != 0U) {
 +      pcb->rtime = 0;
 +      pcb->ecn_rto_wait = 1U;
++      tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U);
 +    }
 +  }
 +
@@ -270,7 +272,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
   * the segment between the PCBs and passes it on to tcp_process(), which implements
   * the TCP finite state machine. This function is called by the IP layer (in
   * ip_input()).
-@@ -729,8 +803,13 @@
+@@ -729,8 +804,13 @@
  #endif /* LWIP_VLAN_PCP */
      /* inherit socket options */
      npcb->so_options = pcb->so_options & SOF_INHERITED;
@@ -286,7 +288,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
         for it. */
      TCP_REG_ACTIVE(npcb);
  
-@@ -890,9 +969,15 @@
+@@ -890,9 +970,15 @@
  #if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
    tcp_shift_sack_seen = 0U;
  #endif
@@ -305,7 +307,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
      /* accept SYN only in 2 states: */
      if ((pcb->state != SYN_SENT) && (pcb->state != SYN_RCVD)) {
        return ERR_OK;
-@@ -906,9 +991,15 @@
+@@ -906,9 +992,15 @@
                                      ackno, pcb->snd_nxt, pcb->unacked ? "" : " empty:",
                                      pcb->unacked ? lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0));
        /* received SYN ACK with expected sequence number? */
@@ -324,7 +326,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
          pcb->rcv_ann_right_edge = pcb->rcv_nxt;
          pcb->lastack = ackno;
          pcb->snd_wnd = tcphdr->wnd;
-@@ -1405,13 +1496,18 @@
+@@ -1405,13 +1497,18 @@
           in fact have been sent once. */
        pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
  
@@ -350,7 +352,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  
        if (recovery_partial && pcb->unacked != NULL) {
          /* A partial ACK identifies the next hole without waiting for another
-@@ -1578,9 +1674,15 @@
+@@ -1578,9 +1675,15 @@
      /* The sequence number must be within the window (above rcv_nxt
         and below rcv_nxt + rcv_wnd) in order to be further
         processed. */
