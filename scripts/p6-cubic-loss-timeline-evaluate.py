@@ -44,12 +44,15 @@ def read_linux_rows(path):
     rows = [dict(zip(header, line.split("\t"))) for line in lines[1:] if line]
     transitions = []
     prior_retrans = 0
-    for row in rows:
+    first_pre_retrans = None
+    for index, row in enumerate(rows):
         current = int(row["total_retrans"])
         if current > prior_retrans:
+            if first_pre_retrans is None:
+                first_pre_retrans = rows[index - 1] if index > 0 else row
             transitions.append((current - prior_retrans, row))
         prior_retrans = current
-    return rows, transitions
+    return rows, transitions, first_pre_retrans
 
 
 def median(values):
