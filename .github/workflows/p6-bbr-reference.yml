@@ -16,6 +16,7 @@ on:
       - 'scripts/p6-bbr-loss-reference-evaluate.py'
       - 'scripts/p6-bbr-loss-same-stack-evaluate.py'
       - 'scripts/p6-bbr-first-send-loss-evaluate.py'
+      - 'scripts/p6-first-send-controller-matrix-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -531,7 +532,13 @@ jobs:
             echo "## P6 BBR moderate random loss"
             echo
             echo "RTT=260ms rate=10Mbit random data loss=1% payload=4MiB queue=1784 packets"
-            for file in "$root/tcp-shift/summary.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+            for file in \
+              "$root/tcp-shift/summary.txt" \
+              "$root/linux-bbr/summary.txt" \
+              "$root/comparison.txt" \
+              "$root/tcp-shift-cubic/summary.txt" \
+              "$root/linux-cubic/summary.txt" \
+              "$root/controller-matrix.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
@@ -704,7 +711,7 @@ jobs:
 
   deterministic-first-send-loss-reference:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout tcp-shift
@@ -733,6 +740,7 @@ jobs:
           sh -n scripts/p6-bbr-long-flow.sh
           sh -n scripts/linux-cubic-pacing-reference.sh
           python3 -m py_compile scripts/p6-bbr-first-send-loss-evaluate.py
+          python3 -m py_compile scripts/p6-first-send-controller-matrix-evaluate.py
 
       - name: Build internal BBR with RACK recovery
         run: |
@@ -740,13 +748,31 @@ jobs:
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
-          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr --parallel
+          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 --parallel
 
       - name: Run tcp-shift deterministic first-send loss
         run: |
           out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift"
           sudo env \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-bbr" \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run tcp-shift CUBIC on the identical first-send loss path
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
             TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
@@ -778,6 +804,25 @@ jobs:
             TCP_SHIFT_LINUX_PACING_OUT="$out" \
             sh scripts/linux-cubic-pacing-reference.sh
 
+      - name: Run Linux CUBIC on the identical first-send loss path
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/linux-cubic"
+          sudo env \
+            TCP_SHIFT_LINUX_PACING_CC=cubic \
+            TCP_SHIFT_LINUX_PACING_CASE=first-send-loss-260ms \
+            TCP_SHIFT_LINUX_PACING_MODE=fq \
+            TCP_SHIFT_LINUX_PACING_RTT_MS=260 \
+            TCP_SHIFT_LINUX_PACING_RATE_MBIT=10 \
+            TCP_SHIFT_LINUX_PACING_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_LINUX_PACING_QUEUE_PKTS=1784 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_LINUX_PACING_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_LINUX_PACING_OUT="$out" \
+            sh scripts/linux-cubic-pacing-reference.sh
+
       - name: Compare deterministic first-send loss
         run: |
           root="$PWD/.build/p6-bbr-first-send-loss"
@@ -786,6 +831,17 @@ jobs:
             "$root/tcp-shift/summary.txt" \
             "$root/linux-bbr/summary.txt" \
             | tee "$root/comparison.txt"
+
+      - name: Compare first-send loss controller matrix
+        run: |
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-first-send-controller-matrix-evaluate.py \
+            "$root/tcp-shift/summary.txt" \
+            "$root/linux-bbr/summary.txt" \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/controller-matrix.txt"
 
       - name: Publish deterministic first-send evidence
         if: always()
