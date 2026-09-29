@@ -62,6 +62,7 @@ jobs:
           tin = Path(".deps/lwip/src/core/tcp_in.c").read_text()
           tout = Path(".deps/lwip/src/core/tcp_out.c").read_text()
           hooks = Path("src/lwip/cc_hooks.h").read_text()
+          selector = Path("src/lwip/cc_selector.c").read_text()
           bbr = Path("src/lwip/cc_bbr_internal.c").read_text()
 
           assert "#define TCP_FLAGS 0xffU" in prot
@@ -97,6 +98,9 @@ jobs:
           assert "(void)tcp_output(pcb)" in tcore
           assert "on_ecn" in hooks
           assert "on_ecn_rto_gate" in hooks
+          assert "tcp_shift_cc_selector_pacing_on_ecn_rto_gate" in selector
+          assert ".on_ecn_rto_gate =" in selector
+          assert "tcp_shift_cc_selector_base_hook_ops->on_ecn_rto_gate" in selector
           assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U)" in tin
           assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 0U)" in tcore
           ecn_helper = tin[tin.index("tcp_shift_tcp_ecn_process_flags"):
