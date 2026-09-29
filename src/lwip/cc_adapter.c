@@ -4,6 +4,9 @@
 
 #include <limits.h>
 #include <stddef.h>
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -2100,6 +2103,78 @@ static int tcp_shift_lwip_cc_on_rack_retrans_loss(
     return 1;
 }
 
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+static int tcp_shift_lwip_cc_cubic_trace_active(
+    const struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    return adapter != NULL && adapter->controller.ops != NULL &&
+                   adapter->controller.ops->name != NULL &&
+                   strncmp(adapter->controller.ops->name, "cubic", 5U) == 0
+               ? 1
+               : 0;
+}
+
+static void tcp_shift_lwip_cc_trace_cubic_loss(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_pcb *pcb,
+    const struct tcp_shift_cc_transport *transport,
+    const struct tcp_shift_cc_policy *policy,
+    uint32_t pre_cwnd,
+    uint32_t pre_ssthresh,
+    uint64_t pre_pacing)
+{
+    uint64_t now_ns;
+    uint64_t event_index;
+
+    if (!tcp_shift_lwip_cc_cubic_trace_active(adapter) || pcb == NULL ||
+        transport == NULL || policy == NULL) {
+        return;
+    }
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    event_index = adapter->stats != NULL ? adapter->stats->loss_events + 1U : 0U;
+    fprintf(stderr,
+            "tcp-shift-cubic-trace: event=loss index=%llu time_ns=%llu "
+            "recovery_active_before=%u lastack=%u snd_nxt=%u "
+            "recovery_end_seq=%u mss=%u inflight_bytes=%u "
+            "pre_cwnd=%u post_cwnd=%u pre_ssthresh=%u post_ssthresh=%u "
+            "pre_pacing_Bps=%llu post_pacing_Bps=%llu\n",
+            (unsigned long long)event_index,
+            (unsigned long long)now_ns,
+            tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook),
+            pcb->lastack, pcb->snd_nxt, pcb->snd_nxt, pcb->mss,
+            transport->inflight_bytes, pre_cwnd, policy->cwnd_bytes,
+            pre_ssthresh, policy->ssthresh_bytes,
+            (unsigned long long)pre_pacing,
+            (unsigned long long)policy->pacing_rate_bytes_per_sec);
+}
+
+static void tcp_shift_lwip_cc_trace_cubic_recovery_exit(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_pcb *pcb,
+    uint32_t ack_seq)
+{
+    uint64_t now_ns;
+    uint64_t event_index;
+    uint32_t inflight;
+
+    if (!tcp_shift_lwip_cc_cubic_trace_active(adapter) || pcb == NULL) {
+        return;
+    }
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    event_index = (uint64_t)adapter->hook.recovery_exit_events + 1U;
+    inflight = tcp_shift_delivery_outstanding_payload(adapter);
+    fprintf(stderr,
+            "tcp-shift-cubic-trace: event=recovery-exit index=%llu "
+            "time_ns=%llu ack_seq=%u recovery_end_seq=%u mss=%u "
+            "inflight_bytes=%u cwnd=%u ssthresh=%u pacing_Bps=%llu\n",
+            (unsigned long long)event_index,
+            (unsigned long long)now_ns, ack_seq,
+            adapter->hook.recovery_end_seq, pcb->mss, inflight,
+            (uint32_t)pcb->cwnd, (uint32_t)pcb->ssthresh,
+            (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+}
+#endif
+
 static int tcp_shift_lwip_cc_on_loss(void *arg,
                                      struct tcp_pcb *pcb,
                                      tcpwnd_size_t lost_bytes)
@@ -2123,12 +2198,30 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
 #endif
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     loss.lost_bytes = lost_bytes;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    {
+        uint32_t pre_cwnd = pcb->cwnd;
+        uint32_t pre_ssthresh = pcb->ssthresh;
+        uint64_t pre_pacing = adapter->pacing_rate_bytes_per_sec;
+
+        if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
+                                 &policy) != 0 ||
+            tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
+            tcp_shift_lwip_cc_disable_on_error(adapter);
+            return 0;
+        }
+        tcp_shift_lwip_cc_trace_cubic_loss(
+            adapter, pcb, &transport, &policy,
+            pre_cwnd, pre_ssthresh, pre_pacing);
+    }
+#else
     if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
                              &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
         tcp_shift_lwip_cc_disable_on_error(adapter);
         return 0;
     }
+#endif
 
     if (adapter->stats != NULL) {
         adapter->stats->loss_events++;
@@ -2247,6 +2340,9 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
         return 0;
     }
 
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    tcp_shift_lwip_cc_trace_cubic_recovery_exit(adapter, pcb, ack_seq);
+#endif
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     tcp_shift_rack_note_recovery_exit(&adapter->rack_tlp, ack_seq);
     tcp_shift_rack_record_stats(adapter);
