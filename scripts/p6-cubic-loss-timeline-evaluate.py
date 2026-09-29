@@ -71,7 +71,7 @@ trace_path, ts_summary_path, linux_tsv_path, linux_summary_path = sys.argv[1:]
 ts_text, ts = read_summary(ts_summary_path)
 linux_text, linux = read_summary(linux_summary_path)
 losses, exits = parse_trace(trace_path)
-linux_rows, linux_transitions = read_linux_rows(linux_tsv_path)
+linux_rows, linux_transitions, linux_pre_first = read_linux_rows(linux_tsv_path)
 
 expected_losses = int(ts.get("fault_marker_count", "0"))
 ts_loss_events = int(ts.get("loss_events", "0"))
@@ -92,7 +92,7 @@ if len(losses) != ts_loss_events:
     raise SystemExit(
         f"trace loss count mismatch: trace={len(losses)} stats={ts_loss_events}"
     )
-if not linux_transitions:
+if not linux_transitions or linux_pre_first is None:
     raise SystemExit("Linux TCP_INFO observed no retransmission transition")
 
 flight_over_cwnd = []
@@ -144,6 +144,13 @@ if linux_transition_packets <= 0 or linux_transition_packets > expected_losses:
 flight_ratio_med = median(flight_over_cwnd)
 cwnd_reduction_med = median(post_over_pre_cwnd)
 materially_below = 1 if flight_ratio_med < 0.90 else 0
+first_loss = losses[0]
+first_linux_transition = linux_transitions[0][1]
+first_ts_pre_cwnd = int(first_loss["pre_cwnd"])
+first_ts_flight = int(first_loss["inflight_bytes"])
+first_ts_post_cwnd = int(first_loss["post_cwnd"])
+first_linux_pre_cwnd = int(linux_pre_first["snd_cwnd"]) * 1460
+first_linux_post_ssthresh = int(first_linux_transition["snd_ssthresh"]) * 1460
 
 print(
     "p6_cubic_loss_timeline=ok "
@@ -163,7 +170,12 @@ print(
     f"linux_retrans_transition_packets={linux_transition_packets} "
     f"linux_event_cwnd_median_bytes={int(median(linux_event_cwnd_bytes))} "
     f"linux_event_ssthresh_median_bytes={int(median(linux_event_ssthresh_bytes))} "
-    f"linux_event_pacing_median_Bps={int(median(linux_event_pacing))}"
+    f"linux_event_pacing_median_Bps={int(median(linux_event_pacing))} "
+    f"tcp_shift_first_pre_cwnd_bytes={first_ts_pre_cwnd} "
+    f"tcp_shift_first_flight_bytes={first_ts_flight} "
+    f"tcp_shift_first_post_cwnd_bytes={first_ts_post_cwnd} "
+    f"linux_pre_first_retrans_cwnd_bytes={first_linux_pre_cwnd} "
+    f"linux_first_retrans_ssthresh_bytes={first_linux_post_ssthresh}"
 )
 print("tcp_shift_summary=" + ts_text)
 print("linux_summary=" + linux_text)
