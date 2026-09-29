@@ -183,7 +183,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #include "lwip/mem.h"
  #include "lwip/memp.h"
  #include "lwip/inet_chksum.h"
-@@ -137,10 +138,84 @@
+@@ -137,10 +138,86 @@
      }
    }
  }
@@ -274,7 +274,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
   * the segment between the PCBs and passes it on to tcp_process(), which implements
   * the TCP finite state machine. This function is called by the IP layer (in
   * ip_input()).
-@@ -729,8 +804,13 @@
+@@ -729,8 +806,13 @@
  #endif /* LWIP_VLAN_PCP */
      /* inherit socket options */
      npcb->so_options = pcb->so_options & SOF_INHERITED;
@@ -290,7 +290,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
         for it. */
      TCP_REG_ACTIVE(npcb);
  
-@@ -890,9 +970,15 @@
+@@ -890,9 +972,15 @@
  #if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
    tcp_shift_sack_seen = 0U;
  #endif
@@ -309,7 +309,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
      /* accept SYN only in 2 states: */
      if ((pcb->state != SYN_SENT) && (pcb->state != SYN_RCVD)) {
        return ERR_OK;
-@@ -906,9 +992,15 @@
+@@ -906,9 +994,15 @@
                                      ackno, pcb->snd_nxt, pcb->unacked ? "" : " empty:",
                                      pcb->unacked ? lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0));
        /* received SYN ACK with expected sequence number? */
@@ -328,7 +328,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
          pcb->rcv_ann_right_edge = pcb->rcv_nxt;
          pcb->lastack = ackno;
          pcb->snd_wnd = tcphdr->wnd;
-@@ -1365,12 +1457,23 @@
+@@ -1365,12 +1459,23 @@
            if (recovery_native_window) {
              (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
            } else {
@@ -354,7 +354,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
              u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
              /* RFC 3465, section 2.2 Slow Start */
              increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
-@@ -1405,13 +1508,18 @@
+@@ -1405,13 +1510,18 @@
           in fact have been sent once. */
        pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
  
@@ -380,7 +380,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  
        if (recovery_partial && pcb->unacked != NULL) {
          /* A partial ACK identifies the next hole without waiting for another
-@@ -1578,9 +1686,15 @@
+@@ -1578,9 +1688,15 @@
      /* The sequence number must be within the window (above rcv_nxt
         and below rcv_nxt + rcv_wnd) in order to be further
         processed. */
