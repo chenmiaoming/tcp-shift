@@ -242,6 +242,15 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    tcp_clear_flags(pcb, TF_ECN_ECE);
 +  }
 +
++  /* An ACK that covers the first new-data packet carrying CWR closes the
++   * previous sender response window before ECE is evaluated. If that CWR
++   * packet was itself CE-marked, the receiver legitimately echoes a fresh
++   * ECE for a new congestion episode on the same ACK. */
++  if (pcb->ecn_recover != 0U && (flags & TCP_ACK) != 0U &&
++      TCP_SEQ_GEQ(ackno, pcb->ecn_recover)) {
++    pcb->ecn_recover = 0U;
++  }
++
 +  if ((flags & (TCP_ACK | TCP_ECE)) == (TCP_ACK | TCP_ECE) &&
 +      pcb->state >= ESTABLISHED && pcb->ecn_recover == 0U &&
 +      (pcb->flags & TF_ECN_CWR) == 0U) {
@@ -256,13 +265,6 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +      pcb->ecn_rto_wait = 1U;
 +      tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U);
 +    }
-+  }
-+
-+  /* Evaluate the ECE bit against the previous response boundary first. An ACK
-+   * that covers CWR then opens the next ECN response window. */
-+  if (pcb->ecn_recover != 0U && (flags & TCP_ACK) != 0U &&
-+      TCP_SEQ_GEQ(ackno, pcb->ecn_recover)) {
-+    pcb->ecn_recover = 0U;
 +  }
 +}
 +#endif
