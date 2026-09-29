@@ -2109,7 +2109,7 @@ static int tcp_shift_lwip_cc_cubic_trace_active(
 {
     return adapter != NULL && adapter->controller.ops != NULL &&
                    adapter->controller.ops->name != NULL &&
-                   strcmp(adapter->controller.ops->name, "cubic") == 0
+                   strncmp(adapter->controller.ops->name, "cubic", 5U) == 0
                ? 1
                : 0;
 }
