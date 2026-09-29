@@ -17,6 +17,7 @@ on:
       - 'scripts/p6-bbr-loss-same-stack-evaluate.py'
       - 'scripts/p6-bbr-first-send-loss-evaluate.py'
       - 'scripts/p6-first-send-controller-matrix-evaluate.py'
+      - 'scripts/p6-cubic-pacing-ab-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -537,8 +538,9 @@ jobs:
               "$root/linux-bbr/summary.txt" \
               "$root/comparison.txt" \
               "$root/tcp-shift-cubic/summary.txt" \
+              "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
               "$root/linux-cubic/summary.txt" \
-              "$root/controller-matrix.txt"; do
+              "$root/controller-matrix.txt" \"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
@@ -741,6 +743,7 @@ jobs:
           sh -n scripts/linux-cubic-pacing-reference.sh
           python3 -m py_compile scripts/p6-bbr-first-send-loss-evaluate.py
           python3 -m py_compile scripts/p6-first-send-controller-matrix-evaluate.py
+          python3 -m py_compile scripts/p6-cubic-pacing-ab-evaluate.py
 
       - name: Build internal BBR with RACK recovery
         run: |
@@ -748,7 +751,7 @@ jobs:
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
-          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 --parallel
+          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass --parallel
 
       - name: Run tcp-shift deterministic first-send loss
         run: |
@@ -773,6 +776,25 @@ jobs:
           sudo env \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p2" \
             TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run tcp-shift CUBIC with only the pacing gate bypassed
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic-pacing-bypass"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-pacing-bypass" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_PACING_EXPECTATION=gate-bypass \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
             TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
@@ -843,6 +865,17 @@ jobs:
             "$root/linux-cubic/summary.txt" \
             | tee "$root/controller-matrix.txt"
 
+      - name: Compare CUBIC pacing-gate A/B
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-cubic-pacing-ab-evaluate.py \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-pacing-ab.txt"
+
       - name: Publish deterministic first-send evidence
         if: always()
         run: |
@@ -856,8 +889,10 @@ jobs:
               "$root/linux-bbr/summary.txt" \
               "$root/comparison.txt" \
               "$root/tcp-shift-cubic/summary.txt" \
+              "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
               "$root/linux-cubic/summary.txt" \
-              "$root/controller-matrix.txt"; do
+              "$root/controller-matrix.txt" \
+              "$root/cubic-pacing-ab.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
