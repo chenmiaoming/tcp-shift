@@ -28,6 +28,45 @@ Historical milestone documents explain design evolution; they do not override `A
 - Do not infer provider/OpenVZ qualification from GitHub-runner qualification.
 - If a behavioral head is green and later commits are docs-only, merge may rely on the last green behavioral head only after a commit comparison proves the tail is non-behavioral.
 
+## Active next milestone: RFC 9937 PRR recovery
+
+The current standards-driven recovery follow-up is Proportional Rate Reduction (PRR), using RFC 9937 rather than the obsolete RFC 6937.
+
+Checkpoint before this milestone:
+
+```text
+main: 6344e91526baa47190493d745d42f5eb621a64e7
+
+RACK-TLP:
+- RFC 8985 remains the project-owned fast-loss oracle/selective repair path
+- exact deterministic first-send loss recovery remains qualified with zero RTO
+- CUBIC loss tracing shows RFC 9438 beta is applied to RFC 5681 FlightSize
+- median FlightSize/cwnd on the 28-drop qualification path is ~0.959
+- pacing-gate bypass changes CUBIC goodput only ~3-4%, so scheduler deferral is not the dominant gap
+- internal BBR remains close to the Linux BBR differential reference on the same path
+```
+
+RFC 9937 is a transport recovery-rate mechanism, not a congestion controller and not a loss detector. The ownership target is therefore:
+
+```text
+RACK / SACK evidence
+    -> loss + delivered/inflight evidence
+
+Reno / CUBIC
+    -> choose ssthresh target
+
+RFC 9937 PRR
+    -> RecoverFS / prr_delivered / prr_out
+    -> SafeACK selects CRB vs SSRB
+    -> SndCnt controls bytes released during fast recovery
+
+RTO
+    -> terminal fallback
+```
+
+The first PRR increment deliberately implements only the pure RFC 9937 state machine and deterministic contract. It does not change production recovery. The next integration increment must wire the model only after the transport can provide RFC 9937 DeliveredData, RACK-aware inflight, SafeACK, and per-transmit accounting without creating a second loss oracle or duplicate SACK scoreboard. Non-RACK/non-SACK fallback remains RFC 6582 NewReno unless separately replaced and qualified. Internal BBR keeps its controller-owned recovery cwnd until a dedicated integration decision proves otherwise.
+
+
 ## Pinned lwIP and controlled patch
 
 Production lwIP pin:
