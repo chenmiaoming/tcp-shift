@@ -851,7 +851,13 @@ jobs:
             echo "## Deterministic first-send loss"
             echo
             echo "RTT=260ms rate=10Mbit payload=4MiB markers=28 gap=96 MSS"
-            for file in "$root/tcp-shift/summary.txt" "$root/linux-bbr/summary.txt" "$root/comparison.txt"; do
+            for file in \
+              "$root/tcp-shift/summary.txt" \
+              "$root/linux-bbr/summary.txt" \
+              "$root/comparison.txt" \
+              "$root/tcp-shift-cubic/summary.txt" \
+              "$root/linux-cubic/summary.txt" \
+              "$root/controller-matrix.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
