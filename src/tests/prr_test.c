@@ -44,6 +44,24 @@ static int test_proportional_reduction(void)
     return 0;
 }
 
+static int test_proportional_rounds_up(void)
+{
+    struct tcp_shift_prr prr;
+    struct tcp_shift_prr_result result;
+    const struct tcp_shift_prr_ack ack = {
+        .delivered_data = 1000U,
+        .inflight = 2500U,
+        .smss = 1000U,
+        .safe_ack = 0U,
+    };
+
+    CHECK(tcp_shift_prr_init(&prr, 3000U, 2000U) == 0);
+    CHECK(tcp_shift_prr_on_ack(&prr, &ack, &result) == 0);
+    CHECK(result.sndcnt == 667U);
+    CHECK(result.cwnd == 3167U);
+    return 0;
+}
+
 static int test_reduction_bounds(void)
 {
     struct tcp_shift_prr crb;
@@ -143,12 +161,13 @@ static int test_fail_closed(void)
 int main(void)
 {
     CHECK(test_proportional_reduction() == 0);
+    CHECK(test_proportional_rounds_up() == 0);
     CHECK(test_reduction_bounds() == 0);
     CHECK(test_forced_first_retransmit() == 0);
     CHECK(test_zero_delivery_and_completion() == 0);
     CHECK(test_fail_closed() == 0);
 
-    printf("rfc9937_prr=ok proportional=1 crb=1 safeack_ssrb=1 "
+    printf("rfc9937_prr=ok proportional=1 round_up=1 crb=1 safeack_ssrb=1 "
            "forced_fast_retransmit=1 completion_cwnd_equals_ssthresh=1\n");
     return 0;
 }
