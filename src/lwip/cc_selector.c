@@ -646,6 +646,16 @@ static int tcp_shift_cc_selector_pacing_send_eligible(void *arg,
         adapter != NULL ? adapter->controller.ops : NULL;
     int result = 1;
 
+#if defined(TCP_SHIFT_P6_CUBIC_PACING_BYPASS_QUALIFICATION)
+    /* Diagnostic-only A/B: retain pacing policy publication, flow identity,
+     * TX accounting and RFC 8985 recovery-timer scheduling, but skip only the
+     * userspace pacing deferral gate for CUBIC. Production builds never define
+     * this symbol. */
+    if (adapter != NULL && inner == &tcp_shift_cubic_ops) {
+        return 1;
+    }
+#endif
+
     if (tcp_shift_cc_selector_base_hook_ops != NULL &&
         tcp_shift_cc_selector_base_hook_ops->on_segment_send_eligible != NULL) {
         result = tcp_shift_cc_selector_base_hook_ops->on_segment_send_eligible(
