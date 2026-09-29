@@ -68,6 +68,7 @@ struct tcp_shift_lwip_cc_hook_ops {
                    const struct tcp_shift_lwip_sack_range *ranges,
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
+    int (*on_ecn)(void *arg, struct tcp_pcb *pcb);
     int (*on_rack_retrans_loss)(void *arg,
                                 struct tcp_pcb *pcb,
                                 tcpwnd_size_t lost_bytes);
@@ -307,6 +308,18 @@ tcp_shift_lwip_cc_hook_loss(struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes)
         tcp_shift_lwip_cc_hook_recovery_mark_enter(hook, pcb);
     }
     return handled;
+}
+
+static inline int
+tcp_shift_lwip_cc_hook_ecn(struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL || hook->ops->on_ecn == NULL) {
+        return 0;
+    }
+    /* ECN is a congestion event, not a packet-loss/recovery event. */
+    return hook->ops->on_ecn(hook->arg, pcb) != 0;
 }
 
 /* RFC 8985 can prove that a retransmission was itself lost while the

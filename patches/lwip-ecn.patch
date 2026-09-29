@@ -1,0 +1,601 @@
+diff --git a/src/include/lwip/prot/tcp.h b/src/include/lwip/prot/tcp.h
+--- a/src/include/lwip/prot/tcp.h
++++ b/src/include/lwip/prot/tcp.h
+@@ -76,9 +76,14 @@
+ #define TCP_ACK 0x10U
+ #define TCP_URG 0x20U
+ #define TCP_ECE 0x40U
+-#define TCP_CWR 0x80U
+-/* Valid TCP header flags */
+-#define TCP_FLAGS 0x3fU
++#define TCP_CWR 0x80U
++/* Valid TCP header flags. tcp-shift's experimental RFC 3168 build must
++ * preserve ECE/CWR through TCPH_FLAGS(); default lwIP behavior is unchanged. */
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++#define TCP_FLAGS 0xffU
++#else
++#define TCP_FLAGS 0x3fU
++#endif
+ 
+ #define TCP_MAX_OPTION_BYTES 40
+ 
+diff --git a/src/include/lwip/tcp.h b/src/include/lwip/tcp.h
+--- a/src/include/lwip/tcp.h
++++ b/src/include/lwip/tcp.h
+@@ -267,9 +267,14 @@
+ #define TF_TIMESTAMP   0x0400U   /* Timestamp option enabled */
+ #endif
+ #define TF_RTO         0x0800U /* RTO timer has fired, in-flight data moved to unsent and being retransmitted */
+-#if LWIP_TCP_SACK_OUT
+-#define TF_SACK        0x1000U /* Selective ACKs enabled */
+-#endif
++#if LWIP_TCP_SACK_OUT
++#define TF_SACK        0x1000U /* Selective ACKs enabled */
++#endif
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++#define TF_ECN         0x2000U /* RFC 3168 ECN negotiated/offered */
++#define TF_ECN_ECE     0x4000U /* Receiver must echo CE with ECE */
++#define TF_ECN_CWR     0x8000U /* Sender owes CWR on next new data */
++#endif
+ 
+   /* the rest of the fields are in host byte order
+      as we have to do some math with them */
+@@ -312,8 +317,16 @@
+   tcpwnd_size_t cwnd;
+   tcpwnd_size_t ssthresh;
+ 
+-  /* first byte following last rto byte */
+-  u32_t rto_end;
++  /* first byte following last rto byte */
++  u32_t rto_end;
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  /* End sequence of the first new-data segment that carried CWR. Nonzero
++   * suppresses repeated ECE reductions until that response is acknowledged. */
++  u32_t ecn_recover;
++  /* RFC 3168 section 6.1.2: at cwnd=1 SMSS, a fresh ECE resets the
++   * retransmit timer and new data is held until that timer expires. */
++  u8_t ecn_rto_wait;
++#endif
+ 
+   /* sender variables */
+   u32_t snd_nxt;   /* next new seqno to be sent */
+diff --git a/src/core/tcp.c b/src/core/tcp.c
+--- a/src/core/tcp.c
++++ b/src/core/tcp.c
+@@ -1276,46 +1276,64 @@
+           ++pcb->rtime;
+         }
+ 
+-        if (pcb->rtime >= pcb->rto) {
+-          /* Time for a retransmission. */
+-          LWIP_DEBUGF(TCP_RTO_DEBUG, ("tcp_slowtmr: rtime %"S16_F
+-                                      " pcb->rto %"S16_F"\n",
+-                                      pcb->rtime, pcb->rto));
+-          /* If prepare phase fails but we have unsent data but no unacked data,
+-             still execute the backoff calculations below, as this means we somehow
+-             failed to send segment. */
+-          if ((tcp_rexmit_rto_prepare(pcb) == ERR_OK) || ((pcb->unacked == NULL) && (pcb->unsent != NULL))) {
+-            /* Double retransmission time-out unless we are trying to
+-             * connect to somebody (i.e., we are in SYN_SENT). */
+-            if (pcb->state != SYN_SENT) {
+-              u8_t backoff_idx = LWIP_MIN(pcb->nrtx, sizeof(tcp_backoff) - 1);
+-              int calc_rto = ((pcb->sa >> 3) + pcb->sv) << tcp_backoff[backoff_idx];
+-              pcb->rto = (s16_t)LWIP_MIN(calc_rto, 0x7FFF);
+-            }
+-
+-            /* Reset the retransmission timer. */
+-            pcb->rtime = 0;
+-
+-            /* Delegate base congestion policy when a project hook is bound.
+-             * Retransmission preparation/commit remains native lwIP. */
+-            if (!tcp_shift_lwip_cc_hook_timeout(pcb)) {
+-              eff_wnd = LWIP_MIN(pcb->cwnd, pcb->snd_wnd);
+-              pcb->ssthresh = eff_wnd >> 1;
+-              if (pcb->ssthresh < (tcpwnd_size_t)(pcb->mss << 1)) {
+-                pcb->ssthresh = (tcpwnd_size_t)(pcb->mss << 1);
+-              }
+-              pcb->cwnd = pcb->mss;
+-            }
+-            LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_slowtmr: cwnd %"TCPWNDSIZE_F
+-                                         " ssthresh %"TCPWNDSIZE_F"\n",
+-                                         pcb->cwnd, pcb->ssthresh));
+-            pcb->bytes_acked = 0;
+-
+-            /* The following needs to be called AFTER cwnd is set to one
+-               mss - STJ */
+-            tcp_rexmit_rto_commit(pcb);
+-          }
+-        }
++        if (pcb->rtime >= pcb->rto) {
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++          if (pcb->ecn_rto_wait != 0U) {
++            /* RFC 3168 section 6.1.2: this expiry only releases new data.
++             * It is not evidence that an outstanding segment was lost. */
++            pcb->ecn_rto_wait = 0U;
++            pcb->rtime = pcb->unacked != NULL ? 0 : -1;
++            if (pcb->unsent != NULL) {
++              (void)tcp_output(pcb);
++            }
++          } else
++#endif
++          {
++            /* Time for a retransmission. */
++            LWIP_DEBUGF(TCP_RTO_DEBUG, ("tcp_slowtmr: rtime %"S16_F
++                                        " pcb->rto %"S16_F"\n",
++                                        pcb->rtime, pcb->rto));
++            /* If prepare phase fails but we have unsent data but no unacked data,
++               still execute the backoff calculations below, as this means we somehow
++               failed to send segment. */
++            if ((tcp_rexmit_rto_prepare(pcb) == ERR_OK) || ((pcb->unacked == NULL) && (pcb->unsent != NULL))) {
++              /* Double retransmission time-out unless we are trying to
++               * connect to somebody (i.e., we are in SYN_SENT). */
++              if (pcb->state != SYN_SENT) {
++                u8_t backoff_idx = LWIP_MIN(pcb->nrtx, sizeof(tcp_backoff) - 1);
++                int calc_rto = ((pcb->sa >> 3) + pcb->sv) << tcp_backoff[backoff_idx];
++                pcb->rto = (s16_t)LWIP_MIN(calc_rto, 0x7FFF);
++              }
++
++              /* Reset the retransmission timer. */
++              pcb->rtime = 0;
++
++              /* Delegate base congestion policy when a project hook is bound.
++               * Retransmission preparation/commit remains native lwIP. */
++              if (!tcp_shift_lwip_cc_hook_timeout(pcb)) {
++                eff_wnd = LWIP_MIN(pcb->cwnd, pcb->snd_wnd);
++                pcb->ssthresh = eff_wnd >> 1;
++                if (pcb->ssthresh < (tcpwnd_size_t)(pcb->mss << 1)) {
++                  pcb->ssthresh = (tcpwnd_size_t)(pcb->mss << 1);
++                }
++                pcb->cwnd = pcb->mss;
++              }
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++              if ((pcb->flags & TF_ECN) != 0U) {
++                tcp_set_flags(pcb, TF_ECN_CWR);
++              }
++#endif
++              LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_slowtmr: cwnd %"TCPWNDSIZE_F
++                                           " ssthresh %"TCPWNDSIZE_F"\n",
++                                           pcb->cwnd, pcb->ssthresh));
++              pcb->bytes_acked = 0;
++
++              /* The following needs to be called AFTER cwnd is set to one
++                 mss - STJ */
++              tcp_rexmit_rto_commit(pcb);
++            }
++          }
++        }
+       }
+     }
+     /* Check if this PCB has stayed too long in FIN-WAIT-2 */
+diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
+--- a/src/core/tcp_in.c
++++ b/src/core/tcp_in.c
+@@ -47,8 +47,9 @@
+ 
+ #include "lwip/priv/tcp_priv.h"
+ #include "lwip/def.h"
+-#include "lwip/ip_addr.h"
+-#include "lwip/netif.h"
++#include "lwip/ip_addr.h"
++#include "lwip/ip4.h"
++#include "lwip/netif.h"
+ #include "lwip/mem.h"
+ #include "lwip/memp.h"
+ #include "lwip/inet_chksum.h"
+@@ -137,10 +138,83 @@
+     }
+   }
+ }
+-#endif /* LWIP_TCP_SACK_OUT */
+-
+-/**
+- * The initial input processing of TCP. It verifies the TCP header, demultiplexes
++#endif /* LWIP_TCP_SACK_OUT */
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++#define TCP_SHIFT_IP_ECN_MASK 0x03U
++#define TCP_SHIFT_IP_ECN_CE   0x03U
++
++static u8_t
++tcp_shift_tcp_input_ecn(void)
++{
++#if LWIP_IPV6
++  if (ip_current_is_v6()) {
++    return (u8_t)(IP6H_TC(ip6_current_header()) & TCP_SHIFT_IP_ECN_MASK);
++  }
++#endif
++#if LWIP_IPV4
++  return (u8_t)(IPH_TOS(ip4_current_header()) & TCP_SHIFT_IP_ECN_MASK);
++#else
++  return 0U;
++#endif
++}
++
++static void
++tcp_shift_tcp_ecn_fallback(struct tcp_pcb *pcb)
++{
++  tcpwnd_size_t reduced;
++  tcpwnd_size_t ssthresh;
++
++  reduced = LWIP_MIN(pcb->cwnd, pcb->snd_wnd) / 2U;
++  ssthresh = reduced;
++  if (ssthresh < (tcpwnd_size_t)(2U * pcb->mss)) {
++    ssthresh = (tcpwnd_size_t)(2U * pcb->mss);
++  }
++  if (reduced < (tcpwnd_size_t)pcb->mss) {
++    reduced = (tcpwnd_size_t)pcb->mss;
++  }
++  pcb->ssthresh = ssthresh;
++  pcb->cwnd = reduced;
++  pcb->bytes_acked = 0U;
++}
++
++static void
++tcp_shift_tcp_ecn_process_flags(struct tcp_pcb *pcb)
++{
++  if (pcb == NULL || (pcb->flags & TF_ECN) == 0U) {
++    return;
++  }
++
++  if ((flags & TCP_CWR) != 0U) {
++    tcp_clear_flags(pcb, TF_ECN_ECE);
++  }
++
++  if ((flags & (TCP_ACK | TCP_ECE)) == (TCP_ACK | TCP_ECE) &&
++      pcb->state >= ESTABLISHED && pcb->ecn_recover == 0U &&
++      (pcb->flags & TF_ECN_CWR) == 0U) {
++    u8_t cwnd_was_one = pcb->cwnd <= (tcpwnd_size_t)pcb->mss ? 1U : 0U;
++
++    if (!tcp_shift_lwip_cc_hook_ecn(pcb)) {
++      tcp_shift_tcp_ecn_fallback(pcb);
++    }
++    tcp_set_flags(pcb, TF_ECN_CWR);
++    if (cwnd_was_one != 0U) {
++      pcb->rtime = 0;
++      pcb->ecn_rto_wait = 1U;
++    }
++  }
++
++  /* Evaluate the ECE bit against the previous response boundary first. An ACK
++   * that covers CWR then opens the next ECN response window. */
++  if (pcb->ecn_recover != 0U && (flags & TCP_ACK) != 0U &&
++      TCP_SEQ_GEQ(ackno, pcb->ecn_recover)) {
++    pcb->ecn_recover = 0U;
++  }
++}
++#endif
++
++/**
++ * The initial input processing of TCP. It verifies the TCP header, demultiplexes
+  * the segment between the PCBs and passes it on to tcp_process(), which implements
+  * the TCP finite state machine. This function is called by the IP layer (in
+  * ip_input()).
+@@ -729,8 +803,13 @@
+ #endif /* LWIP_VLAN_PCP */
+     /* inherit socket options */
+     npcb->so_options = pcb->so_options & SOF_INHERITED;
+-    npcb->netif_idx = pcb->netif_idx;
+-    /* Register the new PCB so that we can begin receiving segments
++    npcb->netif_idx = pcb->netif_idx;
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++    if ((flags & (TCP_ECE | TCP_CWR)) == (TCP_ECE | TCP_CWR)) {
++      tcp_set_flags(npcb, TF_ECN);
++    }
++#endif
++    /* Register the new PCB so that we can begin receiving segments
+        for it. */
+     TCP_REG_ACTIVE(npcb);
+ 
+@@ -890,9 +969,15 @@
+ #if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+   tcp_shift_sack_seen = 0U;
+ #endif
+-  tcp_parseopt(pcb);
+-
+-  if (flags & TCP_SYN) {
++  tcp_parseopt(pcb);
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  if ((flags & TCP_SYN) == 0U) {
++    tcp_shift_tcp_ecn_process_flags(pcb);
++  }
++#endif
++
++  if (flags & TCP_SYN) {
+     /* accept SYN only in 2 states: */
+     if ((pcb->state != SYN_SENT) && (pcb->state != SYN_RCVD)) {
+       return ERR_OK;
+@@ -906,9 +991,15 @@
+                                     ackno, pcb->snd_nxt, pcb->unacked ? "" : " empty:",
+                                     pcb->unacked ? lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0));
+       /* received SYN ACK with expected sequence number? */
+-      if ((flags & TCP_ACK) && (flags & TCP_SYN)
+-          && (ackno == pcb->lastack + 1)) {
+-        pcb->rcv_nxt = seqno + 1;
++      if ((flags & TCP_ACK) && (flags & TCP_SYN)
++          && (ackno == pcb->lastack + 1)) {
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++        if ((pcb->flags & TF_ECN) != 0U &&
++            (flags & (TCP_ECE | TCP_CWR)) != TCP_ECE) {
++          tcp_clear_flags(pcb, TF_ECN);
++        }
++#endif
++        pcb->rcv_nxt = seqno + 1;
+         pcb->rcv_ann_right_edge = pcb->rcv_nxt;
+         pcb->lastack = ackno;
+         pcb->snd_wnd = tcphdr->wnd;
+@@ -1405,13 +1496,18 @@
+          in fact have been sent once. */
+       pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
+ 
+-      /* If there's nothing left to acknowledge, stop the retransmit
+-         timer, otherwise reset it to start again */
+-      if (pcb->unacked == NULL) {
+-        pcb->rtime = -1;
+-      } else {
+-        pcb->rtime = 0;
+-      }
++      /* If RFC 3168 armed the one-SMSS ECE wait, keep the retransmit
++         timer running even if this ACK drained all outstanding data. */
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++      if (pcb->ecn_rto_wait != 0U) {
++        pcb->rtime = 0;
++      } else
++#endif
++      if (pcb->unacked == NULL) {
++        pcb->rtime = -1;
++      } else {
++        pcb->rtime = 0;
++      }
+ 
+       if (recovery_partial && pcb->unacked != NULL) {
+         /* A partial ACK identifies the next hole without waiting for another
+@@ -1578,9 +1674,15 @@
+     /* The sequence number must be within the window (above rcv_nxt
+        and below rcv_nxt + rcv_wnd) in order to be further
+        processed. */
+-    if (TCP_SEQ_BETWEEN(seqno, pcb->rcv_nxt,
+-                        pcb->rcv_nxt + pcb->rcv_wnd - 1)) {
+-      if (pcb->rcv_nxt == seqno) {
++    if (TCP_SEQ_BETWEEN(seqno, pcb->rcv_nxt,
++                        pcb->rcv_nxt + pcb->rcv_wnd - 1)) {
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++      if ((pcb->flags & TF_ECN) != 0U && inseg.len != 0U &&
++          tcp_shift_tcp_input_ecn() == TCP_SHIFT_IP_ECN_CE) {
++        tcp_set_flags(pcb, TF_ECN_ECE);
++      }
++#endif
++      if (pcb->rcv_nxt == seqno) {
+         /* The incoming segment is the next in sequence. We check if
+            we have to trim the end of the segment and update rcv_nxt
+            and pass the data to the application. */
+diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
+--- a/src/core/tcp_out.c
++++ b/src/core/tcp_out.c
+@@ -1053,9 +1053,20 @@
+ 
+   LWIP_ASSERT("tcp_enqueue_flags: need either TCP_SYN or TCP_FIN in flags (programmer violates API)",
+               (flags & (TCP_SYN | TCP_FIN)) != 0);
+-  LWIP_ASSERT("tcp_enqueue_flags: invalid pcb", pcb != NULL);
+-
+-  LWIP_DEBUGF(TCP_QLEN_DEBUG, ("tcp_enqueue_flags: queuelen: %"U16_F"\n", (u16_t)pcb->snd_queuelen));
++  LWIP_ASSERT("tcp_enqueue_flags: invalid pcb", pcb != NULL);
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  if ((flags & TCP_SYN) != 0U) {
++    if (pcb->state == SYN_SENT) {
++      tcp_set_flags(pcb, TF_ECN);
++      flags = (u8_t)(flags | TCP_ECE | TCP_CWR);
++    } else if (pcb->state == SYN_RCVD && (pcb->flags & TF_ECN) != 0U) {
++      flags = (u8_t)((flags | TCP_ECE) & (u8_t)~TCP_CWR);
++    }
++  }
++#endif
++
++  LWIP_DEBUGF(TCP_QLEN_DEBUG, ("tcp_enqueue_flags: queuelen: %"U16_F"\n", (u16_t)pcb->snd_queuelen));
+ 
+   /* No need to check pcb->snd_queuelen if only SYN or FIN are allowed! */
+ 
+@@ -1282,9 +1293,18 @@
+   wnd = LWIP_MIN(pcb->snd_wnd, pcb->cwnd);
+ #endif
+ 
+-  seg = pcb->unsent;
+-
+-  if (seg == NULL) {
++  seg = pcb->unsent;
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  if (pcb->ecn_rto_wait != 0U && seg != NULL && seg->len != 0U) {
++    if (pcb->flags & TF_ACK_NOW) {
++      return tcp_send_empty_ack(pcb);
++    }
++    goto output_done;
++  }
++#endif
++
++  if (seg == NULL) {
+     LWIP_DEBUGF(TCP_OUTPUT_DEBUG, ("tcp_output: nothing to send (%p)\n",
+                                    (void *)pcb->unsent));
+     LWIP_DEBUGF(TCP_CWND_DEBUG, ("tcp_output: snd_wnd %"TCPWNDSIZE_F
+@@ -1477,21 +1497,26 @@
+  * @param pcb the tcp_pcb for the TCP connection used to send the segment
+  * @param netif the netif used to send the segment
+  */
+-static err_t
+-tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif)
+-{
+-  err_t err;
+-  u16_t len;
+-  u32_t *opts;
++static err_t
++tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif)
++{
++  err_t err;
++  u16_t len;
++  u8_t tos;
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  u8_t send_cwr = 0U;
++#endif
++  u32_t *opts;
+ #if TCP_CHECKSUM_ON_COPY
+   int seg_chksum_was_swapped = 0;
+ #endif
+ 
+   LWIP_ASSERT("tcp_output_segment: invalid seg", seg != NULL);
+-  LWIP_ASSERT("tcp_output_segment: invalid pcb", pcb != NULL);
+-  LWIP_ASSERT("tcp_output_segment: invalid netif", netif != NULL);
+-
+-  if (tcp_output_segment_busy(seg)) {
++  LWIP_ASSERT("tcp_output_segment: invalid pcb", pcb != NULL);
++  LWIP_ASSERT("tcp_output_segment: invalid netif", netif != NULL);
++  tos = pcb->tos;
++
++  if (tcp_output_segment_busy(seg)) {
+     /* This should not happen: rexmit functions should have checked this.
+        However, since this function modifies p->len, we must not continue in this case. */
+     LWIP_DEBUGF(TCP_RTO_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("tcp_output_segment: segment busy\n"));
+@@ -1571,13 +1596,45 @@
+                                  lwip_htonl(seg->tcphdr->seqno), lwip_htonl(seg->tcphdr->seqno) +
+                                  seg->len));
+ 
+-  len = (u16_t)((u8_t *)seg->tcphdr - (u8_t *)seg->p->payload);
+-  if (len == 0) {
+-    /** Exclude retransmitted segments from this count. */
+-    MIB2_STATS_INC(mib2.tcpoutsegs);
+-  }
+-
+-  seg->p->len -= len;
++  len = (u16_t)((u8_t *)seg->tcphdr - (u8_t *)seg->p->payload);
++  if (len == 0) {
++    /** Exclude retransmitted segments from this count. */
++    MIB2_STATS_INC(mib2.tcpoutsegs);
++  }
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  tos = (u8_t)(tos & (u8_t)~0x03U);
++  if ((pcb->flags & TF_ECN) != 0U) {
++    u8_t tcp_flags = TCPH_FLAGS(seg->tcphdr);
++
++    if ((tcp_flags & TCP_SYN) == 0U) {
++      TCPH_UNSET_FLAG(seg->tcphdr, TCP_ECE);
++      if ((pcb->flags & TF_ECN_ECE) != 0U &&
++          (tcp_flags & TCP_ACK) != 0U) {
++        TCPH_SET_FLAG(seg->tcphdr, TCP_ECE);
++      }
++    }
++
++    if (len != 0U && (TCPH_FLAGS(seg->tcphdr) & TCP_CWR) != 0U) {
++      /* A retransmission must be Not-ECT and must not repeat CWR. Re-arm CWR
++       * for the next new-data segment instead. */
++      TCPH_UNSET_FLAG(seg->tcphdr, TCP_CWR);
++      tcp_set_flags(pcb, TF_ECN_CWR);
++      pcb->ecn_recover = 0U;
++    } else if (len == 0U && seg->len != 0U &&
++               (tcp_flags & TCP_SYN) == 0U) {
++      /* RFC 3168 baseline: only first transmissions of negotiated TCP data
++       * are ECT(0). */
++      tos = (u8_t)(tos | 0x02U);
++      if ((pcb->flags & TF_ECN_CWR) != 0U) {
++        TCPH_SET_FLAG(seg->tcphdr, TCP_CWR);
++        send_cwr = 1U;
++      }
++    }
++  }
++#endif
++
++  seg->p->len -= len;
+   seg->p->tot_len -= len;
+ 
+   seg->p->payload = seg->tcphdr;
+@@ -1630,11 +1687,23 @@
+   TCP_STATS_INC(tcp.xmit);
+ 
+   NETIF_SET_HINTS(netif, &(pcb->netif_hints));
+-  err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
+-                     pcb->tos, IP_PROTO_TCP, netif);
+-  NETIF_RESET_HINTS(netif);
+-
+-  if (err == ERR_OK) {
++  err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
++                     tos, IP_PROTO_TCP, netif);
++  NETIF_RESET_HINTS(netif);
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  if (send_cwr != 0U) {
++    if (err == ERR_OK) {
++      tcp_clear_flags(pcb, TF_ECN_CWR);
++      pcb->ecn_recover =
++          lwip_ntohl(seg->tcphdr->seqno) + TCP_TCPLEN(seg);
++    } else {
++      TCPH_UNSET_FLAG(seg->tcphdr, TCP_CWR);
++    }
++  }
++#endif
++
++  if (err == ERR_OK) {
+     tcp_shift_lwip_cc_hook_segment_tx(pcb, seg,
+                                       lwip_ntohl(seg->tcphdr->seqno), seg->len);
+   }
+@@ -2189,10 +2258,15 @@
+         }
+       }
+ 
+-      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
+-       * explicitly owns recovery cwnd (internal BBR) keeps its published
+-       * packet-conservation window instead. */
+-      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++      if ((pcb->flags & TF_ECN) != 0U) {
++        tcp_set_flags(pcb, TF_ECN_CWR);
++      }
++#endif
++      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
++       * explicitly owns recovery cwnd (internal BBR) keeps its published
++       * packet-conservation window instead. */
++      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+         pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
+       }
+       tcp_set_flags(pcb, TF_INFR);
+@@ -2335,19 +2409,36 @@
+   err_t err;
+   u8_t ttl, tos;
+ 
+-  LWIP_ASSERT("tcp_output_control_segment_netif: no netif given", netif != NULL);
+-
+-#if CHECKSUM_GEN_TCP
++  LWIP_ASSERT("tcp_output_control_segment_netif: no netif given", netif != NULL);
++
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++  if (pcb != NULL && (pcb->flags & (TF_ECN | TF_ECN_ECE)) ==
++                         (TF_ECN | TF_ECN_ECE)) {
++    struct tcp_hdr *ecn_tcphdr = (struct tcp_hdr *)p->payload;
++    u8_t ecn_flags = TCPH_FLAGS(ecn_tcphdr);
++
++    if ((ecn_flags & TCP_ACK) != 0U &&
++        (ecn_flags & (TCP_SYN | TCP_RST)) == 0U) {
++      TCPH_SET_FLAG(ecn_tcphdr, TCP_ECE);
++    }
++  }
++#endif
++
++#if CHECKSUM_GEN_TCP
+   IF__NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_TCP) {
+     struct tcp_hdr *tcphdr = (struct tcp_hdr *)p->payload;
+     tcphdr->chksum = ip_chksum_pseudo(p, IP_PROTO_TCP, p->tot_len,
+                                       src, dst);
+   }
+ #endif
+   if (pcb != NULL) {
+     NETIF_SET_HINTS(netif, LWIP_CONST_CAST(struct netif_hint*, &(pcb->netif_hints)));
+-    ttl = pcb->ttl;
+-    tos = pcb->tos;
++    ttl = pcb->ttl;
++    tos = pcb->tos;
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++    /* RFC 3168 baseline: pure ACK/control traffic is Not-ECT. */
++    tos = (u8_t)(tos & (u8_t)~0x03U);
++#endif
+   } else {
+     /* Send output with hardcoded TTL/HL since we have no access to the pcb */
+     ttl = TCP_TTL;

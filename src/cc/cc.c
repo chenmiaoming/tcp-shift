@@ -80,6 +80,18 @@ int tcp_shift_cc_on_loss(struct tcp_shift_cc *cc,
     return cc->ops->on_loss(cc->state, transport, loss, policy);
 }
 
+int tcp_shift_cc_on_ecn(struct tcp_shift_cc *cc,
+                        const struct tcp_shift_cc_transport *transport,
+                        struct tcp_shift_cc_policy *policy)
+{
+    if (!tcp_shift_cc_valid(cc, policy) ||
+        !tcp_shift_cc_valid_transport(transport) ||
+        cc->ops->on_ecn == NULL) {
+        return -1;
+    }
+    return cc->ops->on_ecn(cc->state, transport, policy);
+}
+
 int tcp_shift_cc_on_timeout(struct tcp_shift_cc *cc,
                             const struct tcp_shift_cc_transport *transport,
                             struct tcp_shift_cc_policy *policy)

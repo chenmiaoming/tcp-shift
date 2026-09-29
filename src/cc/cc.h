@@ -104,6 +104,12 @@ struct tcp_shift_cc_ops {
                    const struct tcp_shift_cc_transport *transport,
                    const struct tcp_shift_cc_loss *loss,
                    struct tcp_shift_cc_policy *policy);
+    /* Explicit congestion notification is a congestion event without packet
+     * loss. Controllers may share reduction math, but transports must not
+     * synthesize retransmission/loss state from this callback. */
+    int (*on_ecn)(void *state,
+                  const struct tcp_shift_cc_transport *transport,
+                  struct tcp_shift_cc_policy *policy);
     int (*on_timeout)(void *state,
                       const struct tcp_shift_cc_transport *transport,
                       struct tcp_shift_cc_policy *policy);
@@ -131,6 +137,10 @@ int tcp_shift_cc_on_loss(struct tcp_shift_cc *cc,
                          const struct tcp_shift_cc_transport *transport,
                          const struct tcp_shift_cc_loss *loss,
                          struct tcp_shift_cc_policy *policy);
+
+int tcp_shift_cc_on_ecn(struct tcp_shift_cc *cc,
+                        const struct tcp_shift_cc_transport *transport,
+                        struct tcp_shift_cc_policy *policy);
 
 int tcp_shift_cc_on_timeout(struct tcp_shift_cc *cc,
                             const struct tcp_shift_cc_transport *transport,

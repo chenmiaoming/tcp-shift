@@ -156,6 +156,18 @@ static int tcp_shift_reno_on_loss(void *opaque_state,
     return 0;
 }
 
+static int tcp_shift_reno_on_ecn(void *opaque_state,
+                                 const struct tcp_shift_cc_transport *transport,
+                                 struct tcp_shift_cc_policy *policy)
+{
+    struct tcp_shift_cc_loss congestion = {.lost_bytes = 1U};
+
+    /* RFC 3168 delivers the same congestion-control reduction as loss, but
+     * no transport loss/retransmission semantics are attached to this call. */
+    return tcp_shift_reno_on_loss(
+        opaque_state, transport, &congestion, policy);
+}
+
 static int tcp_shift_reno_on_timeout(void *opaque_state,
                                      const struct tcp_shift_cc_transport *transport,
                                      struct tcp_shift_cc_policy *policy)
@@ -210,6 +222,15 @@ static int tcp_shift_fixed_pacing_reno_on_loss(
         tcp_shift_reno_on_loss(opaque_state, transport, loss, policy), policy);
 }
 
+static int tcp_shift_fixed_pacing_reno_on_ecn(
+    void *opaque_state,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy)
+{
+    return tcp_shift_fixed_pacing_publish(
+        tcp_shift_reno_on_ecn(opaque_state, transport, policy), policy);
+}
+
 static int tcp_shift_fixed_pacing_reno_on_timeout(
     void *opaque_state,
     const struct tcp_shift_cc_transport *transport,
@@ -225,6 +246,7 @@ const struct tcp_shift_cc_ops tcp_shift_reno_ops = {
     .init = tcp_shift_reno_init,
     .on_ack = tcp_shift_reno_on_ack,
     .on_loss = tcp_shift_reno_on_loss,
+    .on_ecn = tcp_shift_reno_on_ecn,
     .on_timeout = tcp_shift_reno_on_timeout,
 };
 
@@ -234,6 +256,7 @@ const struct tcp_shift_cc_ops tcp_shift_fixed_pacing_reno_ops = {
     .init = tcp_shift_fixed_pacing_reno_init,
     .on_ack = tcp_shift_fixed_pacing_reno_on_ack,
     .on_loss = tcp_shift_fixed_pacing_reno_on_loss,
+    .on_ecn = tcp_shift_fixed_pacing_reno_on_ecn,
     .on_timeout = tcp_shift_fixed_pacing_reno_on_timeout,
 };
 

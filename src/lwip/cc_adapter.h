@@ -48,6 +48,7 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t bind_failures;
     uint64_t ack_events;
     uint64_t loss_events;
+    uint64_t ecn_events;
     uint64_t timeout_events;
     uint64_t policy_updates;
     uint64_t controller_errors;

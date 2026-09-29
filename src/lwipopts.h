@@ -145,6 +145,12 @@
 #define LWIP_TCP_SACK_OUT 0
 #endif
 
+/* RFC 3168 ECN is a controlled project patch and remains default-OFF until
+ * packet-level and live CE qualification is complete. */
+#ifndef TCP_SHIFT_EXPERIMENTAL_ECN
+#define TCP_SHIFT_EXPERIMENTAL_ECN 0
+#endif
+
 #define LWIP_STATS 1
 #define LWIP_STATS_DISPLAY 0
 

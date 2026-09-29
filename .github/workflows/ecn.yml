@@ -1,0 +1,159 @@
+name: RFC 3168 ECN transport
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/cc/**'
+      - 'src/lwipopts.h'
+      - 'src/lwip/cc_hooks.h'
+      - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/cc_adapter.h'
+      - 'src/lwip/cc_selector.c'
+      - 'src/lwip/cc_bbr_internal.c'
+      - 'src/p2_main.c'
+      - 'src/p2_ipv6_main.c'
+      - 'patches/lwip-ecn.patch'
+      - 'scripts/ecn-live.sh'
+      - 'scripts/fetch-lwip.sh'
+      - '.github/workflows/ecn.yml'
+      - 'docs/standards-conformance.md'
+      - 'docs/development.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ecn-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            python3 \
+            tcpdump
+
+      - name: Fetch pinned lwIP and controlled patches
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Enforce RFC 3168 transport boundary
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          prot = Path(".deps/lwip/src/include/lwip/prot/tcp.h").read_text()
+          pcb = Path(".deps/lwip/src/include/lwip/tcp.h").read_text()
+          tcore = Path(".deps/lwip/src/core/tcp.c").read_text()
+          tin = Path(".deps/lwip/src/core/tcp_in.c").read_text()
+          tout = Path(".deps/lwip/src/core/tcp_out.c").read_text()
+          hooks = Path("src/lwip/cc_hooks.h").read_text()
+          bbr = Path("src/lwip/cc_bbr_internal.c").read_text()
+
+          assert "#define TCP_FLAGS 0xffU" in prot
+          assert "TF_ECN         0x2000U" in pcb
+          assert "TF_ECN_ECE     0x4000U" in pcb
+          assert "TF_ECN_CWR     0x8000U" in pcb
+          assert "u32_t ecn_recover;" in pcb
+          assert "u8_t ecn_rto_wait;" in pcb
+
+          assert "(flags & (TCP_ECE | TCP_CWR)) == (TCP_ECE | TCP_CWR)" in tin
+          assert "(flags & (TCP_ECE | TCP_CWR)) != TCP_ECE" in tin
+          assert "tcp_shift_tcp_input_ecn() == TCP_SHIFT_IP_ECN_CE" in tin
+          assert "tcp_shift_lwip_cc_hook_ecn(pcb)" in tin
+          assert "tcp_clear_flags(pcb, TF_ECN_ECE)" in tin
+          assert "cwnd_was_one" in tin
+          assert "pcb->ecn_rto_wait = 1U" in tin
+          assert "if (pcb->ecn_rto_wait != 0U)" in tin
+          assert "pcb->rtime = 0" in tin
+
+          assert "flags = (u8_t)(flags | TCP_ECE | TCP_CWR)" in tout
+          assert "flags = (u8_t)((flags | TCP_ECE) & (u8_t)~TCP_CWR)" in tout
+          assert "tos = (u8_t)(tos & (u8_t)~0x03U)" in tout
+          assert "tos = (u8_t)(tos | 0x02U)" in tout
+          assert "len != 0U && (TCPH_FLAGS(seg->tcphdr) & TCP_CWR) != 0U" in tout
+          assert "pcb->ecn_recover =" in tout
+          assert "pcb->ecn_rto_wait != 0U && seg != NULL && seg->len != 0U" in tout
+          assert "tcp_set_flags(pcb, TF_ECN_CWR)" in tout
+          assert "if (pcb->ecn_rto_wait != 0U)" in tcore
+          assert "pcb->ecn_rto_wait = 0U" in tcore
+          assert "(void)tcp_output(pcb)" in tcore
+          assert "on_ecn" in hooks
+          assert "(adapter->pcb->flags & TF_ECN) != 0U" in bbr
+          print("rfc3168_transport_boundary=ok ecn=experimental ect=first-data retransmit=not-ect one_mss_rto_wait=1")
+          PY
+
+      - name: Configure experimental ECN build
+        run: |
+          cmake -S . -B .build-ecn \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_ECN=ON
+
+      - name: Build IPv4 and IPv6 production paths with ECN
+        run: |
+          cmake --build .build-ecn --target \
+            tcp-shift-p2 \
+            tcp-shift-p2-ipv6 \
+            tcp-shift-tcp-memory-contract \
+            --parallel
+
+      - name: Build CC ECN contracts
+        run: |
+          cmake -S src/cc -B .build-ecn-cc -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-ecn-cc --target \
+            tcp-shift-cc-contract \
+            tcp-shift-cubic-model-contract \
+            tcp-shift-cubic-controller-contract \
+            --parallel
+
+      - name: Run CC ECN contracts
+        run: |
+          .build-ecn-cc/tcp-shift-cc-contract
+          .build-ecn-cc/tcp-shift-cubic-model-contract
+          .build-ecn-cc/tcp-shift-cubic-controller-contract
+
+      - name: Validate live ECN harness
+        run: sh -n scripts/ecn-live.sh
+
+      - name: Qualify live RFC 3168 packet sequence
+        run: |
+          sudo env \
+            TCP_SHIFT_ECN_BINARY="$PWD/.build-ecn/tcp-shift-p2" \
+            TCP_SHIFT_ECN_OUT="$PWD/.build/ecn-live" \
+            sh scripts/ecn-live.sh
+
+      - name: Publish live ECN evidence
+        if: always()
+        run: |
+          if [ -f .build/ecn-live/trace-summary.txt ]; then
+            {
+              echo "## RFC 3168 live packet qualification"
+              echo
+              echo '~~~text'
+              cat .build/ecn-live/trace-summary.txt
+              echo '~~~'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload ECN diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfc3168-ecn-live
+          path: |
+            .build/ecn-live
+          if-no-files-found: warn
+          include-hidden-files: true

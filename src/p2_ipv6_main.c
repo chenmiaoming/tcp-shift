@@ -282,7 +282,7 @@ int main(int argc, char **argv)
             "loop_eintr_wakeups=%llu loop_tun_readable_wakeups=%llu "
             "loop_tun_writable_wakeups=%llu "
             "cc_bindings=%llu cc_bind_failures=%llu cc_ack_events=%llu "
-            "cc_loss_events=%llu cc_timeout_events=%llu "
+            "cc_loss_events=%llu cc_ecn_events=%llu cc_timeout_events=%llu "
             "cc_policy_updates=%llu cc_controller_errors=%llu "
             "cc_last_cwnd=%u cc_last_ssthresh=%u "
             "pacing_wakeups=%llu pacing_scheduler_errors=%llu\n",
@@ -316,6 +316,7 @@ int main(int argc, char **argv)
             (unsigned long long)cc_stats->bind_failures,
             (unsigned long long)cc_stats->ack_events,
             (unsigned long long)cc_stats->loss_events,
+            (unsigned long long)cc_stats->ecn_events,
             (unsigned long long)cc_stats->timeout_events,
             (unsigned long long)cc_stats->policy_updates,
             (unsigned long long)cc_stats->controller_errors,

@@ -70,6 +70,7 @@ struct tcp_shift_cubic_model {
     uint32_t min_cwnd_bytes;
     uint32_t ack_events;
     uint32_t loss_events;
+    uint32_t ecn_events;
     uint32_t timeout_events;
     uint32_t app_limited_acks;
     uint32_t hystart_sample_count;
@@ -107,6 +108,11 @@ int tcp_shift_cubic_model_on_loss(struct tcp_shift_cubic_model *model,
                                   const struct tcp_shift_cc_transport *transport,
                                   const struct tcp_shift_cc_loss *loss,
                                   struct tcp_shift_cc_policy *policy);
+
+int tcp_shift_cubic_model_on_ecn(
+    struct tcp_shift_cubic_model *model,
+    const struct tcp_shift_cc_transport *transport,
+    struct tcp_shift_cc_policy *policy);
 
 int tcp_shift_cubic_model_on_timeout(
     struct tcp_shift_cubic_model *model,
