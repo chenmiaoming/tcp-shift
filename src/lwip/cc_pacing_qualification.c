@@ -276,6 +276,19 @@ static int tcp_shift_pacing_qualification_quantum_on_ecn(
     return tcp_shift_pacing_qualification_base_hook_ops->on_ecn(arg, pcb);
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+static void tcp_shift_pacing_qualification_quantum_on_ecn_rto_gate(
+    void *arg, struct tcp_pcb *pcb, unsigned entering)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->on_ecn_rto_gate == NULL) {
+        return;
+    }
+    tcp_shift_pacing_qualification_base_hook_ops->on_ecn_rto_gate(
+        arg, pcb, entering);
+}
+#endif
+
 static int tcp_shift_pacing_qualification_quantum_on_timeout(
     void *arg, struct tcp_pcb *pcb)
 {
@@ -386,6 +399,10 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_ack = tcp_shift_pacing_qualification_quantum_on_ack,
         .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
         .on_ecn = tcp_shift_pacing_qualification_quantum_on_ecn,
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+        .on_ecn_rto_gate =
+            tcp_shift_pacing_qualification_quantum_on_ecn_rto_gate,
+#endif
         .on_rack_retrans_loss =
             tcp_shift_pacing_qualification_quantum_on_rack_retrans_loss,
         .on_tlp_loss =

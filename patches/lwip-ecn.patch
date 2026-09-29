@@ -62,7 +62,7 @@ diff --git a/src/include/lwip/tcp.h b/src/include/lwip/tcp.h
 diff --git a/src/core/tcp.c b/src/core/tcp.c
 --- a/src/core/tcp.c
 +++ b/src/core/tcp.c
-@@ -1276,46 +1276,64 @@
+@@ -1276,46 +1276,65 @@
            ++pcb->rtime;
          }
  
@@ -112,6 +112,7 @@ diff --git a/src/core/tcp.c b/src/core/tcp.c
 +            /* RFC 3168 section 6.1.2: this expiry only releases new data.
 +             * It is not evidence that an outstanding segment was lost. */
 +            pcb->ecn_rto_wait = 0U;
++            tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 0U);
 +            pcb->rtime = pcb->unacked != NULL ? 0 : -1;
 +            if (pcb->unsent != NULL) {
 +              (void)tcp_output(pcb);
@@ -182,7 +183,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  #include "lwip/mem.h"
  #include "lwip/memp.h"
  #include "lwip/inet_chksum.h"
-@@ -137,10 +138,83 @@
+@@ -137,10 +138,86 @@
      }
    }
  }
@@ -241,6 +242,15 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    tcp_clear_flags(pcb, TF_ECN_ECE);
 +  }
 +
++  /* An ACK that covers the first new-data packet carrying CWR closes the
++   * previous sender response window before ECE is evaluated. If that CWR
++   * packet was itself CE-marked, the receiver legitimately echoes a fresh
++   * ECE for a new congestion episode on the same ACK. */
++  if (pcb->ecn_recover != 0U && (flags & TCP_ACK) != 0U &&
++      TCP_SEQ_GEQ(ackno, pcb->ecn_recover)) {
++    pcb->ecn_recover = 0U;
++  }
++
 +  if ((flags & (TCP_ACK | TCP_ECE)) == (TCP_ACK | TCP_ECE) &&
 +      pcb->state >= ESTABLISHED && pcb->ecn_recover == 0U &&
 +      (pcb->flags & TF_ECN_CWR) == 0U) {
@@ -253,14 +263,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    if (cwnd_was_one != 0U) {
 +      pcb->rtime = 0;
 +      pcb->ecn_rto_wait = 1U;
++      tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U);
 +    }
-+  }
-+
-+  /* Evaluate the ECE bit against the previous response boundary first. An ACK
-+   * that covers CWR then opens the next ECN response window. */
-+  if (pcb->ecn_recover != 0U && (flags & TCP_ACK) != 0U &&
-+      TCP_SEQ_GEQ(ackno, pcb->ecn_recover)) {
-+    pcb->ecn_recover = 0U;
 +  }
 +}
 +#endif
@@ -270,7 +274,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
   * the segment between the PCBs and passes it on to tcp_process(), which implements
   * the TCP finite state machine. This function is called by the IP layer (in
   * ip_input()).
-@@ -729,8 +803,13 @@
+@@ -729,8 +806,13 @@
  #endif /* LWIP_VLAN_PCP */
      /* inherit socket options */
      npcb->so_options = pcb->so_options & SOF_INHERITED;
@@ -286,7 +290,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
         for it. */
      TCP_REG_ACTIVE(npcb);
  
-@@ -890,9 +969,15 @@
+@@ -890,9 +972,15 @@
  #if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
    tcp_shift_sack_seen = 0U;
  #endif
@@ -305,7 +309,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
      /* accept SYN only in 2 states: */
      if ((pcb->state != SYN_SENT) && (pcb->state != SYN_RCVD)) {
        return ERR_OK;
-@@ -906,9 +991,15 @@
+@@ -906,9 +994,15 @@
                                      ackno, pcb->snd_nxt, pcb->unacked ? "" : " empty:",
                                      pcb->unacked ? lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0));
        /* received SYN ACK with expected sequence number? */
@@ -324,7 +328,33 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
          pcb->rcv_ann_right_edge = pcb->rcv_nxt;
          pcb->lastack = ackno;
          pcb->snd_wnd = tcphdr->wnd;
-@@ -1405,13 +1496,18 @@
+@@ -1365,12 +1459,23 @@
+           if (recovery_native_window) {
+             (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
+           } else {
+             (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
+           }
+-        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
+-          if (pcb->cwnd < pcb->ssthresh) {
++        }
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++        else if ((pcb->flags & TF_ECN) != 0U &&
++                 (flags & TCP_ECE) != 0U) {
++          /* RFC 3168 section 6.1.2: an ECE ACK carries delivery/RTT
++           * evidence, but MUST NOT also grow the congestion window after
++           * tcp_shift_tcp_ecn_process_flags() delivered the congestion
++           * indication for this same ACK. */
++          (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
++        }
++#endif
++        else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
++          if (pcb->cwnd < pcb->ssthresh) {
+             tcpwnd_size_t increase;
+             /* limit to 1 SMSS segment during period following RTO */
+             u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
+             /* RFC 3465, section 2.2 Slow Start */
+             increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
+@@ -1405,13 +1510,18 @@
           in fact have been sent once. */
        pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
  
@@ -350,7 +380,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  
        if (recovery_partial && pcb->unacked != NULL) {
          /* A partial ACK identifies the next hole without waiting for another
-@@ -1578,9 +1674,15 @@
+@@ -1578,9 +1688,15 @@
      /* The sequence number must be within the window (above rcv_nxt
         and below rcv_nxt + rcv_wnd) in order to be further
         processed. */

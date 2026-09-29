@@ -69,6 +69,11 @@ struct tcp_shift_lwip_cc_hook_ops {
                    u8_t range_count);
     int (*on_loss)(void *arg, struct tcp_pcb *pcb, tcpwnd_size_t lost_bytes);
     int (*on_ecn)(void *arg, struct tcp_pcb *pcb);
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+    void (*on_ecn_rto_gate)(void *arg,
+                            struct tcp_pcb *pcb,
+                            unsigned entering);
+#endif
     int (*on_rack_retrans_loss)(void *arg,
                                 struct tcp_pcb *pcb,
                                 tcpwnd_size_t lost_bytes);
@@ -321,6 +326,20 @@ tcp_shift_lwip_cc_hook_ecn(struct tcp_pcb *pcb)
     /* ECN is a congestion event, not a packet-loss/recovery event. */
     return hook->ops->on_ecn(hook->arg, pcb) != 0;
 }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+static inline void
+tcp_shift_lwip_cc_hook_ecn_rto_gate(struct tcp_pcb *pcb, unsigned entering)
+{
+    struct tcp_shift_lwip_cc_hook *hook = tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL ||
+        hook->ops->on_ecn_rto_gate == NULL) {
+        return;
+    }
+    hook->ops->on_ecn_rto_gate(hook->arg, pcb, entering);
+}
+#endif
 
 /* RFC 8985 can prove that a retransmission was itself lost while the
  * transport is already in one fast-recovery episode. Deliver that additional
