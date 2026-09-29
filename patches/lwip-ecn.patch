@@ -326,7 +326,33 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
          pcb->rcv_ann_right_edge = pcb->rcv_nxt;
          pcb->lastack = ackno;
          pcb->snd_wnd = tcphdr->wnd;
-@@ -1405,13 +1497,18 @@
+@@ -1365,12 +1457,23 @@
+           if (recovery_native_window) {
+             (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
+           } else {
+             (void)tcp_shift_lwip_cc_hook_ack(pcb, acked);
+           }
+-        } else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
+-          if (pcb->cwnd < pcb->ssthresh) {
++        }
++#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
++        else if ((pcb->flags & TF_ECN) != 0U &&
++                 (flags & TCP_ECE) != 0U) {
++          /* RFC 3168 section 6.1.2: an ECE ACK carries delivery/RTT
++           * evidence, but MUST NOT also grow the congestion window after
++           * tcp_shift_tcp_ecn_process_flags() delivered the congestion
++           * indication for this same ACK. */
++          (void)tcp_shift_lwip_cc_hook_ack_observe(pcb, acked);
++        }
++#endif
++        else if (!tcp_shift_lwip_cc_hook_ack(pcb, acked)) {
++          if (pcb->cwnd < pcb->ssthresh) {
+             tcpwnd_size_t increase;
+             /* limit to 1 SMSS segment during period following RTO */
+             u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
+             /* RFC 3465, section 2.2 Slow Start */
+             increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
+@@ -1405,13 +1508,18 @@
           in fact have been sent once. */
        pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
  
@@ -352,7 +378,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
  
        if (recovery_partial && pcb->unacked != NULL) {
          /* A partial ACK identifies the next hole without waiting for another
-@@ -1578,9 +1675,15 @@
+@@ -1578,9 +1686,15 @@
      /* The sequence number must be within the window (above rcv_nxt
         and below rcv_nxt + rcv_wnd) in order to be further
         processed. */
