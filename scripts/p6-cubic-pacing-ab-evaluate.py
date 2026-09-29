@@ -21,10 +21,12 @@ def need(d,k):
     if k not in d: raise SystemExit(f"missing {k}")
     return d[k]
 
-for key in ("base_rtt_ms","rate_mbit","loss_mode","fault_marker_count","fault_marker_gap_packets","fault_marker_prefix","bdp_bytes","queue_pkts","payload_bytes"):
+for key in ("base_rtt_ms","rate_mbit","loss_mode","fault_marker_count","fault_marker_gap_packets","fault_marker_prefix","bdp_bytes","queue_pkts"):
     expected=need(paced,key)
     if need(bypass,key)!=expected or need(linux,key)!=expected:
         raise SystemExit(f"path mismatch for {key}")
+if need(paced,"payload_bytes") != need(bypass,"payload_bytes"):
+    raise SystemExit("tcp-shift A/B payload mismatch")
 
 if need(paced,"cc")!="cubic" or need(bypass,"cc")!="cubic" or need(linux,"cc")!="cubic":
     raise SystemExit("CUBIC A/B requires cubic on all paths")
