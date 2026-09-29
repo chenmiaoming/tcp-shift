@@ -555,10 +555,14 @@ int main(int argc, char **argv)
             "loop_tun_writable_wakeups=%llu "
             "cc_bindings=%llu cc_bind_failures=%llu cc_ack_events=%llu "
             "cc_loss_events=%llu cc_ecn_events=%llu "
+            "cc_ecn_pre_one_mss_events=%llu "
             "cc_ecn_rto_wait_enters=%llu cc_ecn_rto_wait_releases=%llu "
             "cc_timeout_events=%llu "
             "cc_policy_updates=%llu cc_controller_errors=%llu "
-            "cc_ecn_min_cwnd=%u cc_last_cwnd=%u cc_last_ssthresh=%u\n",
+            "cc_ecn_min_cwnd=%u cc_ecn_min_pre_cwnd=%u "
+            "cc_ecn_last_pre_cwnd=%u cc_ecn_last_post_cwnd=%u "
+            "cc_ecn_last_mss=%u "
+            "cc_last_cwnd=%u cc_last_ssthresh=%u\n",
             (unsigned long long)l3.rx_packets,
             (unsigned long long)l3.rx_drops,
             (unsigned long long)l3.rx_errors,
@@ -590,12 +594,17 @@ int main(int argc, char **argv)
             (unsigned long long)cc_stats->ack_events,
             (unsigned long long)cc_stats->loss_events,
             (unsigned long long)cc_stats->ecn_events,
+            (unsigned long long)cc_stats->ecn_pre_one_mss_events,
             (unsigned long long)cc_stats->ecn_rto_wait_enters,
             (unsigned long long)cc_stats->ecn_rto_wait_releases,
             (unsigned long long)cc_stats->timeout_events,
             (unsigned long long)cc_stats->policy_updates,
             (unsigned long long)cc_stats->controller_errors,
             cc_stats->ecn_min_cwnd_bytes,
+            cc_stats->ecn_min_pre_cwnd_bytes,
+            cc_stats->ecn_last_pre_cwnd_bytes,
+            cc_stats->ecn_last_post_cwnd_bytes,
+            cc_stats->ecn_last_mss_bytes,
             cc_stats->last_cwnd_bytes,
             cc_stats->last_ssthresh_bytes);
     print_delivery_stats(cc_stats);
