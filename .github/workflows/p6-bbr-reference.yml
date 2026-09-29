@@ -744,6 +744,7 @@ jobs:
           python3 -m py_compile scripts/p6-bbr-first-send-loss-evaluate.py
           python3 -m py_compile scripts/p6-first-send-controller-matrix-evaluate.py
           python3 -m py_compile scripts/p6-cubic-pacing-ab-evaluate.py
+          python3 -m py_compile scripts/p6-cubic-loss-timeline-evaluate.py
 
       - name: Build internal BBR with RACK recovery
         run: |
@@ -751,7 +752,7 @@ jobs:
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
-          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass --parallel
+          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass tcp-shift-p6-cubic-recovery-trace --parallel
 
       - name: Run tcp-shift deterministic first-send loss
         run: |
@@ -774,7 +775,7 @@ jobs:
         run: |
           out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic"
           sudo env \
-            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-recovery-trace" \
             TCP_SHIFT_P6_BBR_LONG_CC=cubic \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
@@ -876,6 +877,17 @@ jobs:
             "$root/linux-cubic/summary.txt" \
             | tee "$root/cubic-pacing-ab.txt"
 
+      - name: Compare CUBIC loss-window timeline
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-loss-timeline-evaluate.py \
+            "$root/tcp-shift-cubic/runtime.stderr" \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/linux-cubic/tcp-info.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-loss-timeline.txt"
+
       - name: Publish deterministic first-send evidence
         if: always()
         run: |
@@ -892,7 +904,8 @@ jobs:
               "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
               "$root/linux-cubic/summary.txt" \
               "$root/controller-matrix.txt" \
-              "$root/cubic-pacing-ab.txt"; do
+              "$root/cubic-pacing-ab.txt" \
+              "$root/cubic-loss-timeline.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
