@@ -60,7 +60,7 @@ Good examples:
 
 - "RFC 6928 IW10 formula implemented as the default initial-window policy."
 - "RFC 9438 core-algorithm aligned with RFC 9406 HyStart++."
-- "RFC 3168 ECN transport substrate experimental/default-OFF; hosted-runner single-CE and persistent-CE/1-SMSS timer-gate paths qualified, repeated-CE/1-SMSS and provider exposure qualification pending."
+- "RFC 3168 ECN transport substrate experimental/default-OFF; hosted-runner single-CE and persistent-CE/1-SMSS timer-gate paths qualified; provider/OpenVZ exposure qualification pending."
 - "RFC 6582-style NewReno partial-ACK recovery."
 - "RFC 6298-style SRTT observation; RTO remains transport-owned."
 - "RFC 8985 RACK-TLP experimental/default-OFF; current qualified subset documented separately."
