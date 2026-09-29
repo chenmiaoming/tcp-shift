@@ -17,6 +17,7 @@ on:
       - 'src/p2_ipv6_main.c'
       - 'patches/lwip-ecn.patch'
       - 'scripts/ecn-live.sh'
+      - 'scripts/ecn-persistent-live.sh'
       - 'scripts/fetch-lwip.sh'
       - '.github/workflows/ecn.yml'
       - 'docs/standards-conformance.md'
@@ -29,7 +30,7 @@ permissions:
 jobs:
   ecn-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Checkout tcp-shift
@@ -92,6 +93,9 @@ jobs:
           assert "pcb->ecn_rto_wait = 0U" in tcore
           assert "(void)tcp_output(pcb)" in tcore
           assert "on_ecn" in hooks
+          assert "on_ecn_rto_gate" in hooks
+          assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U)" in tin
+          assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 0U)" in tcore
           assert "(adapter->pcb->flags & TF_ECN) != 0U" in bbr
           print("rfc3168_transport_boundary=ok ecn=experimental ect=first-data retransmit=not-ect one_mss_rto_wait=1")
           PY
@@ -125,8 +129,10 @@ jobs:
           .build-ecn-cc/tcp-shift-cubic-model-contract
           .build-ecn-cc/tcp-shift-cubic-controller-contract
 
-      - name: Validate live ECN harness
-        run: sh -n scripts/ecn-live.sh
+      - name: Validate live ECN harnesses
+        run: |
+          sh -n scripts/ecn-live.sh
+          sh -n scripts/ecn-persistent-live.sh
 
       - name: Qualify live RFC 3168 packet sequence
         run: |
@@ -134,6 +140,13 @@ jobs:
             TCP_SHIFT_ECN_BINARY="$PWD/.build-ecn/tcp-shift-p2" \
             TCP_SHIFT_ECN_OUT="$PWD/.build/ecn-live" \
             sh scripts/ecn-live.sh
+
+      - name: Qualify persistent CE through one-SMSS timer gate
+        run: |
+          sudo env \
+            TCP_SHIFT_ECN_BINARY="$PWD/.build-ecn/tcp-shift-p2" \
+            TCP_SHIFT_ECN_PERSISTENT_OUT="$PWD/.build/ecn-persistent-live" \
+            sh scripts/ecn-persistent-live.sh
 
       - name: Publish live ECN evidence
         if: always()
@@ -147,6 +160,16 @@ jobs:
               echo '~~~'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f .build/ecn-persistent-live/summary.txt ]; then
+            {
+              echo
+              echo "## RFC 3168 persistent CE / one-SMSS gate"
+              echo
+              echo '~~~text'
+              cat .build/ecn-persistent-live/summary.txt
+              echo '~~~'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload ECN diagnostics
         if: always()
@@ -155,5 +178,6 @@ jobs:
           name: rfc3168-ecn-live
           path: |
             .build/ecn-live
+            .build/ecn-persistent-live
           if-no-files-found: warn
           include-hidden-files: true
