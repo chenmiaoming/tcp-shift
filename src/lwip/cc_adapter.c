@@ -2142,11 +2142,15 @@ static int tcp_shift_lwip_cc_on_ecn(void *arg, struct tcp_pcb *pcb)
     struct tcp_shift_lwip_cc_adapter *adapter = arg;
     struct tcp_shift_cc_transport transport;
     struct tcp_shift_cc_policy policy;
+    uint32_t pre_cwnd;
+    uint32_t mss;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb) {
         return 0;
     }
 
+    pre_cwnd = pcb->cwnd;
+    mss = pcb->mss;
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
     if (tcp_shift_cc_on_ecn(&adapter->controller, &transport, &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
@@ -2156,6 +2160,16 @@ static int tcp_shift_lwip_cc_on_ecn(void *arg, struct tcp_pcb *pcb)
 
     if (adapter->stats != NULL) {
         adapter->stats->ecn_events++;
+        adapter->stats->ecn_last_pre_cwnd_bytes = pre_cwnd;
+        adapter->stats->ecn_last_post_cwnd_bytes = policy.cwnd_bytes;
+        adapter->stats->ecn_last_mss_bytes = mss;
+        if (pre_cwnd <= mss) {
+            adapter->stats->ecn_pre_one_mss_events++;
+        }
+        if (adapter->stats->ecn_min_pre_cwnd_bytes == 0U ||
+            pre_cwnd < adapter->stats->ecn_min_pre_cwnd_bytes) {
+            adapter->stats->ecn_min_pre_cwnd_bytes = pre_cwnd;
+        }
         if (adapter->stats->ecn_min_cwnd_bytes == 0U ||
             policy.cwnd_bytes < adapter->stats->ecn_min_cwnd_bytes) {
             adapter->stats->ecn_min_cwnd_bytes = policy.cwnd_bytes;
