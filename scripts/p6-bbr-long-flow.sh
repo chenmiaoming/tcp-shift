@@ -21,6 +21,7 @@ FAULT_MARKER_COUNT=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT:-28}
 FAULT_MARKER_GAP_PACKETS=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS:-96}
 FAULT_MARKER_PREFIX=${TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX:-TSFS}
 RECOVERY_EXPECTATION=${TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION:-strict}
+EXPECT_PACING=${TCP_SHIFT_P6_BBR_LONG_EXPECT_PACING:-1}
 REORDER_DELAY_MS=${TCP_SHIFT_P6_BBR_LONG_REORDER_DELAY_MS:-5}
 REORDER_GAP=${TCP_SHIFT_P6_BBR_LONG_REORDER_GAP:-4}
 OUT=${TCP_SHIFT_P6_BBR_LONG_OUT:-"$BUILD/p6-bbr-long-flow"}
@@ -66,6 +67,10 @@ esac
 case "$RECOVERY_EXPECTATION" in
     strict|diagnostic|tlp|rack|reorder-safe|dsack) ;;
     *) echo "RECOVERY_EXPECTATION must be strict, diagnostic, tlp, rack, reorder-safe or dsack" >&2; exit 1;;
+esac
+case "$EXPECT_PACING" in
+    0|1) ;;
+    *) echo "EXPECT_PACING must be 0 or 1" >&2; exit 1;;
 esac
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic loss" >&2; exit 1; }
@@ -840,20 +845,34 @@ pacing_max_tx_gap_ns=$(printf '%s\n' "$pacing" | sed -n 's/.* max_tx_gap_ns=\([0
 pacing_rate=$(printf '%s\n' "$pacing" | sed -n 's/.* last_rate_bytes_per_sec=\([0-9][0-9]*\).*/\1/p')
 loop_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* loop_callback_errors=\([0-9][0-9]*\).*/\1/p')
 heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*\).*/\1/p')
-[ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
-[ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
-[ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
-[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -ge "$PAYLOAD_BYTES" ] &&
-[ -n "$pacing_max_tx_gap_ns" ] &&
-[ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
-[ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
-[ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
-    echo "invalid BBR long-flow shared-pacer telemetry" >&2
-    exit 1
-}
-if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
-    echo "clean BBR long-flow paced unexpected bytes: $pacing_tx_bytes" >&2
-    exit 1
+if [ "$EXPECT_PACING" -eq 1 ]; then
+    [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge 1 ] &&
+    [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge 1 ] &&
+    [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
+    [ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -ge "$PAYLOAD_BYTES" ] &&
+    [ -n "$pacing_max_tx_gap_ns" ] &&
+    [ -n "$pacing_rate" ] && [ "$pacing_rate" -ge 1 ] &&
+    [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
+    [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
+        echo "invalid BBR long-flow shared-pacer telemetry" >&2
+        exit 1
+    }
+    if [ "$LOSS_MODE" = none ] && [ "$pacing_tx_bytes" -ne "$PAYLOAD_BYTES" ]; then
+        echo "clean BBR long-flow paced unexpected bytes: $pacing_tx_bytes" >&2
+        exit 1
+    fi
+else
+    [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -eq 0 ] &&
+    [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -eq 0 ] &&
+    [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
+    [ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq 0 ] &&
+    [ -n "$pacing_max_tx_gap_ns" ] &&
+    [ -n "$pacing_rate" ] && [ "$pacing_rate" -eq 0 ] &&
+    [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
+    [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] || {
+        echo "unpaced qualification unexpectedly used the userspace pacer" >&2
+        exit 1
+    }
 fi
 
 recovery_enter_events=0
