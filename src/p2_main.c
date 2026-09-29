@@ -66,6 +66,7 @@ static void usage(const char *program)
 #endif
 }
 
+#ifndef TCP_SHIFT_P6_CUBIC_UNPACED_QUALIFICATION
 static int tcp_shift_p2_pacer_schedule(void *arg,
                                        uint64_t flow_id,
                                        uint32_t generation,
@@ -119,6 +120,7 @@ static int tcp_shift_p2_configure_pacer(struct tcp_shift_lwip_loop *loop)
     }
     return tcp_shift_lwip_cc_configure_pacer(&tcp_shift_p2_pacer_ops, loop);
 }
+#endif
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 static int tcp_shift_p2_recovery_schedule(void *arg,
@@ -501,11 +503,13 @@ int main(int argc, char **argv)
     }
     loop_started = 1;
 
+#ifndef TCP_SHIFT_P6_CUBIC_UNPACED_QUALIFICATION
     if (tcp_shift_p2_configure_pacer(&loop) < 0) {
         fprintf(stderr, "configure P5c pacer service failed\n");
         goto out;
     }
     pacer_configured = 1;
+#endif
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (tcp_shift_p2_configure_recovery_timer(&loop) < 0) {
