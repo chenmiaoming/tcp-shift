@@ -244,8 +244,9 @@ controller ECN/loss/RTO events:     1 / 0 / 0
 
 The live gate proves the baseline wire sequence `SYN(ECE+CWR) -> SYN-ACK(ECE) -> ECT(0)/CE data -> ECE ACK -> CWR on new data -> ECE cessation` and proves that the CE signal reaches CUBIC without creating loss or timeout events.
 
-The next focused ECN qualification after #78 is repeated CE through the one-SMSS timer gate. It should force independent CE episodes across CWR boundaries, prove cwnd reaches one SMSS, prove at least one RFC 3168 timer-gated send/release episode, and retain zero synthetic loss events. That stronger stress evidence is required before describing CUBIC ECN as production-complete.
+PR #79 extends that evidence to persistent congestion on the real TUN path. The qualification sends 18 independent CE-marked data episodes at a 1200-byte peer MSS. CUBIC reaches one SMSS, the RFC 3168 section 6.1.2 retransmit-timer send gate is entered and released repeatedly, the exact 21600-byte payload completes, and both synthetic packet-loss events and ordinary CC timeout events remain zero. During diagnosis, 17 ECE responses were observed while the pre-response cwnd was already one SMSS; the missing qualification signal was traced to the production pacing selector failing to forward the gate-lifecycle hook, not to the transport gate itself. The selector and qualification wrappers now forward that hook explicitly and ECN CI requires the forwarding boundary.
 
+After #79, hosted-runner RFC 3168/CUBIC ECN qualification is complete for the current experimental/default-OFF profile. Provider/OpenVZ evidence and any default/public exposure decision remain separate.
 
 After ECN transport + CUBIC ECN are qualified, return to BBR performance/reference work. BBR still has no published RFC target; Linux BBR remains the primary differential reference and the IETF BBR draft only a secondary semantic reference.
 
