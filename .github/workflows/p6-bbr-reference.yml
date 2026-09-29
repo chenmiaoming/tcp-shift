@@ -867,6 +867,7 @@ jobs:
 
       - name: Compare CUBIC pacing-gate A/B
         run: |
+          set -o pipefail
           root="$PWD/.build/p6-bbr-first-send-loss"
           sudo chown -R "$USER:$USER" "$root"
           python3 scripts/p6-cubic-pacing-ab-evaluate.py \
@@ -888,8 +889,10 @@ jobs:
               "$root/linux-bbr/summary.txt" \
               "$root/comparison.txt" \
               "$root/tcp-shift-cubic/summary.txt" \
+              "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
               "$root/linux-cubic/summary.txt" \
-              "$root/controller-matrix.txt"; do
+              "$root/controller-matrix.txt" \
+              "$root/cubic-pacing-ab.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
