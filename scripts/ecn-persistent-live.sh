@@ -240,14 +240,23 @@ RUNTIME_PID=
 events=$(grep -m1 ' cc_bindings=' "$OUT/runtime.stderr")
 ecn_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_events=\([0-9][0-9]*\).*/\1/p')
 min_cwnd=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_min_cwnd=\([0-9][0-9]*\).*/\1/p')
+pre_one_mss=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_pre_one_mss_events=\([0-9][0-9]*\).*/\1/p')
+min_pre_cwnd=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_min_pre_cwnd=\([0-9][0-9]*\).*/\1/p')
+last_pre_cwnd=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_last_pre_cwnd=\([0-9][0-9]*\).*/\1/p')
+last_post_cwnd=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_last_post_cwnd=\([0-9][0-9]*\).*/\1/p')
+last_mss=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_last_mss=\([0-9][0-9]*\).*/\1/p')
 gate_enters=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_rto_wait_enters=\([0-9][0-9]*\).*/\1/p')
 gate_releases=$(printf '%s\n' "$events" | sed -n 's/.* cc_ecn_rto_wait_releases=\([0-9][0-9]*\).*/\1/p')
 loss_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_loss_events=\([0-9][0-9]*\).*/\1/p')
 timeout_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_timeout_events=\([0-9][0-9]*\).*/\1/p')
 
-for value in "$ecn_events" "$min_cwnd" "$gate_enters" "$gate_releases" "$loss_events" "$timeout_events"; do
+for value in "$ecn_events" "$min_cwnd" "$pre_one_mss" "$min_pre_cwnd" "$last_pre_cwnd" "$last_post_cwnd" "$last_mss" "$gate_enters" "$gate_releases" "$loss_events" "$timeout_events"; do
     [ -n "$value" ] || { echo "missing persistent ECN telemetry" >&2; cat "$OUT/runtime.stderr" >&2; exit 1; }
 done
+printf 'rfc3168_persistent_diag ce_marks=%s ecn_events=%s min_cwnd=%s pre_one_mss=%s min_pre_cwnd=%s last_pre_cwnd=%s last_post_cwnd=%s last_mss=%s gate_enters=%s gate_releases=%s loss_events=%s timeout_events=%s\n' \
+    "$marked" "$ecn_events" "$min_cwnd" "$pre_one_mss" "$min_pre_cwnd" "$last_pre_cwnd" "$last_post_cwnd" "$last_mss" "$gate_enters" "$gate_releases" "$loss_events" "$timeout_events" \
+    | tee "$OUT/diagnostic.txt"
+
 [ "$ecn_events" -ge 8 ] || {
     echo "expected >=8 independent ECN congestion responses, got $ecn_events" >&2
     exit 1
