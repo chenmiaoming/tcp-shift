@@ -328,6 +328,21 @@ target_link_libraries(tcp-shift-p2 PRIVATE
 )
 target_link_options(tcp-shift-p2 PRIVATE -Wl,--gc-sections)
 
+add_executable(tcp-shift-p6-cubic-unpaced src/p2_main.c src/platform.c)
+target_include_directories(tcp-shift-p6-cubic-unpaced PRIVATE ${LWIP_INCLUDE_DIRS})
+target_compile_options(tcp-shift-p6-cubic-unpaced PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_compile_definitions(tcp-shift-p6-cubic-unpaced PRIVATE
+    TCP_SHIFT_P6_CUBIC_UNPACED_QUALIFICATION=1
+)
+target_link_libraries(tcp-shift-p6-cubic-unpaced PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge
+)
+target_link_options(tcp-shift-p6-cubic-unpaced PRIVATE -Wl,--gc-sections)
+
 add_executable(tcp-shift-p6-bbr src/p2_main.c src/platform.c)
 target_include_directories(tcp-shift-p6-bbr PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-p6-bbr PRIVATE
