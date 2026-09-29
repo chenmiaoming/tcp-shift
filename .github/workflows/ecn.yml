@@ -99,6 +99,10 @@ jobs:
           assert "on_ecn_rto_gate" in hooks
           assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 1U)" in tin
           assert "tcp_shift_lwip_cc_hook_ecn_rto_gate(pcb, 0U)" in tcore
+          ecn_helper = tin[tin.index("tcp_shift_tcp_ecn_process_flags"):
+                           tin.index("#endif", tin.index("tcp_shift_tcp_ecn_process_flags"))]
+          assert ecn_helper.index("pcb->ecn_recover = 0U") < ecn_helper.index(
+              "if ((flags & (TCP_ACK | TCP_ECE))")
           assert "(adapter->pcb->flags & TF_ECN) != 0U" in bbr
           print("rfc3168_transport_boundary=ok ecn=experimental ect=first-data retransmit=not-ect one_mss_rto_wait=1")
           PY
