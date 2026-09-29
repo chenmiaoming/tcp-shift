@@ -220,11 +220,32 @@ PR #78 is the first ECN transport increment and remains experimental/default-OFF
 1. **Keep ECN distinct from loss.** The generic CC boundary has an explicit `on_ecn` event; ECN must never synthesize a RACK loss or retransmission.
 2. **Use the RFC 3168 baseline first.** Active SYN uses ECE+CWR, a supporting SYN-ACK uses ECE, CE on valid negotiated data latches ECE, and CWR closes the receiver echo episode.
 3. **Mark only eligible first-transmission data ECT(0).** Pure ACK/control traffic and retransmitted data remain Not-ECT. Preserve DSCP bits when changing the two ECN bits. RFC 8311 relaxations are not part of this profile.
-4. **Keep state bounded.** The ECN build reuses free PCB flag bits plus one conditional CWR response boundary; no per-packet heap allocation, polling, thread, or timer is introduced.
+4. **Keep state bounded.** The ECN build reuses free PCB flag bits, one conditional CWR response boundary, and one byte of 1-SMSS timer-gate state. It reuses lwIP's ordinary retransmit timer; no per-packet heap allocation, polling thread, or additional timer object is introduced.
 5. **Give CUBIC the RFC 9438 ECN reduction semantics.** ECN uses beta=0.7 and repeated congestion events may reduce cwnd to 1 SMSS. The packet-loss path retains its existing recovery floor.
-6. **Do not overclaim completion.** RFC 9438 additionally requires reducing the sending rate when ECE persists at cwnd=1 SMSS. That pacing/rate behavior plus deterministic/live CE qualification must land before tcp-shift calls CUBIC ECN complete.
+6. **Use the RFC-defined 1-SMSS rate response.** When a fresh ECE arrives while cwnd is already one SMSS, reset lwIP's retransmit timer and gate new data until that timer expires; do not invent a project-specific pacing multiplier. The timer expiry releases new data without synthesizing packet loss or an RTO congestion event.
 7. **Do not silently extend internal BBR.** The compact internal BBR path has no ECN response in this increment and must reject an ECN-negotiated PCB in the experimental ECN build.
 8. **Preserve provenance.** ECN lives in a third controlled lwIP patch after P4 hooks and SACK/RACK integration; default builds compile the patch with ECN disabled.
+
+Current #78 qualification evidence:
+
+```text
+controlled lwIP patch replay:       success
+ECN=ON IPv4/IPv6 production build: success
+CC ECN model/contracts:             success
+live pcap linktype:                 RAW / 101
+captured TCP packets:               14
+first data packet:                  #4
+first ECE ACK:                      #5
+CWR new-data packet:                #6
+first post-CWR ACK without ECE:     #7
+forced CE marks:                    1
+controller ECN/loss/RTO events:     1 / 0 / 0
+```
+
+The live gate proves the baseline wire sequence `SYN(ECE+CWR) -> SYN-ACK(ECE) -> ECT(0)/CE data -> ECE ACK -> CWR on new data -> ECE cessation` and proves that the CE signal reaches CUBIC without creating loss or timeout events.
+
+The next focused ECN qualification after #78 is repeated CE through the one-SMSS timer gate. It should force independent CE episodes across CWR boundaries, prove cwnd reaches one SMSS, prove at least one RFC 3168 timer-gated send/release episode, and retain zero synthetic loss events. That stronger stress evidence is required before describing CUBIC ECN as production-complete.
+
 
 After ECN transport + CUBIC ECN are qualified, return to BBR performance/reference work. BBR still has no published RFC target; Linux BBR remains the primary differential reference and the IETF BBR draft only a secondary semantic reference.
 
