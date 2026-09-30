@@ -54,7 +54,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +#endif
    tcp_parseopt(pcb);
  
-@@ -1220,18 +1257,35 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1220,19 +1257,37 @@ tcp_receive(struct tcp_pcb *pcb)
              if (pcb->lastack == ackno) {
                if ((u8_t)(pcb->dupacks + 1) > pcb->dupacks) {
                  ++pcb->dupacks;
@@ -69,7 +69,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                   DupAck counting remains only for native recovery-window
 +                   inflation after RACK has already entered TF_INFR. */
 +                if ((pcb->flags & TF_INFR) != 0U && pcb->dupacks > 3 &&
-+                    !tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++                    !tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
++          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
 +              } else
@@ -77,7 +78,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +              {
                if (pcb->dupacks > 3) {
                  /* Inflate the congestion window */
-                 if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+                 if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
+           !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
                    TCP_WND_INC(pcb->cwnd, pcb->mss);
                  }
                }
@@ -90,6 +92,28 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
            }
          }
        }
+@@ -1359,13 +1415,17 @@
+       } else {
+         pcb->rtime = 0;
+       }
+ 
+-      if (recovery_partial && pcb->unacked != NULL) {
+-        /* A partial ACK identifies the next hole without waiting for another
+-           three duplicate ACKs. tcp_rexmit() only requeues the first unacked
+-           segment; tcp_input() will drive ordinary tcp_output() afterwards. */
++      if (recovery_partial && pcb->unacked != NULL
++#if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++          && !tcp_shift_tcp_rack_owns_fast_loss(pcb)
++#endif
++          ) {
++        /* RFC 6582 fallback: without RACK ownership, a partial ACK identifies
++           the next hole without waiting for another three duplicate ACKs.
++           tcp_rexmit() only requeues the first unacked segment. */
+         if (tcp_rexmit(pcb) == ERR_OK) {
+           pcb->rtime = 0;
+         }
+       }
+ 
 @@ -1928,8 +1982,14 @@
  static void
  tcp_parseopt(struct tcp_pcb *pcb)

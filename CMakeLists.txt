@@ -204,6 +204,7 @@ target_link_libraries(tcp_shift_lwip_cc_adapter PUBLIC
     tcp_shift_lwip
     tcp_shift_pacer
     tcp_shift_rack_tlp
+    tcp_shift_prr
 )
 
 add_library(tcp_shift_lwip_cc_adapter_pacing_bypass_qualification STATIC
@@ -225,6 +226,7 @@ target_link_libraries(tcp_shift_lwip_cc_adapter_pacing_bypass_qualification PUBL
     tcp_shift_lwip
     tcp_shift_pacer
     tcp_shift_rack_tlp
+    tcp_shift_prr
 )
 
 add_library(tcp_shift_lwip_cc_adapter_cubic_trace_qualification STATIC
@@ -246,6 +248,7 @@ target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PUBLIC
     tcp_shift_lwip
     tcp_shift_pacer
     tcp_shift_rack_tlp
+    tcp_shift_prr
 )
 
 add_library(tcp_shift_lwip_cc_bbr_qualification STATIC

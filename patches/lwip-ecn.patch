@@ -354,7 +354,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
              u8_t num_seg = (pcb->flags & TF_RTO) ? 1 : 2;
              /* RFC 3465, section 2.2 Slow Start */
              increase = LWIP_MIN(acked, (tcpwnd_size_t)(num_seg * pcb->mss));
-@@ -1405,13 +1510,18 @@
+@@ -1405,17 +1510,22 @@
           in fact have been sent once. */
        pcb->unsent = tcp_free_acked_segments(pcb, pcb->unsent, "unsent", pcb->unacked);
  
@@ -378,8 +378,12 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +        pcb->rtime = 0;
 +      }
  
-       if (recovery_partial && pcb->unacked != NULL) {
-         /* A partial ACK identifies the next hole without waiting for another
+       if (recovery_partial && pcb->unacked != NULL
+ #if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+           && !tcp_shift_tcp_rack_owns_fast_loss(pcb)
+ #endif
+           ) {
+         /* RFC 6582 fallback: without RACK ownership, a partial ACK identifies
 @@ -1578,9 +1688,15 @@
      /* The sequence number must be within the window (above rcv_nxt
         and below rcv_nxt + rcv_wnd) in order to be further
@@ -567,14 +571,15 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
      tcp_shift_lwip_cc_hook_segment_tx(pcb, seg,
                                        lwip_ntohl(seg->tcphdr->seqno), seg->len);
    }
-@@ -2189,10 +2258,15 @@
+@@ -2189,11 +2258,16 @@
          }
        }
  
 -      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 -       * explicitly owns recovery cwnd (internal BBR) keeps its published
 -       * packet-conservation window instead. */
--      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+-      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
+-          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
 +      if ((pcb->flags & TF_ECN) != 0U) {
 +        tcp_set_flags(pcb, TF_ECN_CWR);
@@ -583,7 +588,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 +       * explicitly owns recovery cwnd (internal BBR) keeps its published
 +       * packet-conservation window instead. */
-+      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
++          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
          pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
        }
        tcp_set_flags(pcb, TF_INFR);

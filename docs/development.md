@@ -28,29 +28,19 @@ Historical milestone documents explain design evolution; they do not override `A
 - Do not infer provider/OpenVZ qualification from GitHub-runner qualification.
 - If a behavioral head is green and later commits are docs-only, merge may rely on the last green behavioral head only after a commit comparison proves the tail is non-behavioral.
 
-## Active next milestone: RFC 9937 PRR recovery
+## RFC 9937 PRR recovery — integrated
 
-The current standards-driven recovery follow-up is Proportional Rate Reduction (PRR), using RFC 9937 rather than the obsolete RFC 6937.
+RFC 9937 Proportional Rate Reduction (PRR) is now the recovery-rate mechanism for the experimental RACK+SACK path when Reno or CUBIC owns congestion policy.
 
-Checkpoint before this milestone:
-
-```text
-main: 6344e91526baa47190493d745d42f5eb621a64e7
-
-RACK-TLP:
-- RFC 8985 remains the project-owned fast-loss oracle/selective repair path
-- exact deterministic first-send loss recovery remains qualified with zero RTO
-- CUBIC loss tracing shows RFC 9438 beta is applied to RFC 5681 FlightSize
-- median FlightSize/cwnd on the 28-drop qualification path is ~0.959
-- pacing-gate bypass changes CUBIC goodput only ~3-4%, so scheduler deferral is not the dominant gap
-- internal BBR remains close to the Linux BBR differential reference on the same path
-```
-
-RFC 9937 is a transport recovery-rate mechanism, not a congestion controller and not a loss detector. The ownership target is therefore:
+Ownership is intentionally split:
 
 ```text
-RACK / SACK evidence
-    -> loss + delivered/inflight evidence
+SACK delivery ledger
+    -> DeliveredData / scoreboard evidence
+
+RACK
+    -> sole project-owned loss oracle
+    -> sole project-owned selective repair selector
 
 Reno / CUBIC
     -> choose ssthresh target
@@ -58,14 +48,51 @@ Reno / CUBIC
 RFC 9937 PRR
     -> RecoverFS / prr_delivered / prr_out
     -> SafeACK selects CRB vs SSRB
-    -> SndCnt controls bytes released during fast recovery
+    -> SndCnt controls recovery send credit
+
+pacer
+    -> schedules only PRR-eligible bytes
 
 RTO
     -> terminal fallback
 ```
 
-The first PRR increment deliberately implements only the pure RFC 9937 state machine and deterministic contract. It does not change production recovery. The next integration increment must wire the model only after the transport can provide RFC 9937 DeliveredData, RACK-aware inflight, SafeACK, and per-transmit accounting without creating a second loss oracle or duplicate SACK scoreboard. Non-RACK/non-SACK fallback remains RFC 6582 NewReno unless separately replaced and qualified. Internal BBR keeps its controller-owned recovery cwnd until a dedicated integration decision proves otherwise.
+The live adapter reuses the existing delivery/RACK sidecar; it does not create a second SACK scoreboard or loss detector. RecoverFS snapshots outstanding sequence space less SACKed delivery evidence, RACK-aware inflight excludes bytes already delivered or currently declared lost, and retransmitted bytes naturally re-enter inflight with their new transmission timestamp.
 
+The controlled lwIP recovery path keeps RFC 6582 partial-ACK retransmission selection only as a non-RACK fallback. On RACK+SACK flows, partial ACKs do not directly call the NewReno `tcp_rexmit()` selector; RACK selects repairs and PRR only controls how many bytes may be sent.
+
+Internal BBR is explicitly outside this integration. It retains its controller-owned recovery window and all PRR runtime counters must stay zero.
+
+Current hosted-runner evidence includes:
+
+```text
+deterministic first-send loss, RTT 260 ms, 10 Mbit, 4 MiB:
+- Reno:  28 drops, 28 retransmissions, 28 PRR enters/exits, 0 RTO
+- CUBIC: 28 drops, 28 retransmissions, 28 PRR enters/exits, 0 RTO
+- internal BBR: PRR counters remain zero
+
+single recovery flight, two deterministic losses, Reno:
+- fault_drops=2
+- retransmit_events=2
+- prr_recovery_enters=1
+- prr_recovery_exits=1
+- prr_safe_ack_events=1
+- timeout_events=0
+- payload_integrity=ok
+```
+
+PRR is a standards/recovery-correctness change, not a performance shortcut. On the deterministic 28-drop CUBIC differential path, PRR does not close the remaining Linux CUBIC goodput gap and may be slightly slower than the former NewReno-window recovery. The next performance work should therefore compare PRR/RACK recovery timing, inflight evolution, and pacing-rate publication against Linux rather than tuning RFC 9937 away from its specified behavior.
+
+## Next recovery/performance investigation
+
+Keep RFC 9937 behavior fixed and localize the remaining CUBIC differential gap. The next focused evidence should compare, per recovery episode, tcp-shift and Linux:
+
+- RACK loss/repair timing and the number of repairs released per ACK;
+- DeliveredData, inflight, ssthresh, PRR mode (proportional/CRB/SSRB), and SndCnt;
+- pacing-rate evolution after the congestion response;
+- recovery duration and post-recovery cwnd growth.
+
+Any follow-up behavior change must identify whether the mismatch belongs to RFC 8985 RACK evidence/repair scheduling, RFC 9937 PRR inputs, RFC 9438 CUBIC policy, or Linux-derived pacing mechanics. Do not weaken PRR or RACK qualification thresholds merely to improve the benchmark.
 
 ## Pinned lwIP and controlled patch
 

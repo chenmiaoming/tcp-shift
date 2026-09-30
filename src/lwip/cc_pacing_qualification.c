@@ -193,6 +193,62 @@ static void tcp_shift_pacing_qualification_quantum_refresh(
     flow->quantum_bytes = quantum;
 }
 
+static void tcp_shift_pacing_qualification_quantum_on_ack_begin(
+    void *arg, struct tcp_pcb *pcb)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->on_ack_begin != NULL) {
+        tcp_shift_pacing_qualification_base_hook_ops->on_ack_begin(arg, pcb);
+    }
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_ack_observe(
+    void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->on_ack_observe == NULL) {
+        return 0;
+    }
+    return tcp_shift_pacing_qualification_base_hook_ops->on_ack_observe(
+        arg, pcb, acked_bytes);
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_sack(
+    void *arg,
+    struct tcp_pcb *pcb,
+    u32_t ack_seq,
+    const struct tcp_shift_lwip_sack_range *ranges,
+    u8_t range_count)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->on_sack == NULL) {
+        return 0;
+    }
+    return tcp_shift_pacing_qualification_base_hook_ops->on_sack(
+        arg, pcb, ack_seq, ranges, range_count);
+}
+
+static int tcp_shift_pacing_qualification_quantum_on_recovery_exit(
+    void *arg, struct tcp_pcb *pcb, u32_t ack_seq)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->on_recovery_exit == NULL) {
+        return 0;
+    }
+    return tcp_shift_pacing_qualification_base_hook_ops->on_recovery_exit(
+        arg, pcb, ack_seq);
+}
+
+static unsigned tcp_shift_pacing_qualification_quantum_prr_active(
+    void *arg, struct tcp_pcb *pcb)
+{
+    if (tcp_shift_pacing_qualification_base_hook_ops == NULL ||
+        tcp_shift_pacing_qualification_base_hook_ops->prr_active == NULL) {
+        return 0U;
+    }
+    return tcp_shift_pacing_qualification_base_hook_ops->prr_active(arg, pcb);
+}
+
 static int tcp_shift_pacing_qualification_quantum_on_ack(
     void *arg, struct tcp_pcb *pcb, tcpwnd_size_t acked_bytes)
 {
@@ -332,6 +388,15 @@ static int tcp_shift_pacing_qualification_quantum_send_eligible(
     int eligible;
 
     flow = tcp_shift_pacing_qualification_quantum_find(adapter);
+    if (tcp_shift_pacing_qualification_base_hook_ops != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->prr_active != NULL &&
+        tcp_shift_pacing_qualification_base_hook_ops->prr_active(arg, pcb) != 0U) {
+        return tcp_shift_pacing_qualification_base_hook_ops
+                       ->on_segment_send_eligible != NULL
+                   ? tcp_shift_pacing_qualification_base_hook_ops
+                         ->on_segment_send_eligible(arg, pcb, payload_bytes)
+                   : 1;
+    }
     if (flow == NULL || payload_bytes == 0U ||
         tcp_shift_pacing_qualification_base_hook_ops == NULL ||
         tcp_shift_pacing_qualification_base_hook_ops
@@ -396,7 +461,11 @@ static void tcp_shift_pacing_qualification_quantum_on_segment_acked(
 
 static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_pacing_qualification_quantum_hook_ops = {
+        .on_ack_begin = tcp_shift_pacing_qualification_quantum_on_ack_begin,
         .on_ack = tcp_shift_pacing_qualification_quantum_on_ack,
+        .on_ack_observe =
+            tcp_shift_pacing_qualification_quantum_on_ack_observe,
+        .on_sack = tcp_shift_pacing_qualification_quantum_on_sack,
         .on_loss = tcp_shift_pacing_qualification_quantum_on_loss,
         .on_ecn = tcp_shift_pacing_qualification_quantum_on_ecn,
 #if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
@@ -410,8 +479,12 @@ static const struct tcp_shift_lwip_cc_hook_ops
         .on_tlp_dupack =
             tcp_shift_pacing_qualification_quantum_on_tlp_dupack,
         .on_timeout = tcp_shift_pacing_qualification_quantum_on_timeout,
+        .on_recovery_exit =
+            tcp_shift_pacing_qualification_quantum_on_recovery_exit,
         .rack_loss_status =
             tcp_shift_pacing_qualification_quantum_rack_loss_status,
+        .prr_active =
+            tcp_shift_pacing_qualification_quantum_prr_active,
         .on_segment_send_eligible =
             tcp_shift_pacing_qualification_quantum_send_eligible,
         .on_segment_tx = tcp_shift_pacing_qualification_quantum_on_segment_tx,
