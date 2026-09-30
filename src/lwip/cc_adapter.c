@@ -2481,7 +2481,16 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
             adapter->stats != NULL ? adapter->stats->loss_events : 0U;
         unsigned recovery_active =
             tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
-        const char *event = episode == 0U ? "preloss-ack" : "ca-ack";
+        unsigned recovery_close_ack =
+            episode != 0U && recovery_active == 0U
+                ? tcp_shift_lwip_cc_hook_take_recovery_exit(&adapter->hook)
+                : 0U;
+        const char *event =
+            episode == 0U
+                ? "preloss-ack"
+                : (recovery_close_ack != 0U
+                       ? "recovery-close-ack"
+                       : "ca-ack");
         uint32_t sacked_ahead_bytes = 0U;
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
