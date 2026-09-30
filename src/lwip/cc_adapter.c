@@ -403,8 +403,21 @@ static u32_t tcp_shift_lwip_cc_effective_cwnd(void *arg,
         return 0U;
     }
     cwnd = (uint32_t)pcb->cwnd;
-    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
-        adapter->sack_delivery_policy == 0U) {
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb) {
+        return cwnd;
+    }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U) {
+        raw_inflight = pcb->snd_nxt - pcb->lastack;
+        if (raw_inflight > UINT32_MAX - adapter->prr_send_credit_bytes) {
+            return UINT32_MAX;
+        }
+        return raw_inflight + adapter->prr_send_credit_bytes;
+    }
+#endif
+
+    if (adapter->sack_delivery_policy == 0U) {
         return cwnd;
     }
 
@@ -436,9 +449,31 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     uint64_t now_ns;
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb ||
-        payload_bytes == 0U || adapter->pacing_rate_bytes_per_sec == 0U) {
+        payload_bytes == 0U) {
         return 1;
     }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U &&
+        payload_bytes > adapter->prr_send_credit_bytes) {
+        if (adapter->stats != NULL) {
+            adapter->stats->prr_send_blocks++;
+        }
+        return 0;
+    }
+#endif
+
+    if (adapter->pacing_rate_bytes_per_sec == 0U) {
+        return 1;
+    }
+
+#if defined(TCP_SHIFT_P6_CUBIC_PACING_BYPASS_QUALIFICATION)
+    if (adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        return 1;
+    }
+#endif
 
     now_ns = tcp_shift_delivery_now_ns(adapter);
     if (now_ns == 0U) {
@@ -1607,6 +1642,25 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     if (now_ns == 0U) {
         return;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U) {
+        if (payload_bytes > adapter->prr_send_credit_bytes ||
+            tcp_shift_prr_on_send(&adapter->prr, payload_bytes) != 0) {
+            if (adapter->stats != NULL) {
+                adapter->stats->controller_errors++;
+            }
+            adapter->prr_send_credit_bytes = 0U;
+        } else {
+            adapter->prr_send_credit_bytes -= payload_bytes;
+            if (adapter->stats != NULL) {
+                adapter->stats->prr_tx_events++;
+                adapter->stats->prr_tx_bytes += payload_bytes;
+                adapter->stats->prr_last_sndcnt_bytes =
+                    adapter->prr_send_credit_bytes;
+            }
+        }
+    }
+#endif
     tcp_shift_pacing_note_tx(adapter, payload_bytes, now_ns);
     if (adapter->stats != NULL) {
         if (adapter->stats->delivery_last_tx_ns != 0U &&
