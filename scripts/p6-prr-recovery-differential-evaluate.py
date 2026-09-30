@@ -89,6 +89,8 @@ linux_rows, linux_transitions = read_linux(linux_tsv_path)
 
 acks = events["prr-ack"]
 txs = events["prr-tx"]
+send_checks = events["send-check"]
+pacer_resumes = events["pacer-resume"]
 exits = events["prr-exit"]
 losses = events["loss"]
 
@@ -149,10 +151,19 @@ unsent_segments = []
 credit_with_no_unsent = 0
 credit_with_unsent = 0
 credit_with_zero_sndbuf = 0
+credit_window_allow = 0
+credit_window_block = 0
+credit_window_allow_new = 0
+credit_window_allow_retrans = 0
 episodes = defaultdict(list)
 
 for event in acks:
-    for required in ("mss", "snd_buf", "snd_queuelen", "unsent_bytes", "unsent_segments"):
+    for required in (
+        "mss", "snd_buf", "snd_queuelen", "snd_wnd", "lastack", "snd_nxt",
+        "seq_cwnd", "output_wnd", "next_unsent_seq", "next_unsent_len",
+        "next_unsent_extent", "window_allows", "next_is_retrans",
+        "unsent_bytes", "unsent_segments",
+    ):
         if required not in event:
             raise SystemExit(f"PRR ACK trace missing {required}: {event}")
     episode = int(event["episode"])
@@ -174,6 +185,14 @@ for event in acks:
     if int(event["sndcnt"]) >= int(event["mss"]):
         if unsent_now >= MSS:
             credit_with_unsent += 1
+            if int(event["window_allows"]) != 0:
+                credit_window_allow += 1
+                if int(event["next_is_retrans"]) != 0:
+                    credit_window_allow_retrans += 1
+                else:
+                    credit_window_allow_new += 1
+            else:
+                credit_window_block += 1
         else:
             credit_with_no_unsent += 1
         if snd_buf_now == 0:
@@ -199,6 +218,28 @@ for episode in sorted(episodes):
     first_ack_pacing.append(int(rows[0]["pacing_Bps"]))
     if len({int(row["pacing_Bps"]) for row in rows}) == 1:
         episode_constant_pacing += 1
+
+send_decisions = defaultdict(int)
+for event in send_checks:
+    decision = event.get("decision")
+    if not decision:
+        raise SystemExit(f"send-check trace missing decision: {event}")
+    send_decisions[decision] += 1
+
+resume_before = [event for event in pacer_resumes if event.get("phase") == "before"]
+resume_after = [event for event in pacer_resumes if event.get("phase") == "after"]
+if len(resume_before) != len(resume_after):
+    raise SystemExit(
+        f"pacer resume trace mismatch: before={len(resume_before)} "
+        f"after={len(resume_after)}"
+    )
+resume_credit_consumed = 0
+resume_rearmed = 0
+for before, after in zip(resume_before, resume_after):
+    if int(after.get("credit", "0")) < int(before.get("credit", "0")):
+        resume_credit_consumed += 1
+    if int(after.get("pacing_scheduled", "0")) != 0:
+        resume_rearmed += 1
 
 linux_credit = []
 linux_inflight = []
@@ -230,6 +271,11 @@ for delta, row in linux_transitions:
         linux_expected_pacing.append(expected)
         linux_actual_over_expected.append(ratio(pacing, expected))
 
+if credit_with_unsent > 0 and len(send_checks) == 0:
+    raise SystemExit("PRR had send credit with queued data but no send-check trace")
+if send_decisions["pacer-defer"] > 0 and len(resume_before) == 0:
+    raise SystemExit("pacer deferred PRR sends but no pacer resume was observed")
+
 print(
     "p6_prr_recovery_differential=ok "
     f"tcp_shift_prr_episodes={stats_prr_enters} "
@@ -255,6 +301,17 @@ print(
     f"tcp_shift_prr_credit_with_no_unsent_events={credit_with_no_unsent} "
     f"tcp_shift_prr_credit_with_unsent_events={credit_with_unsent} "
     f"tcp_shift_prr_credit_with_zero_sndbuf_events={credit_with_zero_sndbuf} "
+    f"tcp_shift_prr_credit_window_allow_events={credit_window_allow} "
+    f"tcp_shift_prr_credit_window_block_events={credit_window_block} "
+    f"tcp_shift_prr_credit_window_allow_new_events={credit_window_allow_new} "
+    f"tcp_shift_prr_credit_window_allow_retrans_events={credit_window_allow_retrans} "
+    f"tcp_shift_prr_send_check_events={len(send_checks)} "
+    f"tcp_shift_prr_send_check_allow_now={send_decisions['allow-now']} "
+    f"tcp_shift_prr_send_check_prr_block={send_decisions['prr-block']} "
+    f"tcp_shift_prr_send_check_pacer_defer={send_decisions['pacer-defer']} "
+    f"tcp_shift_prr_pacer_resume_events={len(resume_before)} "
+    f"tcp_shift_prr_pacer_resume_credit_consumed={resume_credit_consumed} "
+    f"tcp_shift_prr_pacer_resume_rearmed={resume_rearmed} "
     f"linux_tcp_info_samples={len(linux_rows)} "
     f"linux_retrans_transition_samples={len(linux_transitions)} "
     f"linux_retrans_transition_packets={linux_transition_packets} "

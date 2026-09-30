@@ -456,6 +456,23 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U &&
         payload_bytes > adapter->prr_send_credit_bytes) {
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        if (adapter->controller.ops != NULL &&
+            adapter->controller.ops->name != NULL &&
+            strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+            fprintf(stderr,
+                    "tcp-shift-cubic-trace: event=send-check episode=%llu "
+                    "decision=prr-block payload_bytes=%u credit=%u "
+                    "pacing_scheduled=%u next_send_ns=%llu\n",
+                    (unsigned long long)(adapter->stats != NULL
+                                             ? adapter->stats->prr_recovery_enters
+                                             : 0U),
+                    (unsigned)payload_bytes, adapter->prr_send_credit_bytes,
+                    adapter->pacing_scheduled,
+                    (unsigned long long)adapter->pacing_next_send_ns);
+        }
+#endif
         if (adapter->stats != NULL) {
             adapter->stats->prr_send_blocks++;
         }
@@ -485,6 +502,24 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     flow.next_send_ns = adapter->pacing_next_send_ns;
     deadline_ns = tcp_shift_flow_pacer_deadline(&flow, now_ns);
     if (deadline_ns == 0U) {
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        if (adapter->prr.active != 0U &&
+            adapter->controller.ops != NULL &&
+            adapter->controller.ops->name != NULL &&
+            strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+            fprintf(stderr,
+                    "tcp-shift-cubic-trace: event=send-check episode=%llu "
+                    "decision=allow-now payload_bytes=%u credit=%u now_ns=%llu "
+                    "pacing_scheduled=%u next_send_ns=%llu\n",
+                    (unsigned long long)(adapter->stats != NULL
+                                             ? adapter->stats->prr_recovery_enters
+                                             : 0U),
+                    (unsigned)payload_bytes, adapter->prr_send_credit_bytes,
+                    (unsigned long long)now_ns, adapter->pacing_scheduled,
+                    (unsigned long long)adapter->pacing_next_send_ns);
+        }
+#endif
         return 1;
     }
 
@@ -515,6 +550,25 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
         }
         adapter->pacing_scheduled = 1U;
     }
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U &&
+        adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=send-check episode=%llu "
+                "decision=pacer-defer payload_bytes=%u credit=%u now_ns=%llu "
+                "deadline_ns=%llu pacing_scheduled=%u next_send_ns=%llu\n",
+                (unsigned long long)(adapter->stats != NULL
+                                         ? adapter->stats->prr_recovery_enters
+                                         : 0U),
+                (unsigned)payload_bytes, adapter->prr_send_credit_bytes,
+                (unsigned long long)now_ns, (unsigned long long)deadline_ns,
+                adapter->pacing_scheduled,
+                (unsigned long long)adapter->pacing_next_send_ns);
+    }
+#endif
     if (adapter->stats != NULL) {
         adapter->stats->pacing_deferrals++;
         adapter->stats->pacing_last_deadline_ns = deadline_ns;
@@ -554,8 +608,51 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
         adapter->stats->pacing_resume_events++;
         adapter->stats->pacing_last_actual_release_ns = actual_release_ns;
     }
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U &&
+        adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        const struct tcp_seg *next = adapter->pcb->unsent;
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=pacer-resume phase=before "
+                "episode=%llu actual_release_ns=%llu credit=%u "
+                "next_send_ns=%llu next_unsent_seq=%u next_unsent_len=%u\n",
+                (unsigned long long)(adapter->stats != NULL
+                                         ? adapter->stats->prr_recovery_enters
+                                         : 0U),
+                (unsigned long long)actual_release_ns,
+                adapter->prr_send_credit_bytes,
+                (unsigned long long)adapter->pacing_next_send_ns,
+                next != NULL ? lwip_ntohl(next->tcphdr->seqno) : 0U,
+                next != NULL ? (unsigned)next->len : 0U);
+    }
+#endif
 
     err = tcp_output(adapter->pcb);
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    if (adapter->prr.active != 0U &&
+        adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        const struct tcp_seg *next = adapter->pcb->unsent;
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=pacer-resume phase=after "
+                "episode=%llu actual_release_ns=%llu credit=%u "
+                "pacing_scheduled=%u next_send_ns=%llu "
+                "next_unsent_seq=%u next_unsent_len=%u err=%d\n",
+                (unsigned long long)(adapter->stats != NULL
+                                         ? adapter->stats->prr_recovery_enters
+                                         : 0U),
+                (unsigned long long)actual_release_ns,
+                adapter->prr_send_credit_bytes, adapter->pacing_scheduled,
+                (unsigned long long)adapter->pacing_next_send_ns,
+                next != NULL ? lwip_ntohl(next->tcphdr->seqno) : 0U,
+                next != NULL ? (unsigned)next->len : 0U, (int)err);
+    }
+#endif
     if (err != ERR_OK && adapter->stats != NULL) {
         adapter->stats->pacing_scheduler_errors++;
     }
@@ -1063,8 +1160,33 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
         uint32_t raw_outstanding = pcb->snd_nxt - pcb->lastack;
         uint64_t unsent_bytes = 0U;
         uint32_t unsent_segments = 0U;
+        uint32_t next_unsent_seq = 0U;
+        uint32_t next_unsent_len = 0U;
+        uint32_t next_unsent_extent = 0U;
+        uint32_t seq_cwnd = raw_outstanding;
+        uint32_t output_wnd;
+        unsigned window_allows = 0U;
+        unsigned next_is_retrans = 0U;
         const struct tcp_seg *unsent;
 
+        if (result.sndcnt <= UINT32_MAX - seq_cwnd) {
+            seq_cwnd += result.sndcnt;
+        } else {
+            seq_cwnd = UINT32_MAX;
+        }
+        output_wnd = pcb->snd_wnd < seq_cwnd ? pcb->snd_wnd : seq_cwnd;
+        if (pcb->unsent != NULL) {
+            next_unsent_seq = lwip_ntohl(pcb->unsent->tcphdr->seqno);
+            next_unsent_len = pcb->unsent->len;
+            next_unsent_extent =
+                next_unsent_seq - pcb->lastack + next_unsent_len;
+            window_allows =
+                next_unsent_len != 0U && next_unsent_extent <= output_wnd
+                    ? 1U
+                    : 0U;
+            next_is_retrans =
+                TCP_SEQ_LT(next_unsent_seq, pcb->snd_nxt) ? 1U : 0U;
+        }
         for (unsent = pcb->unsent; unsent != NULL; unsent = unsent->next) {
             unsent_bytes += unsent->len;
             unsent_segments++;
@@ -1077,6 +1199,9 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 "safe_ack=%u mode=%s sndcnt=%u cwnd=%u "
                 "prr_delivered=%llu prr_out=%llu srtt_ns=%llu "
                 "pacing_Bps=%llu mss=%u snd_buf=%u snd_queuelen=%u "
+                "snd_wnd=%u lastack=%u snd_nxt=%u seq_cwnd=%u output_wnd=%u "
+                "next_unsent_seq=%u next_unsent_len=%u next_unsent_extent=%u "
+                "window_allows=%u next_is_retrans=%u "
                 "unsent_bytes=%llu unsent_segments=%u\n",
                 (unsigned long long)episode,
                 (unsigned long long)now_ns, delivered_data, inflight,
@@ -1087,7 +1212,11 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 (unsigned long long)adapter->prr.prr_out,
                 (unsigned long long)adapter->srtt.smoothed_rtt_ns,
                 (unsigned long long)adapter->pacing_rate_bytes_per_sec,
-                (unsigned)pcb->mss, (unsigned)pcb->snd_buf, (unsigned)pcb->snd_queuelen,
+                (unsigned)pcb->mss, (unsigned)pcb->snd_buf,
+                (unsigned)pcb->snd_queuelen, (unsigned)pcb->snd_wnd,
+                pcb->lastack, pcb->snd_nxt, seq_cwnd, output_wnd,
+                next_unsent_seq, next_unsent_len, next_unsent_extent,
+                window_allows, next_is_retrans,
                 (unsigned long long)unsent_bytes, unsent_segments);
     }
 #endif
