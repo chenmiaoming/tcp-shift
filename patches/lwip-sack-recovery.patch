@@ -79,7 +79,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
                if (pcb->dupacks > 3) {
                  /* Inflate the congestion window */
                  if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
-+                    !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
+                     !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
                    TCP_WND_INC(pcb->cwnd, pcb->mss);
                  }
                }
