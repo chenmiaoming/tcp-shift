@@ -727,6 +727,16 @@ rack_reordering_events=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reorderin
 rack_reo_wnd_mult=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_mult=\([0-9][0-9]*\).*/\1/p')
 rack_reo_wnd_mult_max=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_mult_max=\([0-9][0-9]*\).*/\1/p')
 rack_reo_wnd_persist=$(printf '%s\n' "$delivery" | sed -n 's/.* rack_reo_wnd_persist=\([0-9][0-9]*\).*/\1/p')
+prr_recovery_enters=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_recovery_enters=\([0-9][0-9]*\).*/\1/p')
+prr_recovery_exits=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_recovery_exits=\([0-9][0-9]*\).*/\1/p')
+prr_ack_events=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_ack_events=\([0-9][0-9]*\).*/\1/p')
+prr_safe_ack_events=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_safe_ack_events=\([0-9][0-9]*\).*/\1/p')
+prr_tx_events=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_tx_events=\([0-9][0-9]*\).*/\1/p')
+prr_tx_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_tx_bytes=\([0-9][0-9]*\).*/\1/p')
+prr_send_blocks=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_send_blocks=\([0-9][0-9]*\).*/\1/p')
+prr_last_recover_fs_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_last_recover_fs_bytes=\([0-9][0-9]*\).*/\1/p')
+prr_last_inflight_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_last_inflight_bytes=\([0-9][0-9]*\).*/\1/p')
+prr_last_sndcnt_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* prr_last_sndcnt_bytes=\([0-9][0-9]*\).*/\1/p')
 metadata_failures=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_alloc_failures=\([0-9][0-9]*\).*/\1/p')
 metadata_misses=$(printf '%s\n' "$delivery" | sed -n 's/.* metadata_misses=\([0-9][0-9]*\).*/\1/p')
 live_slots=$(printf '%s\n' "$delivery" | sed -n 's/.* live_slots=\([0-9][0-9]*\).*/\1/p')
@@ -737,6 +747,16 @@ live_slots=$(printf '%s\n' "$delivery" | sed -n 's/.* live_slots=\([0-9][0-9]*\)
 [ -n "$rack_reo_wnd_mult" ] &&
 [ -n "$rack_reo_wnd_mult_max" ] &&
 [ -n "$rack_reo_wnd_persist" ] &&
+[ -n "$prr_recovery_enters" ] &&
+[ -n "$prr_recovery_exits" ] &&
+[ -n "$prr_ack_events" ] &&
+[ -n "$prr_safe_ack_events" ] &&
+[ -n "$prr_tx_events" ] &&
+[ -n "$prr_tx_bytes" ] &&
+[ -n "$prr_send_blocks" ] &&
+[ -n "$prr_last_recover_fs_bytes" ] &&
+[ -n "$prr_last_inflight_bytes" ] &&
+[ -n "$prr_last_sndcnt_bytes" ] &&
 [ -n "$metadata_failures" ] && [ "$metadata_failures" -eq 0 ] &&
 [ -n "$metadata_misses" ] && [ "$metadata_misses" -eq 0 ] &&
 [ -n "$live_slots" ] && [ "$live_slots" -eq 0 ] || {
@@ -887,6 +907,13 @@ recovery_last_enter_cwnd_bytes=0
 recovery_last_enter_inflight_bytes=0
 recovery_min_cwnd_bytes=0
 if [ "$CC" = bbr-internal ]; then
+    [ "$prr_recovery_enters" -eq 0 ] &&
+    [ "$prr_recovery_exits" -eq 0 ] &&
+    [ "$prr_ack_events" -eq 0 ] &&
+    [ "$prr_tx_events" -eq 0 ] || {
+        echo "internal BBR must not activate RFC 9937 PRR" >&2
+        exit 1
+    }
     bbr=$(grep -m1 'tcp-shift-p2-bbr:' "$OUT/runtime.stderr")
     recovery_enter_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_enter_events=\([0-9][0-9]*\).*/\1/p')
     recovery_exit_events=$(printf '%s\n' "$bbr" | sed -n 's/.* recovery_exit_events=\([0-9][0-9]*\).*/\1/p')
@@ -934,18 +961,21 @@ goodput=$(sed -n 's/.* goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdou
     exit 1
 }
 
-printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s pacing_max_tx_gap_ns=%s retransmit_events=%s rack_dsack_events=%s rack_reordering_events=%s rack_reo_wnd_mult=%s rack_reo_wnd_mult_max=%s rack_reo_wnd_persist=%s reorder_delay_ms=%s reorder_gap=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s recovery_enter_events=%s recovery_exit_events=%s recovery_total_ns=%s recovery_max_ns=%s recovery_packet_conservation_acks=%s recovery_last_enter_cwnd_bytes=%s recovery_last_enter_inflight_bytes=%s recovery_min_cwnd_bytes=%s payload_integrity=ok\n' \
+printf 'p6_bbr_long_flow=ok cc=%s base_rtt_ms=%s rate_mbit=%s loss_pct=%s loss_mode=%s recovery_expectation=%s fault_burst_packets=%s fault_burst_repeats=%s fault_burst_gap_packets=%s fault_marker_count=%s fault_marker_gap_packets=%s fault_marker_prefix=%s bdp_bytes=%s queue_pkts=%s payload_bytes=%s goodput_mbps=%s cwnd_bytes=%s policy_updates=%s valid_rate_samples=%s max_rate_bytes_per_sec=%s pacing_deferrals=%s pacing_resumes=%s pacing_tx_bytes=%s pacing_max_tx_gap_ns=%s retransmit_events=%s rack_dsack_events=%s rack_reordering_events=%s rack_reo_wnd_mult=%s rack_reo_wnd_mult_max=%s rack_reo_wnd_persist=%s prr_recovery_enters=%s prr_recovery_exits=%s prr_ack_events=%s prr_safe_ack_events=%s prr_tx_events=%s prr_tx_bytes=%s prr_send_blocks=%s prr_last_recover_fs_bytes=%s prr_last_inflight_bytes=%s prr_last_sndcnt_bytes=%s reorder_delay_ms=%s reorder_gap=%s qdisc_drops=%s/%s fault_drops=%s loss_events=%s timeout_events=%s recovery_enter_events=%s recovery_exit_events=%s recovery_total_ns=%s recovery_max_ns=%s recovery_packet_conservation_acks=%s recovery_last_enter_cwnd_bytes=%s recovery_last_enter_inflight_bytes=%s recovery_min_cwnd_bytes=%s payload_integrity=ok\n' \
     "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     "$goodput" "$cwnd_bytes" "$policy_updates" "$valid_samples" "$max_rate" \
     "$pacing_deferrals" "$pacing_resumes" "$pacing_tx_bytes" "$pacing_max_tx_gap_ns" "$retransmit_events" \
     "$rack_dsack_events" "$rack_reordering_events" "$rack_reo_wnd_mult" \
-    "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$REORDER_DELAY_MS" "$REORDER_GAP" \
+    "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$prr_recovery_enters" "$prr_recovery_exits" \
+    "$prr_ack_events" "$prr_safe_ack_events" "$prr_tx_events" "$prr_tx_bytes" \
+    "$prr_send_blocks" "$prr_last_recover_fs_bytes" "$prr_last_inflight_bytes" \
+    "$prr_last_sndcnt_bytes" "$REORDER_DELAY_MS" "$REORDER_GAP" \
     "$ifb_drops" "$tun_drops" "$fault_drops" "$loss_events" "$timeout_events" \
     "$recovery_enter_events" "$recovery_exit_events" "$recovery_total_ns" "$recovery_max_ns" \
     "$recovery_packet_conservation_acks" "$recovery_last_enter_cwnd_bytes" \
     "$recovery_last_enter_inflight_bytes" "$recovery_min_cwnd_bytes" | tee "$OUT/summary.txt"
 
-printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_marker_count=%s\nfault_marker_gap_packets=%s\nfault_marker_prefix=%s\nfault_drops=%s\nreorder_delay_ms=%s\nreorder_gap=%s\nrack_dsack_events=%s\nrack_reordering_events=%s\nrack_reo_wnd_mult=%s\nrack_reo_wnd_mult_max=%s\nrack_reo_wnd_persist=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
-    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$fault_drops" "$REORDER_DELAY_MS" "$REORDER_GAP" "$rack_dsack_events" "$rack_reordering_events" "$rack_reo_wnd_mult" "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
+printf 'cc=%s\nbase_rtt_ms=%s\nrate_mbit=%s\nloss_pct=%s\nloss_mode=%s\nrecovery_expectation=%s\nfault_burst_packets=%s\nfault_burst_repeats=%s\nfault_burst_gap_packets=%s\nfault_marker_count=%s\nfault_marker_gap_packets=%s\nfault_marker_prefix=%s\nfault_drops=%s\nreorder_delay_ms=%s\nreorder_gap=%s\nrack_dsack_events=%s\nrack_reordering_events=%s\nrack_reo_wnd_mult=%s\nrack_reo_wnd_mult_max=%s\nrack_reo_wnd_persist=%s\nprr_recovery_enters=%s\nprr_recovery_exits=%s\nprr_ack_events=%s\nprr_safe_ack_events=%s\nprr_tx_events=%s\nprr_tx_bytes=%s\nprr_send_blocks=%s\nprr_last_recover_fs_bytes=%s\nprr_last_inflight_bytes=%s\nprr_last_sndcnt_bytes=%s\nbdp_bytes=%s\nqueue_pkts=%s\npayload_bytes=%s\n' \
+    "$CC" "$RTT_MS" "$RATE_MBIT" "$LOSS_PCT" "$LOSS_MODE" "$RECOVERY_EXPECTATION" "$FAULT_BURST_PACKETS" "$FAULT_BURST_REPEATS" "$FAULT_BURST_GAP_PACKETS" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" "$fault_drops" "$REORDER_DELAY_MS" "$REORDER_GAP" "$rack_dsack_events" "$rack_reordering_events" "$rack_reo_wnd_mult" "$rack_reo_wnd_mult_max" "$rack_reo_wnd_persist" "$prr_recovery_enters" "$prr_recovery_exits" "$prr_ack_events" "$prr_safe_ack_events" "$prr_tx_events" "$prr_tx_bytes" "$prr_send_blocks" "$prr_last_recover_fs_bytes" "$prr_last_inflight_bytes" "$prr_last_sndcnt_bytes" "$BDP_BYTES" "$QUEUE_PKTS" "$PAYLOAD_BYTES" \
     > "$OUT/path.env"
 echo "P6 internal BBR long-flow shared-pacer qualification passed"
