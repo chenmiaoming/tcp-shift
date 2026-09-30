@@ -1049,6 +1049,37 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
         result.cwnd > tcp_shift_lwip_cc_cwnd_limit()) {
         return -1;
     }
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    if (adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        const char *mode =
+            inflight > adapter->prr.ssthresh
+                ? "proportional"
+                : (safe_ack != 0U ? "ssrb" : "crb");
+        uint64_t now_ns = tcp_shift_delivery_now_ns(adapter);
+        uint64_t episode =
+            adapter->stats != NULL ? adapter->stats->prr_recovery_enters : 0U;
+        uint32_t raw_outstanding = pcb->snd_nxt - pcb->lastack;
+
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=prr-ack episode=%llu "
+                "time_ns=%llu delivered_data=%u inflight_bytes=%u "
+                "raw_outstanding_bytes=%u recover_fs=%u ssthresh=%u "
+                "safe_ack=%u mode=%s sndcnt=%u cwnd=%u "
+                "prr_delivered=%llu prr_out=%llu srtt_ns=%llu "
+                "pacing_Bps=%llu\n",
+                (unsigned long long)episode,
+                (unsigned long long)now_ns, delivered_data, inflight,
+                raw_outstanding, adapter->prr.recover_fs,
+                adapter->prr.ssthresh, safe_ack != 0U ? 1U : 0U, mode,
+                result.sndcnt, result.cwnd,
+                (unsigned long long)adapter->prr.prr_delivered,
+                (unsigned long long)adapter->prr.prr_out,
+                (unsigned long long)adapter->srtt.smoothed_rtt_ns,
+                (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+    }
+#endif
     pcb->cwnd = (tcpwnd_size_t)result.cwnd;
     pcb->bytes_acked = 0U;
     adapter->prr_send_credit_bytes = result.sndcnt;
@@ -1648,6 +1679,24 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     }
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U) {
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+        if (adapter->controller.ops != NULL &&
+            adapter->controller.ops->name != NULL &&
+            strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+            uint64_t episode =
+                adapter->stats != NULL ? adapter->stats->prr_recovery_enters
+                                       : 0U;
+            fprintf(stderr,
+                    "tcp-shift-cubic-trace: event=prr-tx episode=%llu "
+                    "time_ns=%llu seq=%u bytes=%u credit_before=%u "
+                    "prr_out_before=%llu pacing_Bps=%llu\n",
+                    (unsigned long long)episode,
+                    (unsigned long long)now_ns, seq_start, payload_bytes,
+                    adapter->prr_send_credit_bytes,
+                    (unsigned long long)adapter->prr.prr_out,
+                    (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+        }
+#endif
         if (payload_bytes > adapter->prr_send_credit_bytes ||
             tcp_shift_prr_on_send(&adapter->prr, payload_bytes) != 0) {
             if (adapter->stats != NULL) {
@@ -2714,6 +2763,25 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
             }
             pcb->cwnd = (tcpwnd_size_t)cwnd;
             pcb->bytes_acked = 0U;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+            if (adapter->controller.ops != NULL &&
+                adapter->controller.ops->name != NULL &&
+                strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+                uint64_t now_ns = tcp_shift_delivery_now_ns(adapter);
+                uint64_t episode =
+                    adapter->stats != NULL
+                        ? adapter->stats->prr_recovery_enters
+                        : 0U;
+                fprintf(stderr,
+                        "tcp-shift-cubic-trace: event=prr-exit episode=%llu "
+                        "time_ns=%llu ack_seq=%u cwnd=%u ssthresh=%u "
+                        "pacing_Bps=%llu\n",
+                        (unsigned long long)episode,
+                        (unsigned long long)now_ns, ack_seq, cwnd,
+                        (uint32_t)pcb->ssthresh,
+                        (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+            }
+#endif
             adapter->prr_send_credit_bytes = 0U;
             adapter->prr_recover_fs_hint_valid = 0U;
             prr_handled = 1;
