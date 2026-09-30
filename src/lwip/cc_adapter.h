@@ -10,6 +10,7 @@
 #include "cc/reno.h"
 #include "lwip/cc_hooks.h"
 #include "lwip/rack_tlp.h"
+#include "lwip/prr.h"
 #include "lwip/tcp.h"
 
 struct tcp_shift_lwip_cc_pacer_ops {
@@ -67,6 +68,13 @@ struct tcp_shift_lwip_cc_stats {
     uint64_t delivery_sack_payload_bytes;
     uint64_t rack_dsack_events;
     uint64_t rack_reordering_events;
+    uint64_t prr_recovery_enters;
+    uint64_t prr_recovery_exits;
+    uint64_t prr_ack_events;
+    uint64_t prr_safe_ack_events;
+    uint64_t prr_tx_events;
+    uint64_t prr_tx_bytes;
+    uint64_t prr_send_blocks;
     uint64_t delivery_payload_bytes;
     uint64_t delivery_metadata_alloc_failures;
     uint64_t delivery_metadata_misses;
@@ -115,6 +123,9 @@ struct tcp_shift_lwip_cc_stats {
     uint32_t rack_reo_wnd_mult;
     uint32_t rack_reo_wnd_mult_max;
     uint32_t rack_reo_wnd_persist;
+    uint32_t prr_last_recover_fs_bytes;
+    uint32_t prr_last_inflight_bytes;
+    uint32_t prr_last_sndcnt_bytes;
     uint32_t ecn_min_cwnd_bytes;
     uint32_t last_cwnd_bytes;
     uint32_t last_ssthresh_bytes;
@@ -181,6 +192,7 @@ struct tcp_shift_lwip_cc_adapter {
     struct tcp_shift_cc_srtt srtt;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     struct tcp_shift_rack_tlp_state rack_tlp;
+    struct tcp_shift_prr prr;
 #endif
     struct tcp_shift_lwip_cc_stats *stats;
     struct tcp_pcb *pcb;
@@ -196,16 +208,21 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t pacing_flow_id;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     uint64_t recovery_timer_deadline_ns;
+    uint64_t prr_ack_delivered_before;
 #endif
     uint32_t pacing_generation;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     uint32_t recovery_timer_kind;
+    uint32_t prr_recover_fs_hint;
+    uint32_t prr_send_credit_bytes;
+    uint32_t prr_ack_lost_before_bytes;
 #endif
     uint16_t delivery_capacity;
     uint16_t delivery_live;
     unsigned pacing_scheduled;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     unsigned recovery_timer_scheduled;
+    unsigned prr_recover_fs_hint_valid;
 #endif
     unsigned bound;
     unsigned heap_owned;
