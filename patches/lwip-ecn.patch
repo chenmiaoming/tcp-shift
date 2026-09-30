@@ -567,14 +567,15 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
      tcp_shift_lwip_cc_hook_segment_tx(pcb, seg,
                                        lwip_ntohl(seg->tcphdr->seqno), seg->len);
    }
-@@ -2189,10 +2258,15 @@
+@@ -2189,11 +2258,16 @@
          }
        }
  
 -      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 -       * explicitly owns recovery cwnd (internal BBR) keeps its published
 -       * packet-conservation window instead. */
--      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
+-      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
+-          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
 +      if ((pcb->flags & TF_ECN) != 0U) {
 +        tcp_set_flags(pcb, TF_ECN_CWR);
@@ -583,7 +584,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 +       * explicitly owns recovery cwnd (internal BBR) keeps its published
 +       * packet-conservation window instead. */
-+      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
++          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
          pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
        }
        tcp_set_flags(pcb, TF_INFR);
