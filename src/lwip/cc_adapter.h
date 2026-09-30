@@ -209,13 +209,13 @@ struct tcp_shift_lwip_cc_adapter {
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     uint64_t recovery_timer_deadline_ns;
     uint64_t prr_ack_delivered_before;
+    uint64_t prr_ack_loss_events_before;
 #endif
     uint32_t pacing_generation;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     uint32_t recovery_timer_kind;
     uint32_t prr_recover_fs_hint;
     uint32_t prr_send_credit_bytes;
-    uint32_t prr_ack_lost_before_bytes;
     uint32_t prr_trigger_delivered_bytes;
 #endif
     uint16_t delivery_capacity;
