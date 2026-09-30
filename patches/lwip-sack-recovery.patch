@@ -1,7 +1,7 @@
 diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 --- a/src/core/tcp_in.c
 +++ b/src/core/tcp_in.c
-@@ -100,9 +100,48 @@
+@@ -100,9 +100,43 @@
  #if LWIP_TCP_SACK_OUT
  static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
  static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
@@ -17,18 +17,13 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +
 +#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 +static u8_t tcp_shift_sack_seen;
-+#endif
 +
 +static u8_t
 +tcp_shift_tcp_rack_owns_fast_loss(const struct tcp_pcb *pcb)
 +{
-+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
 +  return pcb != NULL && (pcb->flags & TF_SACK) != 0U ? 1U : 0U;
-+#else
-+  LWIP_UNUSED_ARG(pcb);
-+  return 0U;
-+#endif
 +}
++#endif
 +
 +static void
 +tcp_shift_tcp_mark_sack_range(struct tcp_pcb *pcb, u32_t left, u32_t right)
