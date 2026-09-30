@@ -90,6 +90,7 @@ linux_rows, linux_transitions = read_linux(linux_tsv_path)
 acks = events["prr-ack"]
 txs = events["prr-tx"]
 send_checks = events["send-check"]
+output_gates = events["output-gate"]
 pacer_resumes = events["pacer-resume"]
 exits = events["prr-exit"]
 losses = events["loss"]
@@ -226,6 +227,34 @@ for event in send_checks:
         raise SystemExit(f"send-check trace missing decision: {event}")
     send_decisions[decision] += 1
 
+output_window_allow = 0
+output_window_block = 0
+output_nagle_allow = 0
+output_nagle_block = 0
+output_infr = 0
+output_with_credit = 0
+output_with_credit_window_allow = 0
+output_with_credit_window_allow_nagle_allow = 0
+for event in output_gates:
+    for required in ("credit", "window_allows", "nagle_allows", "infr"):
+        if required not in event:
+            raise SystemExit(f"output-gate trace missing {required}: {event}")
+    credit_now = int(event["credit"])
+    window_now = int(event["window_allows"])
+    nagle_now = int(event["nagle_allows"])
+    infr_now = int(event["infr"])
+    output_window_allow += window_now != 0
+    output_window_block += window_now == 0
+    output_nagle_allow += nagle_now != 0
+    output_nagle_block += nagle_now == 0
+    output_infr += infr_now != 0
+    if credit_now >= MSS:
+        output_with_credit += 1
+        if window_now != 0:
+            output_with_credit_window_allow += 1
+            if nagle_now != 0:
+                output_with_credit_window_allow_nagle_allow += 1
+
 resume_before = [event for event in pacer_resumes if event.get("phase") == "before"]
 resume_after = [event for event in pacer_resumes if event.get("phase") == "after"]
 if len(resume_before) != len(resume_after):
@@ -271,6 +300,8 @@ for delta, row in linux_transitions:
         linux_expected_pacing.append(expected)
         linux_actual_over_expected.append(ratio(pacing, expected))
 
+if credit_with_unsent > 0 and len(output_gates) == 0:
+    raise SystemExit("PRR had send credit with queued data but no tcp_output gate trace")
 if credit_with_unsent > 0 and len(send_checks) == 0:
     raise SystemExit("PRR had send credit with queued data but no send-check trace")
 if send_decisions["pacer-defer"] > 0 and len(resume_before) == 0:
@@ -309,6 +340,15 @@ print(
     f"tcp_shift_prr_send_check_allow_now={send_decisions['allow-now']} "
     f"tcp_shift_prr_send_check_prr_block={send_decisions['prr-block']} "
     f"tcp_shift_prr_send_check_pacer_defer={send_decisions['pacer-defer']} "
+    f"tcp_shift_prr_output_gate_events={len(output_gates)} "
+    f"tcp_shift_prr_output_window_allow={output_window_allow} "
+    f"tcp_shift_prr_output_window_block={output_window_block} "
+    f"tcp_shift_prr_output_nagle_allow={output_nagle_allow} "
+    f"tcp_shift_prr_output_nagle_block={output_nagle_block} "
+    f"tcp_shift_prr_output_infr={output_infr} "
+    f"tcp_shift_prr_output_with_credit={output_with_credit} "
+    f"tcp_shift_prr_output_with_credit_window_allow={output_with_credit_window_allow} "
+    f"tcp_shift_prr_output_with_credit_window_allow_nagle_allow={output_with_credit_window_allow_nagle_allow} "
     f"tcp_shift_prr_pacer_resume_events={len(resume_before)} "
     f"tcp_shift_prr_pacer_resume_credit_consumed={resume_credit_consumed} "
     f"tcp_shift_prr_pacer_resume_rearmed={resume_rearmed} "
