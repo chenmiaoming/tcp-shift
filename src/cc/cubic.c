@@ -443,18 +443,26 @@ int tcp_shift_cubic_model_on_ack(struct tcp_shift_cubic_model *model,
     }
 
     if ((ack->rate.flags & TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED) != 0U) {
-        if (model->app_limited_paused == 0U) {
-            model->app_limited_since_ns = model->ack_events != 0U
-                                              ? model->last_ack_time_ns
-                                              : now_ns;
-            model->app_limited_paused = 1U;
-        }
-        model->last_ack_time_ns = now_ns;
-        model->ack_events++;
         model->app_limited_acks++;
-        tcp_shift_cubic_finish_hystartpp(model);
-        tcp_shift_cubic_publish(model, transport, policy);
-        return 0;
+
+        /* App-limited delivery samples must pause only CUBIC congestion-
+         * avoidance epoch time. RFC 9406 section 4.2 still requires initial
+         * slow start to apply newly acknowledged bytes to cwnd; section 4.3
+         * explicitly discusses application-limited HyStart++ operation rather
+         * than defining an ACK-growth freeze. */
+        if (in_congestion_avoidance != 0) {
+            if (model->app_limited_paused == 0U) {
+                model->app_limited_since_ns = model->ack_events != 0U
+                                                  ? model->last_ack_time_ns
+                                                  : now_ns;
+                model->app_limited_paused = 1U;
+            }
+            model->last_ack_time_ns = now_ns;
+            model->ack_events++;
+            tcp_shift_cubic_finish_hystartpp(model);
+            tcp_shift_cubic_publish(model, transport, policy);
+            return 0;
+        }
     }
 
     if (model->app_limited_paused != 0U) {
