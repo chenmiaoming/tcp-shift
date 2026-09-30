@@ -2,6 +2,10 @@
 #include "lwip/priv/tcp_priv.h"
 #include "runtime/pacer.h"
 
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#include "cc/cubic.h"
+#endif
+
 #include <limits.h>
 #include <stddef.h>
 #if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
@@ -2433,6 +2437,10 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     struct tcp_shift_cc_transport transport;
     struct tcp_shift_cc_ack ack;
     struct tcp_shift_cc_policy policy;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    uint32_t trace_pre_cwnd;
+    uint32_t trace_pre_ssthresh;
+#endif
 
     if (!tcp_shift_lwip_cc_prepare_ack(adapter, pcb, acked_bytes, &ack)) {
         return 0;
@@ -2442,12 +2450,76 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     }
 
     tcp_shift_lwip_cc_transport_from_adapter(adapter, pcb, &transport);
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    trace_pre_cwnd = (uint32_t)pcb->cwnd;
+    trace_pre_ssthresh = (uint32_t)pcb->ssthresh;
+#endif
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
                             &policy) != 0 ||
         tcp_shift_lwip_cc_apply_policy(adapter, &policy) < 0) {
         tcp_shift_lwip_cc_disable_on_error(adapter);
         return 0;
     }
+
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+    if (adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0 &&
+        (adapter->stats == NULL || adapter->stats->loss_events == 0U) &&
+        adapter->controller.state != NULL) {
+        /* The production pacing wrapper temporarily points
+         * controller.state at the adapter while it delegates the actual CUBIC
+         * callback to controller_state.cubic. Read the concrete built-in state
+         * directly so qualification telemetry cannot reinterpret the wrapper
+         * object as a CUBIC model. */
+        const struct tcp_shift_cubic_model *model =
+            &adapter->controller_state.cubic;
+        uint64_t event_index =
+            adapter->stats != NULL ? adapter->stats->ack_events + 1U : 0U;
+        uint32_t sacked_ahead_bytes = 0U;
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+        sacked_ahead_bytes =
+            tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
+#endif
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=preloss-ack index=%llu "
+                "time_ns=%llu lastack=%u snd_nxt=%u mss=%u "
+                "acked_bytes=%u rate_delivered_bytes=%u "
+                "rate_delivered_total_bytes=%llu sacked_ahead_bytes=%u "
+                "inflight_bytes=%u pre_cwnd=%u post_cwnd=%u "
+                "pre_ssthresh=%u post_ssthresh=%u "
+                "srtt_ns=%llu sample_rtt_ns=%llu rate_flags=%u "
+                "hystart_next_round_delivered=%llu "
+                "hystart_last_round_min_rtt_ns=%llu "
+                "hystart_current_round_min_rtt_ns=%llu "
+                "hystart_sample_count=%u hystart_css_rounds=%u "
+                "hystart_enabled=%u hystart_css=%u hystart_ack_css=%u "
+                "hystart_exit_pending=%u hystart_initial_complete=%u "
+                "hystart_css_enters=%u hystart_css_reverts=%u "
+                "hystart_exits=%u\n",
+                (unsigned long long)event_index,
+                (unsigned long long)ack.ack_time_ns,
+                pcb->lastack, pcb->snd_nxt, pcb->mss,
+                ack.acked_bytes, ack.rate.delivered_bytes,
+                (unsigned long long)ack.rate.delivered_total_bytes,
+                sacked_ahead_bytes, transport.inflight_bytes,
+                trace_pre_cwnd, policy.cwnd_bytes,
+                trace_pre_ssthresh, policy.ssthresh_bytes,
+                (unsigned long long)ack.smoothed_rtt_ns,
+                (unsigned long long)ack.rate.rtt_ns, ack.rate.flags,
+                (unsigned long long)model->hystart_next_round_delivered,
+                (unsigned long long)model->hystart_last_round_min_rtt_ns,
+                (unsigned long long)model->hystart_current_round_min_rtt_ns,
+                model->hystart_sample_count, model->hystart_css_rounds,
+                model->hystart_enabled, model->hystart_css,
+                model->hystart_ack_css, model->hystart_exit_pending,
+                model->hystart_initial_complete,
+                model->hystart_css_enter_events,
+                model->hystart_css_revert_events,
+                model->hystart_exit_events);
+    }
+#endif
 
     if (adapter->stats != NULL) {
         adapter->stats->ack_events++;
