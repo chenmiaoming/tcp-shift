@@ -1132,6 +1132,10 @@ static unsigned tcp_shift_lwip_cc_prr_active(void *arg,
  * so signed modular distance gives a wrap-safe position of ack_seq relative to
  * this slot's first payload byte. */
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static void tcp_shift_rack_slot_view(
+    const struct tcp_shift_delivery_slot *slot,
+    struct tcp_shift_rack_segment *segment);
+
 static int tcp_shift_rack_seq_before_u32(uint32_t left, uint32_t right)
 {
     return (int32_t)(left - right) < 0;
