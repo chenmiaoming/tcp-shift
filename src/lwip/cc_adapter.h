@@ -216,6 +216,7 @@ struct tcp_shift_lwip_cc_adapter {
     uint32_t prr_recover_fs_hint;
     uint32_t prr_send_credit_bytes;
     uint32_t prr_ack_lost_before_bytes;
+    uint32_t prr_trigger_delivered_bytes;
 #endif
     uint16_t delivery_capacity;
     uint16_t delivery_live;
