@@ -16,6 +16,7 @@ FAULT_BURST_GAP_PACKETS=${TCP_SHIFT_LINUX_PACING_FAULT_BURST_GAP_PACKETS:-700}
 FAULT_MARKER_COUNT=${TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT:-28}
 FAULT_MARKER_GAP_PACKETS=${TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS:-96}
 FAULT_MARKER_PREFIX=${TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX:-TSFS}
+TRACE_INTERVAL_MS=${TCP_SHIFT_LINUX_PACING_TRACE_INTERVAL_MS:-0}
 REQUIRE_ZERO_DROPS=${TCP_SHIFT_LINUX_PACING_REQUIRE_ZERO_DROPS:-0}
 OUT=${TCP_SHIFT_LINUX_PACING_OUT:-.build/linux-cubic-pacing/$CASE-$MODE}
 
@@ -64,6 +65,8 @@ case "$REQUIRE_ZERO_DROPS" in 0|1) ;; *) echo "REQUIRE_ZERO_DROPS must be 0 or 1
 [ "$FAULT_MARKER_COUNT" -ge 1 ] && [ "$FAULT_MARKER_COUNT" -le 64 ] || { echo "FAULT_MARKER_COUNT must be between 1 and 64" >&2; exit 1; }
 [ "$FAULT_MARKER_GAP_PACKETS" -ge 4 ] || { echo "FAULT_MARKER_GAP_PACKETS must be at least 4" >&2; exit 1; }
 [ -n "$FAULT_MARKER_PREFIX" ] || { echo "FAULT_MARKER_PREFIX must not be empty" >&2; exit 1; }
+case "$TRACE_INTERVAL_MS" in ''|*[!0-9]*) echo "TRACE_INTERVAL_MS must be an integer" >&2; exit 1;; esac
+[ "$TRACE_INTERVAL_MS" -le 1000 ] || { echo "TRACE_INTERVAL_MS must be between 0 and 1000" >&2; exit 1; }
 if [ "$FAULT_MODE" != none ]; then
     command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic Linux loss" >&2; exit 1; }
     [ "$LOSS_PCT" = 0 ] || [ "$LOSS_PCT" = 0.0 ] || { echo "deterministic FAULT_MODE cannot be combined with random LOSS_PCT" >&2; exit 1; }
@@ -213,10 +216,12 @@ fi
 
 ip netns exec "$NS_SERVER" python3 - "$SERVER_IP" "$PORT" "$PAYLOAD_BYTES" "$OUT/tcp-info.tsv" "$CC" \
     "$FAULT_MODE" "$FAULT_FIRST_PACKET" "$FAULT_MARKER_COUNT" "$FAULT_MARKER_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
+    "$OUT/tcp-info-trace.tsv" "$TRACE_INTERVAL_MS" \
     > "$OUT/server.txt" 2> "$OUT/server.stderr" <<'PY' &
 import socket
 import struct
 import sys
+import threading
 import time
 
 host = sys.argv[1]
@@ -229,6 +234,8 @@ fault_first_packet = int(sys.argv[7])
 fault_marker_count = int(sys.argv[8])
 fault_marker_gap_packets = int(sys.argv[9])
 fault_marker_prefix = sys.argv[10]
+trace_path = sys.argv[11]
+trace_interval_ms = int(sys.argv[12])
 TCP_CONGESTION = getattr(socket, "TCP_CONGESTION", 13)
 TCP_INFO = getattr(socket, "TCP_INFO", 11)
 
@@ -238,6 +245,7 @@ def tcp_info(sock):
     if len(info) < 168:
         raise RuntimeError(f"short TCP_INFO: {len(info)}")
     return {
+        "ca_state": info[1],
         "unacked": struct.unpack_from("=I", info, 24)[0],
         "sacked": struct.unpack_from("=I", info, 28)[0],
         "lost": struct.unpack_from("=I", info, 32)[0],
@@ -253,6 +261,9 @@ def tcp_info(sock):
         "min_rtt_us": struct.unpack_from("=I", info, 148)[0],
         "delivery_rate": struct.unpack_from("=Q", info, 160)[0],
         "delivered": struct.unpack_from("=I", info, 192)[0] if len(info) >= 196 else 0,
+        "segs_out": struct.unpack_from("=I", info, 136)[0] if len(info) >= 140 else 0,
+        "bytes_sent": struct.unpack_from("=Q", info, 200)[0] if len(info) >= 208 else 0,
+        "bytes_retrans": struct.unpack_from("=Q", info, 208)[0] if len(info) >= 216 else 0,
     }
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -285,12 +296,17 @@ if fault_mode == "first-send-loss":
 sent = 0
 sample_index = 0
 start_ns = time.monotonic_ns()
-with open(samples_path, "w", encoding="utf-8") as samples:
-    samples.write("sample\tsource\telapsed_ns\tbytes_written\tunacked\tsacked\tlost\tretrans\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\tpacing_rate_Bps\tmax_pacing_rate_Bps\tdelivery_rate_Bps\tbytes_acked\tdelivered\tnotsent_bytes\ttotal_retrans\n")
-    metrics = tcp_info(conn)
+trace_stop = threading.Event()
+trace_lock = threading.Lock()
+trace_state = {"sent": 0, "sample": 0}
+trace_file = None
+trace_thread = None
+
+def primary_record(samples, source, metrics):
+    global sample_index
     sample_index += 1
     samples.write(
-        f"{sample_index}\tinitial\t{time.monotonic_ns() - start_ns}\t{sent}\t"
+        f"{sample_index}\t{source}\t{time.monotonic_ns() - start_ns}\t{sent}\t"
         f"{metrics['unacked']}\t{metrics['sacked']}\t{metrics['lost']}\t"
         f"{metrics['retrans']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
         f"{metrics['snd_cwnd']}\t{metrics['snd_ssthresh']}\t"
@@ -300,6 +316,56 @@ with open(samples_path, "w", encoding="utf-8") as samples:
         f"{metrics['total_retrans']}\n"
     )
     samples.flush()
+
+
+def trace_record(source):
+    if trace_file is None:
+        return
+    metrics = tcp_info(conn)
+    with trace_lock:
+        trace_state["sample"] += 1
+        sample = trace_state["sample"]
+        sent_snapshot = trace_state["sent"]
+        trace_file.write(
+            f"{sample}\t{source}\t{time.monotonic_ns() - start_ns}\t"
+            f"{sent_snapshot}\t{metrics['ca_state']}\t"
+            f"{metrics['unacked']}\t{metrics['sacked']}\t{metrics['lost']}\t"
+            f"{metrics['retrans']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
+            f"{metrics['snd_cwnd']}\t{metrics['snd_ssthresh']}\t"
+            f"{metrics['pacing_rate']}\t{metrics['delivery_rate']}\t"
+            f"{metrics['bytes_acked']}\t{metrics['delivered']}\t"
+            f"{metrics['bytes_sent']}\t{metrics['bytes_retrans']}\t"
+            f"{metrics['segs_out']}\t{metrics['notsent_bytes']}\t"
+            f"{metrics['total_retrans']}\n"
+        )
+        trace_file.flush()
+
+
+def trace_loop():
+    interval = trace_interval_ms / 1000.0
+    while not trace_stop.wait(interval):
+        try:
+            trace_record("poll")
+        except OSError:
+            return
+
+
+with open(samples_path, "w", encoding="utf-8") as samples:
+    samples.write("sample\tsource\telapsed_ns\tbytes_written\tunacked\tsacked\tlost\tretrans\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\tpacing_rate_Bps\tmax_pacing_rate_Bps\tdelivery_rate_Bps\tbytes_acked\tdelivered\tnotsent_bytes\ttotal_retrans\n")
+    if trace_interval_ms > 0:
+        trace_file = open(trace_path, "w", encoding="utf-8")
+        trace_file.write(
+            "sample\tsource\telapsed_ns\tbytes_written\tca_state\tunacked\tsacked\t"
+            "lost\tretrans\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\t"
+            "pacing_rate_Bps\tdelivery_rate_Bps\tbytes_acked\tdelivered\t"
+            "bytes_sent\tbytes_retrans\tsegs_out\tnotsent_bytes\ttotal_retrans\n"
+        )
+        trace_record("initial")
+        trace_thread = threading.Thread(target=trace_loop, daemon=True)
+        trace_thread.start()
+
+    metrics = tcp_info(conn)
+    primary_record(samples, "initial", metrics)
     while sent < length:
         if payload is None:
             view = memoryview(chunk)[: min(len(chunk), length - sent)]
@@ -309,19 +375,12 @@ with open(samples_path, "w", encoding="utf-8") as samples:
         if written <= 0:
             raise RuntimeError("send made no progress")
         sent += written
+        with trace_lock:
+            trace_state["sent"] = sent
         metrics = tcp_info(conn)
-        sample_index += 1
-        samples.write(
-            f"{sample_index}\tsend\t{time.monotonic_ns() - start_ns}\t{sent}\t"
-            f"{metrics['unacked']}\t{metrics['sacked']}\t{metrics['lost']}\t"
-            f"{metrics['retrans']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
-            f"{metrics['snd_cwnd']}\t{metrics['snd_ssthresh']}\t"
-            f"{metrics['pacing_rate']}\t{metrics['max_pacing_rate']}\t"
-            f"{metrics['delivery_rate']}\t{metrics['bytes_acked']}\t"
-            f"{metrics['delivered']}\t{metrics['notsent_bytes']}\t"
-            f"{metrics['total_retrans']}\n"
-        )
-        samples.flush()
+        primary_record(samples, "send", metrics)
+        trace_record("send")
+
 conn.shutdown(socket.SHUT_WR)
 # Wait for the receiver to observe EOF and close so final retransmission
 # counters include tail recovery rather than sampling immediately after the
@@ -329,6 +388,12 @@ conn.shutdown(socket.SHUT_WR)
 while conn.recv(4096):
     pass
 final = tcp_info(conn)
+if trace_thread is not None:
+    trace_stop.set()
+    trace_thread.join(timeout=2.0)
+    trace_record("final")
+if trace_file is not None:
+    trace_file.close()
 conn.close()
 server.close()
 print(
