@@ -166,27 +166,31 @@ Current completed recovery work includes:
 
 PR #87 fixed a real integration bug in the pacing-wrapper layer. The production Reno/CUBIC pacing wrapper and the qualification quantum wrapper replaced the base hook table but did not forward `effective_cwnd`. That discarded PRR's sequence-space translation (`raw outstanding + SndCnt`) before native `tcp_output()`, so most accumulated recovery credit could not release new data. Both wrappers now forward the callback and RACK CI statically enforces the boundary.
 
-PR #88 then separated an RFC question from Linux implementation behavior. On the deterministic first CUBIC loss:
+PR #88 separated an RFC question from Linux implementation behavior and showed that pure SACK credit could not explain the pre-first-loss CUBIC cwnd difference. PR #91 then added qualification-only ACK/HyStart++ tracing and isolated the exact divergence: the first ten full-sized data ACKs were marked app-limited, and the CUBIC model returned before initial slow-start growth. HyStart++ stayed enabled, never entered CSS, and never exited before the first loss.
+
+PR #92 fixed that defect at the controller boundary. App-limited ACKs still pause CUBIC congestion-avoidance epoch time, but initial slow start follows RFC 9406 and applies newly acknowledged bytes to cwnd. On the same deterministic path:
 
 ```text
-tcp-shift pre-loss cwnd:                 116800 B
-SACK-delivered bytes ahead of SND.UNA:     4380 B
-hypothetical cwnd if SACK were credited: 121180 B
-Linux last pre-retransmission cwnd:       128480 B
-residual gap after SACK credit:             7300 B
+tcp-shift first-loss pre-cwnd:             131400 B
+tcp-shift first-loss FlightSize:           131400 B
+SACK-delivered bytes ahead of SND.UNA:       4380 B
+Linux coarse pre-retransmission cwnd:       128480 B
+tcp-shift adjacent-ACK cwnd:                128480 B
+28 first-send drops / retransmissions:       28 / 28
+RTO / unrelated qdisc drops:                  0 / 0
+payload integrity:                                exact
 ```
 
-RFC 9438 defines `segments_acked` using a cumulative new ACK. tcp-shift therefore does not feed pure SACK delivery into Reno/CUBIC cwnd growth. Linux's `tcp_newly_delivered()` behavior remains useful differential evidence but does not override the RFC.
-
-Latest #88 deterministic 28-drop matrix remains exact with zero RTO. Representative goodput on that run was tcp-shift BBR/Linux BBR `5.285094/5.492110 Mbit/s` (0.962307) and tcp-shift CUBIC/Linux CUBIC `0.548827/0.741245 Mbit/s` (0.740412). These ratios are diagnostic, not merge thresholds.
+The ACK-progress trajectory now retains the expected IW10 offset. Representative #92 goodput was tcp-shift CUBIC/Linux CUBIC `0.557895/0.702777 Mbit/s` (0.793844). The ratio remains diagnostic: closing the initial slow-start bug produced only a modest goodput change, so the remaining differential is after the first loss.
 
 The next development steps are:
 
-1. keep RACK and PRR standards semantics fixed and investigate the remaining **pre-first-loss** CUBIC cwnd divergence;
-2. compare cumulative ACK credit, slow-start/HyStart++ exit timing, ACK aggregation, and Linux CUBIC's implementation-specific delivered accounting without copying non-RFC behavior by default;
-3. rerun the same deterministic path after each narrowly justified change; preserve exact drop/retransmission count, zero RTO/qdisc drops, and payload integrity;
-4. keep RACK-TLP, PRR integration, ECN, and public `bbr` exposure separate from provider/OpenVZ qualification and explicit exposure review;
-5. do not tune BBR gains, CUBIC beta, RFC 5681 FlightSize, or qualification thresholds to compensate for unexplained transport/ACK-accounting differences.
+1. keep RFC 9406 initial slow-start growth, RFC 9438 cumulative-ACK semantics, RFC 8985 RACK, and RFC 9937 PRR fixed;
+2. investigate **post-first-loss** CUBIC evolution: PRR recovery timing, inflight/window headroom, pacing-rate publication, recovery exit, and subsequent congestion-avoidance epochs versus Linux;
+3. distinguish RFC-semantic differences from Linux implementation details before changing behavior;
+4. rerun the same deterministic path after each narrowly justified change; preserve exact drop/retransmission count, zero RTO/qdisc drops, and payload integrity;
+5. keep RACK-TLP, PRR integration, ECN, and public `bbr` exposure separate from provider/OpenVZ qualification and explicit exposure review;
+6. do not tune BBR gains, CUBIC beta, FlightSize, or qualification thresholds to compensate for unexplained differences.
 
 BBR remains a compact BBRv1-style controller rather than a Linux-BBR implementation. Because BBR has no published RFC target, Linux BBR remains the primary behavioral/differential reference; the current IETF BBR draft is secondary semantic guidance.
 
@@ -201,7 +205,7 @@ P4 generic CC boundary     complete
 P5a delivery ledger        complete
 P5b rate/app-limited       complete
 P5c event-driven pacing    complete
-P6 BBR + RFC recovery      active / RACK + PRR runner-qualified; pre-loss CUBIC differential under investigation
+P6 BBR + RFC recovery      active / RACK + PRR runner-qualified; initial CUBIC slow-start gap closed, post-loss differential under investigation
 ```
 
 ## Stop criteria
