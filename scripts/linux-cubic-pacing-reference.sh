@@ -239,6 +239,9 @@ def tcp_info(sock):
         raise RuntimeError(f"short TCP_INFO: {len(info)}")
     return {
         "unacked": struct.unpack_from("=I", info, 24)[0],
+        "sacked": struct.unpack_from("=I", info, 28)[0],
+        "lost": struct.unpack_from("=I", info, 32)[0],
+        "retrans": struct.unpack_from("=I", info, 36)[0],
         "rtt_us": struct.unpack_from("=I", info, 68)[0],
         "snd_ssthresh": struct.unpack_from("=I", info, 76)[0],
         "snd_cwnd": struct.unpack_from("=I", info, 80)[0],
@@ -281,7 +284,7 @@ sent = 0
 sample_index = 0
 start_ns = time.monotonic_ns()
 with open(samples_path, "w", encoding="utf-8") as samples:
-    samples.write("sample\telapsed_ns\tbytes_written\tunacked\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\tpacing_rate_Bps\tmax_pacing_rate_Bps\tdelivery_rate_Bps\tnotsent_bytes\ttotal_retrans\n")
+    samples.write("sample\telapsed_ns\tbytes_written\tunacked\tsacked\tlost\tretrans\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\tpacing_rate_Bps\tmax_pacing_rate_Bps\tdelivery_rate_Bps\tnotsent_bytes\ttotal_retrans\n")
     while sent < length:
         if payload is None:
             view = memoryview(chunk)[: min(len(chunk), length - sent)]
@@ -295,7 +298,8 @@ with open(samples_path, "w", encoding="utf-8") as samples:
         sample_index += 1
         samples.write(
             f"{sample_index}\t{time.monotonic_ns() - start_ns}\t{sent}\t"
-            f"{metrics['unacked']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
+            f"{metrics['unacked']}\t{metrics['sacked']}\t{metrics['lost']}\t"
+            f"{metrics['retrans']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
             f"{metrics['snd_cwnd']}\t{metrics['snd_ssthresh']}\t"
             f"{metrics['pacing_rate']}\t{metrics['max_pacing_rate']}\t"
             f"{metrics['delivery_rate']}\t{metrics['notsent_bytes']}\t"
