@@ -511,6 +511,16 @@ static int tcp_shift_cc_selector_pacing_on_ack(void *arg,
     return tcp_shift_cc_selector_call_paced_ack(arg, pcb, acked_bytes);
 }
 
+static void tcp_shift_cc_selector_pacing_on_ack_begin(
+    void *arg,
+    struct tcp_pcb *pcb)
+{
+    if (tcp_shift_cc_selector_base_hook_ops != NULL &&
+        tcp_shift_cc_selector_base_hook_ops->on_ack_begin != NULL) {
+        tcp_shift_cc_selector_base_hook_ops->on_ack_begin(arg, pcb);
+    }
+}
+
 static int tcp_shift_cc_selector_pacing_on_ack_observe(
     void *arg,
     struct tcp_pcb *pcb,
@@ -620,6 +630,17 @@ static int tcp_shift_cc_selector_pacing_on_recovery_exit(
         arg, pcb, ack_seq);
 }
 
+static unsigned tcp_shift_cc_selector_pacing_prr_active(
+    void *arg,
+    struct tcp_pcb *pcb)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->prr_active == NULL) {
+        return 0U;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->prr_active(arg, pcb);
+}
+
 static int tcp_shift_cc_selector_pacing_rack_loss_status(
     void *arg,
     struct tcp_pcb *pcb,
@@ -645,16 +666,6 @@ static int tcp_shift_cc_selector_pacing_send_eligible(void *arg,
     const struct tcp_shift_cc_ops *inner =
         adapter != NULL ? adapter->controller.ops : NULL;
     int result = 1;
-
-#if defined(TCP_SHIFT_P6_CUBIC_PACING_BYPASS_QUALIFICATION)
-    /* Diagnostic-only A/B: retain pacing policy publication, flow identity,
-     * TX accounting and RFC 8985 recovery-timer scheduling, but skip only the
-     * userspace pacing deferral gate for CUBIC. Production builds never define
-     * this symbol. */
-    if (adapter != NULL && inner == &tcp_shift_cubic_ops) {
-        return 1;
-    }
-#endif
 
     if (tcp_shift_cc_selector_base_hook_ops != NULL &&
         tcp_shift_cc_selector_base_hook_ops->on_segment_send_eligible != NULL) {
@@ -702,6 +713,7 @@ static void tcp_shift_cc_selector_pacing_on_segment_acked(
 
 static const struct tcp_shift_lwip_cc_hook_ops
     tcp_shift_cc_selector_pacing_hook_ops = {
+        .on_ack_begin = tcp_shift_cc_selector_pacing_on_ack_begin,
         .on_ack = tcp_shift_cc_selector_pacing_on_ack,
         .on_ack_observe = tcp_shift_cc_selector_pacing_on_ack_observe,
         .on_sack = tcp_shift_cc_selector_pacing_on_sack,
@@ -720,6 +732,8 @@ static const struct tcp_shift_lwip_cc_hook_ops
             tcp_shift_cc_selector_pacing_on_recovery_exit,
         .rack_loss_status =
             tcp_shift_cc_selector_pacing_rack_loss_status,
+        .prr_active =
+            tcp_shift_cc_selector_pacing_prr_active,
         .on_segment_send_eligible =
             tcp_shift_cc_selector_pacing_send_eligible,
         .on_segment_tx = tcp_shift_cc_selector_pacing_on_segment_tx,
