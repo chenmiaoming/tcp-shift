@@ -745,6 +745,7 @@ jobs:
           python3 -m py_compile scripts/p6-first-send-controller-matrix-evaluate.py
           python3 -m py_compile scripts/p6-cubic-pacing-ab-evaluate.py
           python3 -m py_compile scripts/p6-cubic-loss-timeline-evaluate.py
+          python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
         run: |
@@ -888,6 +889,17 @@ jobs:
             "$root/linux-cubic/summary.txt" \
             | tee "$root/cubic-loss-timeline.txt"
 
+      - name: Compare post-PRR recovery differential
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-prr-recovery-differential-evaluate.py \
+            "$root/tcp-shift-cubic/runtime.stderr" \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/linux-cubic/tcp-info.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/prr-recovery-differential.txt"
+
       - name: Publish deterministic first-send evidence
         if: always()
         run: |
@@ -905,7 +917,8 @@ jobs:
               "$root/linux-cubic/summary.txt" \
               "$root/controller-matrix.txt" \
               "$root/cubic-pacing-ab.txt" \
-              "$root/cubic-loss-timeline.txt"; do
+              "$root/cubic-loss-timeline.txt" \
+              "$root/prr-recovery-differential.txt"; do
               if [ -f "$file" ]; then
                 echo
                 echo '~~~text'
