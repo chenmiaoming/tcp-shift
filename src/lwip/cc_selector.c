@@ -658,6 +658,17 @@ static int tcp_shift_cc_selector_pacing_rack_loss_status(
         arg, pcb, segment, remaining_ns);
 }
 
+static u32_t tcp_shift_cc_selector_pacing_effective_cwnd(
+    void *arg,
+    struct tcp_pcb *pcb)
+{
+    if (tcp_shift_cc_selector_base_hook_ops == NULL ||
+        tcp_shift_cc_selector_base_hook_ops->effective_cwnd == NULL) {
+        return pcb != NULL ? (u32_t)pcb->cwnd : 0U;
+    }
+    return tcp_shift_cc_selector_base_hook_ops->effective_cwnd(arg, pcb);
+}
+
 static int tcp_shift_cc_selector_pacing_send_eligible(void *arg,
                                                        struct tcp_pcb *pcb,
                                                        u16_t payload_bytes)
@@ -734,6 +745,8 @@ static const struct tcp_shift_lwip_cc_hook_ops
             tcp_shift_cc_selector_pacing_rack_loss_status,
         .prr_active =
             tcp_shift_cc_selector_pacing_prr_active,
+        .effective_cwnd =
+            tcp_shift_cc_selector_pacing_effective_cwnd,
         .on_segment_send_eligible =
             tcp_shift_cc_selector_pacing_send_eligible,
         .on_segment_tx = tcp_shift_cc_selector_pacing_on_segment_tx,
