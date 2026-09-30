@@ -143,9 +143,18 @@ delivered = []
 actual_pacing = []
 dynamic_expected_pacing = []
 actual_over_dynamic = []
+snd_buf = []
+unsent_bytes = []
+unsent_segments = []
+credit_with_no_unsent = 0
+credit_with_unsent = 0
+credit_with_zero_sndbuf = 0
 episodes = defaultdict(list)
 
 for event in acks:
+    for required in ("snd_buf", "snd_queuelen", "unsent_bytes", "unsent_segments"):
+        if required not in event:
+            raise SystemExit(f"PRR ACK trace missing {required}: {event}")
     episode = int(event["episode"])
     mode = event["mode"]
     mode_counts[mode] += 1
@@ -156,6 +165,19 @@ for event in acks:
     delivered.append(int(event["delivered_data"]))
     actual = int(event["pacing_Bps"])
     actual_pacing.append(actual)
+    snd_buf_now = int(event["snd_buf"])
+    unsent_now = int(event["unsent_bytes"])
+    unsent_segments_now = int(event["unsent_segments"])
+    snd_buf.append(snd_buf_now)
+    unsent_bytes.append(unsent_now)
+    unsent_segments.append(unsent_segments_now)
+    if int(event["sndcnt"]) >= int(event.get("smss", "1460") or "1460"):
+        if unsent_now >= MSS:
+            credit_with_unsent += 1
+        else:
+            credit_with_no_unsent += 1
+        if snd_buf_now == 0:
+            credit_with_zero_sndbuf += 1
     expected = linux_shaped_rate_bytes(
         int(event["cwnd"]),
         int(event["raw_outstanding_bytes"]),
@@ -227,6 +249,12 @@ print(
     f"tcp_shift_prr_actual_over_dynamic_expected_median="
     f"{statistics.median(actual_over_dynamic) if actual_over_dynamic else 0.0:.6f} "
     f"tcp_shift_prr_constant_pacing_episodes={episode_constant_pacing} "
+    f"tcp_shift_prr_snd_buf_median_bytes={median_int(snd_buf)} "
+    f"tcp_shift_prr_unsent_median_bytes={median_int(unsent_bytes)} "
+    f"tcp_shift_prr_unsent_segments_median={median_int(unsent_segments)} "
+    f"tcp_shift_prr_credit_with_no_unsent_events={credit_with_no_unsent} "
+    f"tcp_shift_prr_credit_with_unsent_events={credit_with_unsent} "
+    f"tcp_shift_prr_credit_with_zero_sndbuf_events={credit_with_zero_sndbuf} "
     f"linux_tcp_info_samples={len(linux_rows)} "
     f"linux_retrans_transition_samples={len(linux_transitions)} "
     f"linux_retrans_transition_packets={linux_transition_packets} "
