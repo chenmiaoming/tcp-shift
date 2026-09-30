@@ -12,6 +12,47 @@
         }                                                                     \
     } while (0)
 
+static int test_slow_start_app_limited_growth(void)
+{
+    struct tcp_shift_cubic_model model;
+    struct tcp_shift_cc_transport transport = {
+        .mss_bytes = 1000U,
+        .inflight_bytes = 3000U,
+        .send_window_bytes = 64000U,
+        .cwnd_limit_bytes = 65535U,
+    };
+    struct tcp_shift_cc_init init = {
+        .initial_cwnd_bytes = 4000U,
+        .initial_ssthresh_bytes = 64000U,
+        .min_cwnd_bytes = 1000U,
+    };
+    struct tcp_shift_cc_ack ack = {
+        .acked_bytes = 1000U,
+        .rate = {.flags = TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED},
+    };
+    struct tcp_shift_cc_policy policy;
+
+    CHECK(tcp_shift_cubic_model_init(&model, &transport, &init, &policy) == 0);
+    CHECK(policy.cwnd_bytes == 4000U);
+
+    CHECK(tcp_shift_cubic_model_on_ack(&model, &transport, &ack,
+                                       UINT64_C(100000000),
+                                       UINT64_C(50000000), &policy) == 0);
+    CHECK(policy.cwnd_bytes == 5000U);
+    CHECK(model.app_limited_acks == 1U);
+    CHECK(model.app_limited_paused == 0U);
+    CHECK(model.ack_events == 1U);
+
+    CHECK(tcp_shift_cubic_model_on_ack(&model, &transport, &ack,
+                                       UINT64_C(200000000),
+                                       UINT64_C(50000000), &policy) == 0);
+    CHECK(policy.cwnd_bytes == 6000U);
+    CHECK(model.app_limited_acks == 2U);
+    CHECK(model.app_limited_paused == 0U);
+    CHECK(model.ack_events == 2U);
+    return 0;
+}
+
 static int test_slow_start_app_limited_loss_and_timeout(void)
 {
     struct tcp_shift_cubic_model model;
@@ -210,6 +251,7 @@ static int test_invalid_inputs(void)
 
 int main(void)
 {
+    CHECK(test_slow_start_app_limited_growth() == 0);
     CHECK(test_slow_start_app_limited_loss_and_timeout() == 0);
     CHECK(test_cubic_k_and_fast_convergence_toggle() == 0);
     CHECK(test_invalid_inputs() == 0);
