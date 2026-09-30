@@ -83,7 +83,7 @@ single recovery flight, two deterministic losses, Reno:
 
 PRR is a standards/recovery-correctness change, not a performance shortcut. On the deterministic 28-drop CUBIC differential path, PRR does not close the remaining Linux CUBIC goodput gap and may be slightly slower than the former NewReno-window recovery. The next performance work should therefore compare PRR/RACK recovery timing, inflight evolution, and pacing-rate publication against Linux rather than tuning RFC 9937 away from its specified behavior.
 
-## 2026-09-30 post-PRR recovery checkpoint
+## 2026-09-30 post-PRR and CUBIC slow-start checkpoint
 
 PRs #83-#88 close the first RFC 9937 integration/debug cycle:
 
@@ -92,42 +92,40 @@ PRs #83-#88 close the first RFC 9937 integration/debug cycle:
 - #85 traced post-PRR CUBIC recovery against Linux and showed the remaining gap was not explained by CUBIC beta, RFC 5681 FlightSize, or a simple pacing-rate formula error.
 - #86 proved that PRR was producing useful SndCnt and that the intended sequence-space window mapping admitted queued data; the apparent missing sends were not caused by the userspace pacer itself.
 - #87 found the integration defect: production and qualification pacing wrappers replaced `hook.ops` without forwarding the base adapter's PRR-aware `effective_cwnd`. Native `tcp_output()` therefore fell back to plain `pcb->cwnd`, suppressing most PRR new-data credit. Both wrappers now forward `effective_cwnd`, and CI fails closed if that forwarding disappears.
-- #88 quantified the remaining first-loss CUBIC cwnd delta without changing behavior. tcp-shift first-loss pre-cwnd is `116800 B`; Linux's last pre-retransmission sample is `128480 B`; tcp-shift has `4380 B` SACK-delivered ahead of SND.UNA. Hypothetically adding that Linux-style SACK credit still leaves about `7300 B` unexplained.
+- #88 quantified the remaining first-loss CUBIC cwnd delta without changing behavior. tcp-shift first-loss pre-cwnd was `116800 B`; Linux's last pre-retransmission sample was `128480 B`; pure SACK-ahead credit could not explain the difference.
+- #91 added qualification-only pre-loss ACK/HyStart++ tracing. It proved that the first ten full-sized data ACKs were marked app-limited and froze cwnd at IW10 even though HyStart++ remained in ordinary initial slow start. The missing growth was exactly 10 SMSS.
+- #92 fixed the controller bug: app-limited delivery still pauses CUBIC congestion-avoidance epoch time, but no longer suppresses RFC 9406 initial slow-start ACK growth. A pure-C model regression and the live 28-drop path both qualify the boundary.
 
-Latest same-path #88 hosted-runner evidence:
+Latest same-path #92 hosted-runner evidence:
 
 ```text
 RTT=260 ms, rate=10 Mbit/s, payload=4 MiB, 28 deterministic first-send drops
 
-tcp-shift BBR / Linux BBR:   5.285094 / 5.492110 Mbit/s = 0.962307
-tcp-shift CUBIC / Linux:     0.548827 / 0.741245 Mbit/s = 0.740412
+tcp-shift CUBIC / Linux:     0.557895 / 0.702777 Mbit/s = 0.793844
 
-CUBIC:
-- loss_events=28
-- recovery_exits=28
-- timeout_events=0
-- first pre-cwnd=116800 B
-- first FlightSize=116800 B
-- first post-cwnd=81760 B
+CUBIC pre-loss:
+- first ten full-sized ACKs remain APP_LIMITED samples but each now grows cwnd
+- HyStart++ CSS enters/exits=0/0 before first loss
+- first pre-cwnd=131400 B
+- first FlightSize=131400 B
+- Linux coarse pre-first-retrans cwnd=128480 B
+- tcp-shift reaches exactly 128480 B on the adjacent ACK
 - first SACK-ahead bytes=4380 B
-- hypothetical RFC-cwnd + SACK-ahead=121180 B
-- Linux pre-first-retrans cwnd=128480 B
-- residual first-cwnd gap after SACK-ahead=7300 B
 
-PRR:
-- episodes=28
-- ACK decisions=469
-- PRR TX events=335
-- median inflight=18980 B
-- median SndCnt=1605 B
-- pacer deferrals/resumes=143/143
+Recovery:
+- fault drops / retransmissions=28 / 28
+- timeout_events=0
+- unrelated qdisc drops=0
+- payload_integrity=ok
+- PRR episodes=28
+- PRR TX events=339
 ```
 
 Interpretation rules for the next work:
 
-1. Keep RFC 9937 PRR and RFC 8985 RACK semantics fixed unless a standards error is proven.
-2. Keep RFC 9438 cumulative-ACK semantics for CUBIC growth. Linux `tcp_newly_delivered()` counting newly ACKed or SACKed packets is an implementation differential, not authority to feed pure SACK credit into tcp-shift CUBIC.
-3. The remaining first-loss gap predates recovery, so PRR cannot explain all of it. Investigate pre-loss ACK/cwnd evolution, HyStart++/slow-start exit timing, ACK aggregation and Linux implementation details before changing recovery.
+1. Keep RFC 9406 initial slow-start ACK growth, RFC 9438 cumulative-ACK semantics, RFC 9937 PRR, and RFC 8985 RACK fixed unless a standards error is proven.
+2. The pre-first-loss 10-SMSS divergence is closed. Do not reintroduce Linux-style pure SACK cwnd credit to solve a problem that was caused by app-limited slow-start handling.
+3. Investigate the remaining differential after the first loss: PRR recovery timing, inflight/window headroom, pacing publication, recovery exit, and subsequent CUBIC CA epochs versus Linux.
 4. Do not tune BBR gains, CUBIC beta, FlightSize, or CI thresholds to hide the remaining differential.
 5. RACK-TLP, PRR integration, and ECN remain experimental/default-OFF pending provider/OpenVZ qualification and an explicit exposure decision.
 
