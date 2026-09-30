@@ -189,6 +189,10 @@ On the qualified 260 ms / 10 Mbit/s / 4 MiB / 28-drop RACK path, the transport i
 
 RACK-TLP remains experimental/default-OFF. Public `bbr` selection also remains disabled. Provider/OpenVZ qualification and an explicit exposure review are still required; BBR gains must not be tuned to mask transport/recovery defects.
 
+RFC 9937 PRR now owns recovery send credit for RACK+SACK Reno/CUBIC. PR #87 fixed a transparent-wrapper omission: the production pacing wrapper and pacing-qualification wrapper did not forward the adapter's PRR-aware `effective_cwnd`, so `tcp_output()` saw plain `pcb->cwnd` and usually released only the RACK repair even when PRR had accumulated new-data credit. After the fix, the 28-drop CUBIC qualification observes hundreds of PRR transmissions and real pacer defer/resume activity while preserving exact recovery invariants.
+
+PR #88 keeps the standards boundary explicit. At the first deterministic CUBIC loss, tcp-shift has `116800 B` pre-loss cwnd and `4380 B` selectively delivered above SND.UNA; Linux's last pre-retransmission TCP_INFO sample is `128480 B`. Even hypothetically crediting those SACK-ahead bytes leaves about `7300 B` unexplained. RFC 9438 defines `segments_acked` using cumulative new ACKs, so pure SACK delivery remains RACK/PRR evidence rather than Reno/CUBIC cwnd-growth credit. Linux's broader newly-delivered accounting remains a differential implementation reference, not the normative rule.
+
 ## Project state
 
 Start here:
@@ -203,4 +207,4 @@ Start here:
 - [`docs/milestones/p6-bbr.md`](docs/milestones/p6-bbr.md) — active P6 model/controller work and qualification plan.
 - [`docs/milestones/rack-tlp.md`](docs/milestones/rack-tlp.md) — RFC 8985 RACK-TLP implementation boundary, live gates, and remaining production blockers.
 
-> Status: P0-P5 are GitHub-runner-qualified. Main `a23c9a708c509fb03e1629d5f61cc294771e1ef6` includes the RFC-first RACK-TLP closeout plus the experimental/default-OFF RFC 3168 ECN substrate from #78. PR #79 adds persistent-CE qualification on a real TUN flow: CUBIC reaches one SMSS, repeated fresh ECE signals exercise the RFC 3168 retransmit-timer send gate, and the path retains zero synthetic loss/RTO events. Provider/OpenVZ evidence and default/public exposure remain separate.
+> Status: P0-P5 remain GitHub-runner-qualified. Main `dce00e4b37a2e0a6e468fe2584a1aeee4101cdfe` includes RFC 8985 RACK-TLP closeout, experimental/default-OFF RFC 3168 ECN qualification, live RFC 9937 PRR for RACK+SACK Reno/CUBIC recovery, the #87 production/qualification pacing-wrapper fix that forwards PRR-aware `effective_cwnd`, and #88 first-loss SACK-credit diagnostics. The deterministic 260 ms / 10 Mbit/s / 4 MiB / 28-drop path remains exact (28 drops / 28 retransmissions / 0 RTO / payload exact). Internal BBR remains outside PRR. Provider/OpenVZ evidence and default/public exposure remain separate.
