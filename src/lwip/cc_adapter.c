@@ -840,6 +840,259 @@ static uint32_t tcp_shift_delivery_outstanding_payload(
     return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
 }
 
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+static int tcp_shift_lwip_cc_prr_capable(
+    const struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_pcb *pcb)
+{
+    const char *name;
+
+    if (adapter == NULL || pcb == NULL || adapter->bound == 0U ||
+        adapter->pcb != pcb || (pcb->flags & TF_SACK) == 0U ||
+        adapter->sack_delivery_policy != 0U ||
+        adapter->controller.ops == NULL ||
+        adapter->controller.ops->name == NULL) {
+        return 0;
+    }
+
+    name = adapter->controller.ops->name;
+    return strncmp(name, "reno", 4U) == 0 ||
+                   strncmp(name, "cubic", 5U) == 0
+               ? 1
+               : 0;
+}
+
+static uint32_t tcp_shift_lwip_cc_prr_sacked_bytes(
+    const struct tcp_shift_lwip_cc_adapter *adapter,
+    uint32_t snd_una)
+{
+    const struct tcp_shift_delivery_slot *slots;
+    uint64_t total = 0U;
+    uint16_t index;
+
+    if (adapter == NULL || adapter->delivery_slots == NULL) {
+        return 0U;
+    }
+    slots = (const struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        const struct tcp_shift_delivery_slot *slot = &slots[index];
+        uint32_t cumulatively_acked = 0U;
+        uint32_t offset;
+
+        if (slot->segment == NULL || slot->payload_bytes == 0U ||
+            slot->acked_payload_bytes == 0U) {
+            continue;
+        }
+        offset = snd_una - slot->seq_start;
+        if ((int32_t)offset > 0) {
+            cumulatively_acked =
+                offset >= slot->payload_bytes ? slot->payload_bytes : offset;
+        }
+        if (slot->acked_payload_bytes > cumulatively_acked) {
+            total += (uint32_t)(slot->acked_payload_bytes -
+                                cumulatively_acked);
+        }
+    }
+    return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
+static uint32_t tcp_shift_lwip_cc_prr_recover_fs(
+    const struct tcp_shift_lwip_cc_adapter *adapter,
+    const struct tcp_pcb *pcb)
+{
+    uint32_t raw;
+    uint32_t sacked;
+
+    if (adapter == NULL || pcb == NULL) {
+        return 0U;
+    }
+    raw = pcb->snd_nxt - pcb->lastack;
+    sacked = tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
+    return sacked >= raw ? 0U : raw - sacked;
+}
+
+static uint32_t tcp_shift_lwip_cc_prr_inflight(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb)
+{
+    const struct tcp_shift_delivery_slot *slots;
+    uint64_t total = 0U;
+    uint64_t now_ns;
+    uint16_t index;
+    unsigned in_recovery;
+
+    if (adapter == NULL || pcb == NULL || adapter->delivery_slots == NULL) {
+        return 0U;
+    }
+    now_ns = tcp_shift_delivery_now_ns(adapter);
+    if (now_ns == 0U) {
+        return tcp_shift_delivery_outstanding_payload(adapter);
+    }
+
+    slots = (const struct tcp_shift_delivery_slot *)adapter->delivery_slots;
+    in_recovery = tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+    for (index = 0U; index < adapter->delivery_capacity; index++) {
+        const struct tcp_shift_delivery_slot *slot = &slots[index];
+        struct tcp_shift_rack_segment segment;
+        uint64_t remaining_ns = 0U;
+        uint32_t outstanding;
+
+        if (slot->segment == NULL || slot->payload_bytes == 0U ||
+            slot->acked_payload_bytes >= slot->payload_bytes ||
+            slot->tx_ns == 0U) {
+            continue;
+        }
+
+        outstanding =
+            (uint32_t)(slot->payload_bytes - slot->acked_payload_bytes);
+        tcp_shift_rack_slot_view(slot, &segment);
+        if (tcp_shift_rack_loss_remaining(
+                &adapter->rack_tlp, &segment, now_ns, in_recovery,
+                &remaining_ns)) {
+            continue;
+        }
+        total += outstanding;
+    }
+    return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
+static void tcp_shift_lwip_cc_prr_reset_live(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    if (adapter == NULL) {
+        return;
+    }
+    tcp_shift_prr_reset(&adapter->prr);
+    adapter->prr_send_credit_bytes = 0U;
+    adapter->prr_recover_fs_hint = 0U;
+    adapter->prr_recover_fs_hint_valid = 0U;
+}
+
+static void tcp_shift_lwip_cc_prr_note_delivery(
+    struct tcp_shift_lwip_cc_adapter *adapter)
+{
+    uint64_t delta;
+
+    if (adapter == NULL ||
+        adapter->delivered_bytes < adapter->prr_ack_delivered_before) {
+        return;
+    }
+    delta = adapter->delivered_bytes - adapter->prr_ack_delivered_before;
+    adapter->prr_trigger_delivered_bytes =
+        delta > UINT32_MAX ? UINT32_MAX : (uint32_t)delta;
+}
+
+static int tcp_shift_lwip_cc_prr_apply_ack(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb,
+    uint32_t delivered_data,
+    unsigned safe_ack)
+{
+    struct tcp_shift_prr_ack ack;
+    struct tcp_shift_prr_result result;
+    uint32_t inflight;
+
+    if (adapter == NULL || pcb == NULL || adapter->prr.active == 0U ||
+        delivered_data == 0U) {
+        return 0;
+    }
+
+    inflight = tcp_shift_lwip_cc_prr_inflight(adapter, pcb);
+    ack.delivered_data = delivered_data;
+    ack.inflight = inflight;
+    ack.smss = pcb->mss;
+    ack.safe_ack = safe_ack != 0U ? 1U : 0U;
+    if (tcp_shift_prr_on_ack(&adapter->prr, &ack, &result) != 0) {
+        return -1;
+    }
+
+    if (result.cwnd == 0U ||
+        result.cwnd > tcp_shift_lwip_cc_cwnd_limit()) {
+        return -1;
+    }
+    pcb->cwnd = (tcpwnd_size_t)result.cwnd;
+    pcb->bytes_acked = 0U;
+    adapter->prr_send_credit_bytes = result.sndcnt;
+    if (adapter->stats != NULL) {
+        adapter->stats->prr_ack_events++;
+        if (safe_ack != 0U) {
+            adapter->stats->prr_safe_ack_events++;
+        }
+        adapter->stats->prr_last_inflight_bytes = inflight;
+        adapter->stats->prr_last_sndcnt_bytes = result.sndcnt;
+        adapter->stats->last_cwnd_bytes = result.cwnd;
+    }
+    return 1;
+}
+
+static int tcp_shift_lwip_cc_prr_begin(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    struct tcp_pcb *pcb)
+{
+    uint32_t recover_fs;
+
+    if (!tcp_shift_lwip_cc_prr_capable(adapter, pcb) ||
+        adapter->prr_trigger_delivered_bytes == 0U) {
+        return 0;
+    }
+    recover_fs = adapter->prr_recover_fs_hint_valid != 0U
+                     ? adapter->prr_recover_fs_hint
+                     : tcp_shift_lwip_cc_prr_recover_fs(adapter, pcb);
+    if (recover_fs == 0U || pcb->ssthresh == 0U ||
+        tcp_shift_prr_init(&adapter->prr, recover_fs,
+                           (uint32_t)pcb->ssthresh) != 0) {
+        return 0;
+    }
+
+    adapter->prr_send_credit_bytes = 0U;
+    adapter->prr_recover_fs_hint_valid = 0U;
+    if (adapter->stats != NULL) {
+        adapter->stats->prr_recovery_enters++;
+        adapter->stats->prr_last_recover_fs_bytes = recover_fs;
+    }
+    if (tcp_shift_lwip_cc_prr_apply_ack(
+            adapter, pcb, adapter->prr_trigger_delivered_bytes, 0U) < 0) {
+        tcp_shift_lwip_cc_prr_reset_live(adapter);
+        return 0;
+    }
+    return 1;
+}
+
+static void tcp_shift_lwip_cc_prr_ack_begin(
+    void *arg,
+    struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb != pcb) {
+        return;
+    }
+    adapter->prr_ack_delivered_before = adapter->delivered_bytes;
+    adapter->prr_trigger_delivered_bytes = 0U;
+    adapter->prr_ack_loss_events_before =
+        adapter->stats != NULL ? adapter->stats->loss_events : 0U;
+
+    if (adapter->prr.active == 0U &&
+        tcp_shift_lwip_cc_prr_capable(adapter, pcb)) {
+        adapter->prr_recover_fs_hint =
+            tcp_shift_lwip_cc_prr_recover_fs(adapter, pcb);
+        adapter->prr_recover_fs_hint_valid =
+            adapter->prr_recover_fs_hint != 0U ? 1U : 0U;
+    }
+}
+
+static unsigned tcp_shift_lwip_cc_prr_active(void *arg,
+                                              struct tcp_pcb *pcb)
+{
+    struct tcp_shift_lwip_cc_adapter *adapter = arg;
+
+    return adapter != NULL && adapter->bound != 0U &&
+                   adapter->pcb == pcb && adapter->prr.active != 0U
+               ? 1U
+               : 0U;
+}
+#endif
+
 /* Outstanding windows are far below 2^31 bytes in the constrained profile,
  * so signed modular distance gives a wrap-safe position of ack_seq relative to
  * this slot's first payload byte. */
