@@ -19,6 +19,7 @@ on:
       - 'scripts/p6-first-send-controller-matrix-evaluate.py'
       - 'scripts/p6-cubic-pacing-ab-evaluate.py'
       - 'scripts/p6-cubic-preloss-ack-evaluate.py'
+      - 'scripts/p6-cubic-postloss-trajectory-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -747,6 +748,7 @@ jobs:
           python3 -m py_compile scripts/p6-cubic-pacing-ab-evaluate.py
           python3 -m py_compile scripts/p6-cubic-loss-timeline-evaluate.py
           python3 -m py_compile scripts/p6-cubic-preloss-ack-evaluate.py
+          python3 -m py_compile scripts/p6-cubic-postloss-trajectory-evaluate.py
           python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
@@ -846,6 +848,7 @@ jobs:
             TCP_SHIFT_LINUX_PACING_FAULT_MARKER_COUNT=28 \
             TCP_SHIFT_LINUX_PACING_FAULT_MARKER_GAP_PACKETS=96 \
             TCP_SHIFT_LINUX_PACING_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_LINUX_PACING_TRACE_INTERVAL_MS=10 \
             TCP_SHIFT_LINUX_PACING_OUT="$out" \
             sh scripts/linux-cubic-pacing-reference.sh
 
@@ -900,6 +903,17 @@ jobs:
             "$root/linux-cubic/tcp-info.tsv" \
             | tee "$root/cubic-preloss-ack.txt"
 
+      - name: Compare post-loss CUBIC trajectory
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-postloss-trajectory-evaluate.py \
+            "$root/tcp-shift-cubic/runtime.stderr" \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/linux-cubic/tcp-info-trace.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-postloss-trajectory.txt"
+
       - name: Compare post-PRR recovery differential
         run: |
           set -o pipefail
@@ -930,6 +944,7 @@ jobs:
               "$root/cubic-pacing-ab.txt" \
               "$root/cubic-loss-timeline.txt" \
               "$root/cubic-preloss-ack.txt" \
+              "$root/cubic-postloss-trajectory.txt" \
               "$root/prr-recovery-differential.txt"; do
               if [ -f "$file" ]; then
                 echo
