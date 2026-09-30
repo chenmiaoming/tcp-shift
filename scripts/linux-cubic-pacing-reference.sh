@@ -246,6 +246,7 @@ def tcp_info(sock):
         raise RuntimeError(f"short TCP_INFO: {len(info)}")
     return {
         "ca_state": info[1],
+        "delivery_rate_app_limited": info[7] & 0x01,
         "unacked": struct.unpack_from("=I", info, 24)[0],
         "sacked": struct.unpack_from("=I", info, 28)[0],
         "lost": struct.unpack_from("=I", info, 32)[0],
@@ -260,10 +261,14 @@ def tcp_info(sock):
         "notsent_bytes": struct.unpack_from("=I", info, 144)[0],
         "min_rtt_us": struct.unpack_from("=I", info, 148)[0],
         "delivery_rate": struct.unpack_from("=Q", info, 160)[0],
+        "busy_time_us": struct.unpack_from("=Q", info, 168)[0] if len(info) >= 176 else 0,
+        "rwnd_limited_us": struct.unpack_from("=Q", info, 176)[0] if len(info) >= 184 else 0,
+        "sndbuf_limited_us": struct.unpack_from("=Q", info, 184)[0] if len(info) >= 192 else 0,
         "delivered": struct.unpack_from("=I", info, 192)[0] if len(info) >= 196 else 0,
         "segs_out": struct.unpack_from("=I", info, 136)[0] if len(info) >= 140 else 0,
         "bytes_sent": struct.unpack_from("=Q", info, 200)[0] if len(info) >= 208 else 0,
         "bytes_retrans": struct.unpack_from("=Q", info, 208)[0] if len(info) >= 216 else 0,
+        "snd_wnd": struct.unpack_from("=I", info, 228)[0] if len(info) >= 232 else 0,
     }
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -329,14 +334,17 @@ def trace_record(source):
         trace_file.write(
             f"{sample}\t{source}\t{time.monotonic_ns() - start_ns}\t"
             f"{sent_snapshot}\t{metrics['ca_state']}\t"
+            f"{metrics['delivery_rate_app_limited']}\t"
             f"{metrics['unacked']}\t{metrics['sacked']}\t{metrics['lost']}\t"
             f"{metrics['retrans']}\t{metrics['rtt_us']}\t{metrics['min_rtt_us']}\t"
             f"{metrics['snd_cwnd']}\t{metrics['snd_ssthresh']}\t"
+            f"{metrics['snd_wnd']}\t"
             f"{metrics['pacing_rate']}\t{metrics['delivery_rate']}\t"
             f"{metrics['bytes_acked']}\t{metrics['delivered']}\t"
             f"{metrics['bytes_sent']}\t{metrics['bytes_retrans']}\t"
             f"{metrics['segs_out']}\t{metrics['notsent_bytes']}\t"
-            f"{metrics['total_retrans']}\n"
+            f"{metrics['busy_time_us']}\t{metrics['rwnd_limited_us']}\t"
+            f"{metrics['sndbuf_limited_us']}\t{metrics['total_retrans']}\n"
         )
         trace_file.flush()
 
@@ -355,10 +363,12 @@ with open(samples_path, "w", encoding="utf-8") as samples:
     if trace_interval_ms > 0:
         trace_file = open(trace_path, "w", encoding="utf-8")
         trace_file.write(
-            "sample\tsource\telapsed_ns\tbytes_written\tca_state\tunacked\tsacked\t"
-            "lost\tretrans\trtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\t"
+            "sample\tsource\telapsed_ns\tbytes_written\tca_state\t"
+            "delivery_rate_app_limited\tunacked\tsacked\tlost\tretrans\t"
+            "rtt_us\tmin_rtt_us\tsnd_cwnd\tsnd_ssthresh\tsnd_wnd\t"
             "pacing_rate_Bps\tdelivery_rate_Bps\tbytes_acked\tdelivered\t"
-            "bytes_sent\tbytes_retrans\tsegs_out\tnotsent_bytes\ttotal_retrans\n"
+            "bytes_sent\tbytes_retrans\tsegs_out\tnotsent_bytes\t"
+            "busy_time_us\trwnd_limited_us\tsndbuf_limited_us\ttotal_retrans\n"
         )
         trace_record("initial")
         trace_thread = threading.Thread(target=trace_loop, daemon=True)
