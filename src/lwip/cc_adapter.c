@@ -456,7 +456,8 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U &&
         payload_bytes > adapter->prr_send_credit_bytes) {
-#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         if (adapter->controller.ops != NULL &&
             adapter->controller.ops->name != NULL &&
             strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
@@ -501,7 +502,8 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
     flow.next_send_ns = adapter->pacing_next_send_ns;
     deadline_ns = tcp_shift_flow_pacer_deadline(&flow, now_ns);
     if (deadline_ns == 0U) {
-#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         if (adapter->prr.active != 0U &&
             adapter->controller.ops != NULL &&
             adapter->controller.ops->name != NULL &&
@@ -605,7 +607,8 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
         adapter->stats->pacing_resume_events++;
         adapter->stats->pacing_last_actual_release_ns = actual_release_ns;
     }
-#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U &&
         adapter->controller.ops != NULL &&
         adapter->controller.ops->name != NULL &&
@@ -627,7 +630,8 @@ int tcp_shift_lwip_cc_resume_paced(uint64_t flow_id,
 #endif
 
     err = tcp_output(adapter->pcb);
-#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U &&
         adapter->controller.ops != NULL &&
         adapter->controller.ops->name != NULL &&
