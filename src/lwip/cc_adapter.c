@@ -3039,6 +3039,11 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
 
         if (adapter->prr.active != 0U) {
             uint32_t cwnd = 0U;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+            uint64_t trace_prr_delivered = adapter->prr.prr_delivered;
+            uint64_t trace_prr_out = adapter->prr.prr_out;
+            uint32_t trace_recover_fs = adapter->prr.recover_fs;
+#endif
 
             if (tcp_shift_prr_complete(&adapter->prr, &cwnd) != 0 ||
                 cwnd == 0U || cwnd > tcp_shift_lwip_cc_cwnd_limit()) {
@@ -3067,15 +3072,15 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
                             "episode=%llu time_ns=%llu ack_seq=%u "
                             "recovery_end_seq=%u cwnd=%u ssthresh=%u "
                             "inflight_bytes=%u raw_outstanding_bytes=%u "
-                            "prr_delivered=%llu prr_out=%llu "
+                            "recover_fs=%u prr_delivered=%llu prr_out=%llu "
                             "pacing_Bps=%llu\n",
                             (unsigned long long)episode,
                             (unsigned long long)now_ns, ack_seq,
                             adapter->hook.recovery_end_seq, cwnd,
                             (uint32_t)pcb->ssthresh, inflight,
-                            raw_outstanding,
-                            (unsigned long long)adapter->prr.prr_delivered,
-                            (unsigned long long)adapter->prr.prr_out,
+                            raw_outstanding, trace_recover_fs,
+                            (unsigned long long)trace_prr_delivered,
+                            (unsigned long long)trace_prr_out,
                             (unsigned long long)
                                 adapter->pacing_rate_bytes_per_sec);
                 }
