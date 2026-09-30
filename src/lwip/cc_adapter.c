@@ -2467,8 +2467,13 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
         strncmp(adapter->controller.ops->name, "cubic", 5U) == 0 &&
         (adapter->stats == NULL || adapter->stats->loss_events == 0U) &&
         adapter->controller.state != NULL) {
+        /* The production pacing wrapper temporarily points
+         * controller.state at the adapter while it delegates the actual CUBIC
+         * callback to controller_state.cubic. Read the concrete built-in state
+         * directly so qualification telemetry cannot reinterpret the wrapper
+         * object as a CUBIC model. */
         const struct tcp_shift_cubic_model *model =
-            (const struct tcp_shift_cubic_model *)adapter->controller.state;
+            &adapter->controller_state.cubic;
         uint64_t event_index =
             adapter->stats != NULL ? adapter->stats->ack_events + 1U : 0U;
         uint32_t sacked_ahead_bytes = 0U;
