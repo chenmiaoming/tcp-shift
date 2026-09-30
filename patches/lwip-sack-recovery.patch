@@ -97,7 +97,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
            }
          }
        }
-@@ -1359,13 +1415,14 @@
+@@ -1359,13 +1415,17 @@
        } else {
          pcb->rtime = 0;
        }
@@ -106,8 +106,11 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 -        /* A partial ACK identifies the next hole without waiting for another
 -           three duplicate ACKs. tcp_rexmit() only requeues the first unacked
 -           segment; tcp_input() will drive ordinary tcp_output() afterwards. */
-+      if (recovery_partial && pcb->unacked != NULL &&
-+          !tcp_shift_tcp_rack_owns_fast_loss(pcb)) {
++      if (recovery_partial && pcb->unacked != NULL
++#if LWIP_TCP_SACK_OUT && defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
++          && !tcp_shift_tcp_rack_owns_fast_loss(pcb)
++#endif
++          ) {
 +        /* RFC 6582 fallback: without RACK ownership, a partial ACK identifies
 +           the next hole without waiting for another three duplicate ACKs.
 +           tcp_rexmit() only requeues the first unacked segment. */
