@@ -409,11 +409,56 @@ static u32_t tcp_shift_lwip_cc_effective_cwnd(void *arg,
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U) {
+        uint32_t seq_cwnd;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+        const struct tcp_seg *next;
+        uint32_t next_seq = 0U;
+        uint32_t next_len = 0U;
+        uint32_t next_extent = 0U;
+        uint32_t output_wnd;
+        unsigned window_allows = 0U;
+        unsigned nagle_allows = 0U;
+#endif
+
         raw_inflight = pcb->snd_nxt - pcb->lastack;
-        if (raw_inflight > UINT32_MAX - adapter->prr_send_credit_bytes) {
-            return UINT32_MAX;
+        seq_cwnd =
+            raw_inflight > UINT32_MAX - adapter->prr_send_credit_bytes
+                ? UINT32_MAX
+                : raw_inflight + adapter->prr_send_credit_bytes;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+        if (adapter->controller.ops != NULL &&
+            adapter->controller.ops->name != NULL &&
+            strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+            next = pcb->unsent;
+            output_wnd = pcb->snd_wnd < seq_cwnd ? pcb->snd_wnd : seq_cwnd;
+            if (next != NULL) {
+                next_seq = lwip_ntohl(next->tcphdr->seqno);
+                next_len = next->len;
+                next_extent = next_seq - pcb->lastack + next_len;
+                window_allows =
+                    next_len != 0U && next_extent <= output_wnd ? 1U : 0U;
+            }
+            nagle_allows = tcp_do_output_nagle(pcb) != 0 ? 1U : 0U;
+            fprintf(stderr,
+                    "tcp-shift-cubic-trace: event=output-gate episode=%llu "
+                    "time_ns=%llu flags=%u infr=%u credit=%u "
+                    "raw_outstanding_bytes=%u seq_cwnd=%u snd_wnd=%u "
+                    "output_wnd=%u next_unsent_seq=%u next_unsent_len=%u "
+                    "next_unsent_extent=%u window_allows=%u nagle_allows=%u "
+                    "snd_buf=%u snd_queuelen=%u\n",
+                    (unsigned long long)(adapter->stats != NULL
+                                             ? adapter->stats->prr_recovery_enters
+                                             : 0U),
+                    (unsigned long long)tcp_shift_delivery_now_ns(adapter),
+                    (unsigned)pcb->flags,
+                    (pcb->flags & TF_INFR) != 0U ? 1U : 0U,
+                    adapter->prr_send_credit_bytes, raw_inflight, seq_cwnd,
+                    (unsigned)pcb->snd_wnd, output_wnd, next_seq, next_len,
+                    next_extent, window_allows, nagle_allows,
+                    (unsigned)pcb->snd_buf, (unsigned)pcb->snd_queuelen);
         }
-        return raw_inflight + adapter->prr_send_credit_bytes;
+#endif
+        return seq_cwnd;
     }
 #endif
 
