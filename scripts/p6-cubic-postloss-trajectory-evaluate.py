@@ -105,6 +105,7 @@ losses = events["loss"]
 prr_acks = events["prr-ack"]
 prr_txs = events["prr-tx"]
 prr_exits = events["prr-exit"]
+recovery_close_acks = events["recovery-close-ack"]
 ca_acks = events["ca-ack"]
 
 expected = int(ts.get("fault_marker_count", "0"))
@@ -124,10 +125,16 @@ if len(prr_exits) != expected:
     raise SystemExit(
         f"PRR exit trace mismatch: trace={len(prr_exits)} expected={expected}"
     )
+if len(recovery_close_acks) != expected:
+    raise SystemExit(
+        "recovery-closing ACK trace mismatch: "
+        f"trace={len(recovery_close_acks)} expected={expected}"
+    )
 
 acks_by_episode = defaultdict(list)
 txs_by_episode = defaultdict(list)
 exits_by_episode = {}
+close_by_episode = {}
 ca_by_episode = defaultdict(list)
 for row in prr_acks:
     acks_by_episode[episode_num(row)].append(row)
@@ -135,6 +142,8 @@ for row in prr_txs:
     txs_by_episode[episode_num(row)].append(row)
 for row in prr_exits:
     exits_by_episode[episode_num(row)] = row
+for row in recovery_close_acks:
+    close_by_episode[episode_num(row)] = row
 for row in ca_acks:
     ca_by_episode[episode_num(row)].append(row)
 
@@ -150,8 +159,11 @@ episode_rows = []
 for episode in range(1, expected + 1):
     loss = losses[episode - 1]
     exit_row = exits_by_episode.get(episode)
+    close_row = close_by_episode.get(episode)
     if exit_row is None:
         raise SystemExit(f"missing PRR exit for episode {episode}")
+    if close_row is None:
+        raise SystemExit(f"missing recovery-closing ACK for episode {episode}")
 
     loss_time = int(loss["time_ns"])
     exit_time = int(exit_row["time_ns"])
@@ -218,6 +230,12 @@ for episode in range(1, expected + 1):
             "exit_cwnd": int(exit_row["cwnd"]),
             "exit_inflight": int(exit_row.get("inflight_bytes", "0")),
             "recovery_ns": exit_time - loss_time,
+            "close_acked_bytes": int(close_row["acked_bytes"]),
+            "close_pre_cwnd": int(close_row["pre_cwnd"]),
+            "close_post_cwnd": int(close_row["post_cwnd"]),
+            "close_growth": int(close_row["post_cwnd"]) - int(close_row["pre_cwnd"]),
+            "close_flags": int(close_row["rate_flags"]),
+            "close_epoch": int(close_row["epoch_active"]),
             "prr_acks": len(ack_rows),
             "prr_txs": len(tx_rows),
             "prr_repair_tx_bytes": repair_tx_bytes,
@@ -353,6 +371,9 @@ print(
     "p6_cubic_postloss_trajectory=ok "
     f"tcp_shift_episodes={expected} "
     f"tcp_shift_ca_episodes={episodes_with_ca} "
+    f"tcp_shift_recovery_close_ack_events={len(recovery_close_acks)} "
+    f"tcp_shift_recovery_close_growth_median_bytes="
+    f"{median_int([row['close_growth'] for row in episode_rows])} "
     f"tcp_shift_ca_ack_events={ca_total} "
     f"tcp_shift_ca_app_limited_events={ca_app_limited} "
     f"tcp_shift_ca_app_limited_fraction={pct(ca_app_limited, ca_total):.6f} "
@@ -396,6 +417,11 @@ for row in episode_rows[:8]:
         f"ts_exit_cwnd={row['exit_cwnd']} "
         f"ts_exit_inflight={row['exit_inflight']} "
         f"ts_recovery_ms={row['recovery_ns'] / 1_000_000:.3f} "
+        f"ts_close_ack={row['close_acked_bytes']} "
+        f"ts_close_cwnd={row['close_pre_cwnd']}>{row['close_post_cwnd']} "
+        f"ts_close_growth={row['close_growth']} "
+        f"ts_close_flags={row['close_flags']} "
+        f"ts_close_epoch={row['close_epoch']} "
         f"ts_prr_acks={row['prr_acks']} "
         f"ts_prr_txs={row['prr_txs']} "
         f"ts_prr_repair_bytes={row['prr_repair_tx_bytes']} "
@@ -445,6 +471,7 @@ print(
     f"episodes={len(steady_ts)} "
     f"ts_loss_pre_median={median_int([row['loss_pre'] for row in steady_ts])} "
     f"ts_exit_cwnd_median={median_int([row['exit_cwnd'] for row in steady_ts])} "
+    f"ts_close_growth_median={median_int([row['close_growth'] for row in steady_ts])} "
     f"ts_prr_new_median={median_int([row['prr_new_tx_bytes'] for row in steady_ts])} "
     f"ts_rwnd_blocks={sum(row['receiver_window_blocks'] for row in steady_ts)} "
     f"ts_prr_window_blocks={sum(row['prr_window_blocks'] for row in steady_ts)} "
