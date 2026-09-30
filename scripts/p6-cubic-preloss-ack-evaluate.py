@@ -110,6 +110,24 @@ def compact_rounds(acks):
     return ";".join(result)
 
 
+def compact_acks(rows):
+    return ";".join(
+        "i%s:ack=%s,cum=%s,flags=%s,cwnd=%s>%s,css=%s,en=%s,next=%s"
+        % (
+            row["index"],
+            row["acked_bytes"],
+            row["cumulative_acked_bytes"],
+            row["rate_flags"],
+            row["pre_cwnd"],
+            row["post_cwnd"],
+            row["hystart_css"],
+            row["hystart_enabled"],
+            row["hystart_next_round_delivered"],
+        )
+        for row in rows
+    )
+
+
 if len(sys.argv) != 3:
     raise SystemExit(
         "usage: p6-cubic-preloss-ack-evaluate.py "
@@ -198,6 +216,8 @@ else:
     )
 
 print("tcp_shift_hystart_rounds=" + compact_rounds(acks))
+print("tcp_shift_first_acks=" + compact_acks(acks[:15]))
+print("tcp_shift_last_acks=" + compact_acks(acks[-10:]))
 print(
     "linux_pre_first_retrans="
     f"sample:{linux_last['sample']},"
