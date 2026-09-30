@@ -91,6 +91,7 @@ struct tcp_shift_lwip_cc_hook_ops {
                             struct tcp_pcb *pcb,
                             const void *segment,
                             uint64_t *remaining_ns);
+    unsigned (*prr_active)(void *arg, struct tcp_pcb *pcb);
     u32_t (*effective_cwnd)(void *arg, struct tcp_pcb *pcb);
     int (*on_segment_send_eligible)(void *arg,
                                     struct tcp_pcb *pcb,
@@ -191,6 +192,20 @@ tcp_shift_lwip_cc_hook_recovery_controller_owned(const struct tcp_pcb *pcb)
 
     return hook != NULL && hook->recovery_active != 0U &&
                    hook->recovery_controller_owned != 0U
+               ? 1U
+               : 0U;
+}
+
+static inline unsigned
+tcp_shift_lwip_cc_hook_prr_active(const struct tcp_pcb *pcb)
+{
+    const struct tcp_shift_lwip_cc_hook *hook =
+        tcp_shift_lwip_cc_hook_get(pcb);
+
+    if (hook == NULL || hook->ops == NULL || hook->ops->prr_active == NULL) {
+        return 0U;
+    }
+    return hook->ops->prr_active(hook->arg, (struct tcp_pcb *)pcb) != 0U
                ? 1U
                : 0U;
 }
