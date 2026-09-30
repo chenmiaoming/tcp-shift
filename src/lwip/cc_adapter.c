@@ -1076,7 +1076,7 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 "raw_outstanding_bytes=%u recover_fs=%u ssthresh=%u "
                 "safe_ack=%u mode=%s sndcnt=%u cwnd=%u "
                 "prr_delivered=%llu prr_out=%llu srtt_ns=%llu "
-                "pacing_Bps=%llu snd_buf=%u snd_queuelen=%u "
+                "pacing_Bps=%llu mss=%u snd_buf=%u snd_queuelen=%u "
                 "unsent_bytes=%llu unsent_segments=%u\n",
                 (unsigned long long)episode,
                 (unsigned long long)now_ns, delivered_data, inflight,
@@ -1087,7 +1087,7 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 (unsigned long long)adapter->prr.prr_out,
                 (unsigned long long)adapter->srtt.smoothed_rtt_ns,
                 (unsigned long long)adapter->pacing_rate_bytes_per_sec,
-                (unsigned)pcb->snd_buf, (unsigned)pcb->snd_queuelen,
+                (unsigned)pcb->mss, (unsigned)pcb->snd_buf, (unsigned)pcb->snd_queuelen,
                 (unsigned long long)unsent_bytes, unsent_segments);
     }
 #endif
