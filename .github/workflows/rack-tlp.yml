@@ -121,12 +121,18 @@ jobs:
           assert ".on_ack_begin = tcp_shift_cc_selector_pacing_on_ack_begin" in selector
           assert ".prr_active =" in selector
           assert "tcp_shift_cc_selector_pacing_prr_active" in selector
+          assert ".effective_cwnd =" in selector
+          assert "tcp_shift_cc_selector_pacing_effective_cwnd" in selector
+          assert "->effective_cwnd(arg, pcb)" in selector
           assert "->on_ack_begin(arg, pcb)" in selector
           assert "->prr_active(arg, pcb)" in selector
 
           assert ".on_ack_begin = tcp_shift_pacing_qualification_quantum_on_ack_begin" in qualification
           assert ".prr_active =" in qualification
           assert "tcp_shift_pacing_qualification_quantum_prr_active" in qualification
+          assert ".effective_cwnd =" in qualification
+          assert "tcp_shift_pacing_qualification_quantum_effective_cwnd" in qualification
+          assert "->effective_cwnd(" in qualification
           assert "->on_ack_begin(arg, pcb)" in qualification
           assert "->prr_active(arg, pcb)" in qualification
 
