@@ -14,6 +14,10 @@ on:
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_adapter.h'
       - 'src/lwip/cc_hooks.h'
+      - 'src/lwip/cc_selector.c'
+      - 'src/lwip/cc_pacing_qualification.c'
+      - 'patches/lwip-p4-cc-hooks.patch'
+      - 'patches/lwip-ecn.patch'
       - 'src/runtime/lwip_loop.c'
       - 'src/runtime/lwip_loop.h'
       - 'src/p2_main.c'
@@ -101,6 +105,35 @@ jobs:
           assert "tcp_rexmit_fast(pcb)" not in rack_branch
           assert "(pcb->flags & TF_INFR) != 0U && pcb->dupacks > 3" in rack_branch
           print("rack_dupack_ownership=ok native_fast_loss_entry=disabled tlp_dupack=connected")
+          PY
+
+      - name: Enforce RFC 9937 PRR wrapper forwarding
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          selector = Path("src/lwip/cc_selector.c").read_text()
+          qualification = Path("src/lwip/cc_pacing_qualification.c").read_text()
+          hooks = Path("src/lwip/cc_hooks.h").read_text()
+          p4 = Path("patches/lwip-p4-cc-hooks.patch").read_text()
+          sack = Path("patches/lwip-sack-recovery.patch").read_text()
+
+          assert ".on_ack_begin = tcp_shift_cc_selector_pacing_on_ack_begin" in selector
+          assert ".prr_active =" in selector
+          assert "tcp_shift_cc_selector_pacing_prr_active" in selector
+          assert "->on_ack_begin(arg, pcb)" in selector
+          assert "->prr_active(arg, pcb)" in selector
+
+          assert ".on_ack_begin = tcp_shift_pacing_qualification_quantum_on_ack_begin" in qualification
+          assert ".prr_active =" in qualification
+          assert "tcp_shift_pacing_qualification_quantum_prr_active" in qualification
+          assert "->on_ack_begin(arg, pcb)" in qualification
+          assert "->prr_active(arg, pcb)" in qualification
+
+          assert "tcp_shift_lwip_cc_hook_prr_active" in hooks
+          assert "!tcp_shift_lwip_cc_hook_prr_active(pcb)" in p4
+          assert "!tcp_shift_lwip_cc_hook_prr_active(pcb)" in sack
+          print("rfc9937_wrapper_boundary=ok production=forwarded qualification=forwarded newreno=fallback-only")
           PY
 
       - name: Reject invalid RACK/SACK build combinations
@@ -330,6 +363,10 @@ jobs:
           grep -F 'fault_drops=28' "$out/summary.txt"
           grep -F 'retransmit_events=28' "$out/summary.txt"
           grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'prr_recovery_enters=0' "$out/summary.txt"
+          grep -F 'prr_recovery_exits=0' "$out/summary.txt"
+          grep -F 'prr_ack_events=0' "$out/summary.txt"
+          grep -F 'prr_tx_events=0' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
           grep -F 'payload_integrity=ok' "$out/summary.txt"
@@ -362,6 +399,10 @@ jobs:
           grep -F 'retransmit_events=28' "$out/summary.txt"
           grep -E 'tcp-shift-p2-delivery: .*sack_events=[1-9][0-9]*' "$out/runtime.stderr"
           grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'prr_recovery_enters=28' "$out/summary.txt"
+          grep -F 'prr_recovery_exits=28' "$out/summary.txt"
+          grep -E 'prr_ack_events=[1-9][0-9]*' "$out/summary.txt"
+          grep -E 'prr_tx_events=[1-9][0-9]*' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
           grep -F 'payload_integrity=ok' "$out/summary.txt"
@@ -394,6 +435,43 @@ jobs:
           grep -F 'retransmit_events=28' "$out/summary.txt"
           grep -E 'tcp-shift-p2-delivery: .*sack_events=[1-9][0-9]*' "$out/runtime.stderr"
           grep -F 'rack_reordering_events=0' "$out/summary.txt"
+          grep -F 'prr_recovery_enters=28' "$out/summary.txt"
+          grep -F 'prr_recovery_exits=28' "$out/summary.txt"
+          grep -E 'prr_ack_events=[1-9][0-9]*' "$out/summary.txt"
+          grep -E 'prr_tx_events=[1-9][0-9]*' "$out/summary.txt"
+          grep -F 'timeout_events=0' "$out/summary.txt"
+          grep -F 'qdisc_drops=0/0' "$out/summary.txt"
+          grep -F 'payload_integrity=ok' "$out/summary.txt"
+
+      - name: Prove RFC 9937 SafeACK on one multi-loss recovery flight
+        run: |
+          out="$PWD/.build/rack-prr-safeack-reno"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-rack/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=reno \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=1048576 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=multi-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_SECOND_PACKET=84 \
+            TCP_SHIFT_P6_BBR_LONG_RECOVERY_EXPECTATION=strict \
+            TCP_SHIFT_P6_BBR_LONG_TUN_NAME=tsprrsafe \
+            TCP_SHIFT_P6_BBR_LONG_IFB_NAME=prrifbsafe \
+            TCP_SHIFT_P6_BBR_LONG_PUBLIC_PORT=18186 \
+            TCP_SHIFT_P6_BBR_LONG_BACKEND_PORT=19186 \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+          sudo chown -R "$USER:$USER" "$out"
+          grep -F 'cc=reno' "$out/summary.txt"
+          grep -F 'loss_mode=deterministic-multi' "$out/summary.txt"
+          grep -F 'fault_drops=2' "$out/summary.txt"
+          grep -F 'retransmit_events=2' "$out/summary.txt"
+          grep -E 'prr_recovery_enters=[1-9][0-9]*' "$out/summary.txt"
+          grep -E 'prr_recovery_exits=[1-9][0-9]*' "$out/summary.txt"
+          grep -E 'prr_safe_ack_events=[1-9][0-9]*' "$out/summary.txt"
+          grep -E 'prr_tx_events=[1-9][0-9]*' "$out/summary.txt"
           grep -F 'timeout_events=0' "$out/summary.txt"
           grep -F 'qdisc_drops=0/0' "$out/summary.txt"
           grep -F 'payload_integrity=ok' "$out/summary.txt"
@@ -486,6 +564,9 @@ jobs:
             fi
             if [ -f .build/rack-tlp-first-send-28-cubic/summary.txt ]; then
               cat .build/rack-tlp-first-send-28-cubic/summary.txt
+            fi
+            if [ -f .build/rack-prr-safeack-reno/summary.txt ]; then
+              cat .build/rack-prr-safeack-reno/summary.txt
             fi
             if [ -f .build/rack-tlp-reorder-safe/summary.txt ]; then
               cat .build/rack-tlp-reorder-safe/summary.txt
