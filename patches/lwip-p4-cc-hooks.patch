@@ -53,7 +53,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +    tcp_shift_lwip_cc_hook_segment_acked(pcb, next, next->len);
      tcp_seg_free(next);
  
-@@ -1222,4 +1223,6 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1222,4 +1223,7 @@ tcp_receive(struct tcp_pcb *pcb)
                if (pcb->dupacks > 3) {
                  /* Inflate the congestion window */
 -                TCP_WND_INC(pcb->cwnd, pcb->mss);
@@ -62,7 +62,7 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
-@@ -1231,78 +1234,136 @@ tcp_receive(struct tcp_pcb *pcb)
+@@ -1231,78 +1234,137 @@ tcp_receive(struct tcp_pcb *pcb)
            }
          }
        }
@@ -298,7 +298,7 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +  }
  
  #if TCP_CHECKSUM_ON_COPY
-@@ -1796,19 +1806,26 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
+@@ -1796,19 +1806,27 @@ tcp_rexmit_fast(struct tcp_pcb *pcb)
                   (u16_t)pcb->dupacks, pcb->lastack,
                   lwip_ntohl(pcb->unacked->tcphdr->seqno)));
      if (tcp_rexmit(pcb) == ERR_OK) {
