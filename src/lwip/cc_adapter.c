@@ -1061,6 +1061,14 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
         uint64_t episode =
             adapter->stats != NULL ? adapter->stats->prr_recovery_enters : 0U;
         uint32_t raw_outstanding = pcb->snd_nxt - pcb->lastack;
+        uint64_t unsent_bytes = 0U;
+        uint32_t unsent_segments = 0U;
+        const struct tcp_seg *unsent;
+
+        for (unsent = pcb->unsent; unsent != NULL; unsent = unsent->next) {
+            unsent_bytes += unsent->len;
+            unsent_segments++;
+        }
 
         fprintf(stderr,
                 "tcp-shift-cubic-trace: event=prr-ack episode=%llu "
@@ -1068,7 +1076,8 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 "raw_outstanding_bytes=%u recover_fs=%u ssthresh=%u "
                 "safe_ack=%u mode=%s sndcnt=%u cwnd=%u "
                 "prr_delivered=%llu prr_out=%llu srtt_ns=%llu "
-                "pacing_Bps=%llu\n",
+                "pacing_Bps=%llu snd_buf=%u snd_queuelen=%u "
+                "unsent_bytes=%llu unsent_segments=%u\n",
                 (unsigned long long)episode,
                 (unsigned long long)now_ns, delivered_data, inflight,
                 raw_outstanding, adapter->prr.recover_fs,
@@ -1077,7 +1086,9 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 (unsigned long long)adapter->prr.prr_delivered,
                 (unsigned long long)adapter->prr.prr_out,
                 (unsigned long long)adapter->srtt.smoothed_rtt_ns,
-                (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+                (unsigned long long)adapter->pacing_rate_bytes_per_sec,
+                (unsigned)pcb->snd_buf, (unsigned)pcb->snd_queuelen,
+                (unsigned long long)unsent_bytes, unsent_segments);
     }
 #endif
     pcb->cwnd = (tcpwnd_size_t)result.cwnd;
