@@ -83,16 +83,53 @@ single recovery flight, two deterministic losses, Reno:
 
 PRR is a standards/recovery-correctness change, not a performance shortcut. On the deterministic 28-drop CUBIC differential path, PRR does not close the remaining Linux CUBIC goodput gap and may be slightly slower than the former NewReno-window recovery. The next performance work should therefore compare PRR/RACK recovery timing, inflight evolution, and pacing-rate publication against Linux rather than tuning RFC 9937 away from its specified behavior.
 
-## Next recovery/performance investigation
+## 2026-09-30 post-PRR recovery checkpoint
 
-Keep RFC 9937 behavior fixed and localize the remaining CUBIC differential gap. The next focused evidence should compare, per recovery episode, tcp-shift and Linux:
+PRs #83-#88 close the first RFC 9937 integration/debug cycle:
 
-- RACK loss/repair timing and the number of repairs released per ACK;
-- DeliveredData, inflight, ssthresh, PRR mode (proportional/CRB/SSRB), and SndCnt;
-- pacing-rate evolution after the congestion response;
-- recovery duration and post-recovery cwnd growth.
+- #83 added the independently tested RFC 9937 PRR core without changing live recovery.
+- #84 wired PRR into RACK+SACK Reno/CUBIC recovery, kept RFC 6582 NewReno as non-RACK fallback, kept internal BBR controller-owned recovery, and qualified 28-drop plus live SafeACK/SSRB behavior.
+- #85 traced post-PRR CUBIC recovery against Linux and showed the remaining gap was not explained by CUBIC beta, RFC 5681 FlightSize, or a simple pacing-rate formula error.
+- #86 proved that PRR was producing useful SndCnt and that the intended sequence-space window mapping admitted queued data; the apparent missing sends were not caused by the userspace pacer itself.
+- #87 found the integration defect: production and qualification pacing wrappers replaced `hook.ops` without forwarding the base adapter's PRR-aware `effective_cwnd`. Native `tcp_output()` therefore fell back to plain `pcb->cwnd`, suppressing most PRR new-data credit. Both wrappers now forward `effective_cwnd`, and CI fails closed if that forwarding disappears.
+- #88 quantified the remaining first-loss CUBIC cwnd delta without changing behavior. tcp-shift first-loss pre-cwnd is `116800 B`; Linux's last pre-retransmission sample is `128480 B`; tcp-shift has `4380 B` SACK-delivered ahead of SND.UNA. Hypothetically adding that Linux-style SACK credit still leaves about `7300 B` unexplained.
 
-Any follow-up behavior change must identify whether the mismatch belongs to RFC 8985 RACK evidence/repair scheduling, RFC 9937 PRR inputs, RFC 9438 CUBIC policy, or Linux-derived pacing mechanics. Do not weaken PRR or RACK qualification thresholds merely to improve the benchmark.
+Latest same-path #88 hosted-runner evidence:
+
+```text
+RTT=260 ms, rate=10 Mbit/s, payload=4 MiB, 28 deterministic first-send drops
+
+tcp-shift BBR / Linux BBR:   5.285094 / 5.492110 Mbit/s = 0.962307
+tcp-shift CUBIC / Linux:     0.548827 / 0.741245 Mbit/s = 0.740412
+
+CUBIC:
+- loss_events=28
+- recovery_exits=28
+- timeout_events=0
+- first pre-cwnd=116800 B
+- first FlightSize=116800 B
+- first post-cwnd=81760 B
+- first SACK-ahead bytes=4380 B
+- hypothetical RFC-cwnd + SACK-ahead=121180 B
+- Linux pre-first-retrans cwnd=128480 B
+- residual first-cwnd gap after SACK-ahead=7300 B
+
+PRR:
+- episodes=28
+- ACK decisions=469
+- PRR TX events=335
+- median inflight=18980 B
+- median SndCnt=1605 B
+- pacer deferrals/resumes=143/143
+```
+
+Interpretation rules for the next work:
+
+1. Keep RFC 9937 PRR and RFC 8985 RACK semantics fixed unless a standards error is proven.
+2. Keep RFC 9438 cumulative-ACK semantics for CUBIC growth. Linux `tcp_newly_delivered()` counting newly ACKed or SACKed packets is an implementation differential, not authority to feed pure SACK credit into tcp-shift CUBIC.
+3. The remaining first-loss gap predates recovery, so PRR cannot explain all of it. Investigate pre-loss ACK/cwnd evolution, HyStart++/slow-start exit timing, ACK aggregation and Linux implementation details before changing recovery.
+4. Do not tune BBR gains, CUBIC beta, FlightSize, or CI thresholds to hide the remaining differential.
+5. RACK-TLP, PRR integration, and ECN remain experimental/default-OFF pending provider/OpenVZ qualification and an explicit exposure decision.
 
 ## Pinned lwIP and controlled patch
 
@@ -235,7 +272,7 @@ idle CPU:                 0 ticks/s
 
 This is process-PSS qualification only; backend kernel/application/provider memory is excluded.
 
-## Active next milestone: RFC 3168 ECN transport and RFC 9438 CUBIC ECN response
+## Completed transport milestones: RACK, ECN, and PRR
 
 The RFC 8985 recovery replacement is now closed on main for the current experimental scope:
 
