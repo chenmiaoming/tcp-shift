@@ -152,7 +152,7 @@ credit_with_zero_sndbuf = 0
 episodes = defaultdict(list)
 
 for event in acks:
-    for required in ("snd_buf", "snd_queuelen", "unsent_bytes", "unsent_segments"):
+    for required in ("mss", "snd_buf", "snd_queuelen", "unsent_bytes", "unsent_segments"):
         if required not in event:
             raise SystemExit(f"PRR ACK trace missing {required}: {event}")
     episode = int(event["episode"])
@@ -171,7 +171,7 @@ for event in acks:
     snd_buf.append(snd_buf_now)
     unsent_bytes.append(unsent_now)
     unsent_segments.append(unsent_segments_now)
-    if int(event["sndcnt"]) >= int(event.get("smss", "1460") or "1460"):
+    if int(event["sndcnt"]) >= int(event["mss"]):
         if unsent_now >= MSS:
             credit_with_unsent += 1
         else:
