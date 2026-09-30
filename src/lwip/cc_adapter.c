@@ -550,7 +550,8 @@ static int tcp_shift_lwip_cc_on_segment_send_eligible(void *arg,
         }
         adapter->pacing_scheduled = 1U;
     }
-#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION) && \
+    defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     if (adapter->prr.active != 0U &&
         adapter->controller.ops != NULL &&
         adapter->controller.ops->name != NULL &&
