@@ -20,6 +20,7 @@ This document defines the reference hierarchy for protocol and congestion-contro
 | Initial window | RFC 6928 section 2 | RFC 6928 IW formula is the default transport policy; legacy pinned-lwIP formula remains an explicit rollback profile |
 | Reno congestion control | RFC 5681 plus RFC 3465 behavior where byte-counting rules apply | conventional Reno-compatible loss-based controller; provenance should remain explicit as code evolves |
 | NewReno partial-ACK recovery | RFC 6582 | transport-owned RFC 6582-style continuation across partial ACKs; do not claim broader SACK/RACK recovery conformance from this alone |
+| Proportional Rate Reduction (PRR) | RFC 9937 (obsoletes RFC 6937) | project-owned RFC 9937 algorithm core and deterministic contract are present; live RACK/Reno/CUBIC transport integration is not yet wired, so do not claim PRR recovery conformance yet |
 | CC-side SRTT observation | RFC 6298-style estimator with Karn filtering | only the SRTT observation subset is project-owned; the transport RTO implementation remains lwIP-owned |
 | Window scaling | RFC 7323 via upstream lwIP | enabled and live-qualified; tcp-shift currently advertises receive scale 0 while retaining 32-bit sender-side accounting |
 | CUBIC | RFC 9438 | core CUBIC algorithm aligned with RFC 9438; the experimental ECN path has an explicit congestion-event API, beta reduction down to 1 SMSS, and the RFC 3168 retransmit-timer gate when a fresh ECE arrives at 1 SMSS. Hosted-runner qualification covers both the end-to-end single-CE wire sequence and repeated independent CE episodes through the 1-SMSS timer gate with zero synthetic loss/RTO events. Provider/OpenVZ evidence and any default/public exposure remain separate. Linux CUBIC remains a differential reference |
@@ -40,6 +41,7 @@ Normative/reference links:
 - RFC 5681: https://www.rfc-editor.org/rfc/rfc5681.html
 - RFC 3465: https://www.rfc-editor.org/rfc/rfc3465.html
 - RFC 6582: https://www.rfc-editor.org/rfc/rfc6582.html
+- RFC 9937: https://www.rfc-editor.org/rfc/rfc9937.html
 - RFC 6298: https://www.rfc-editor.org/rfc/rfc6298.html
 - RFC 6928: https://www.rfc-editor.org/rfc/rfc6928.html
 - RFC 7323: https://www.rfc-editor.org/rfc/rfc7323.html
@@ -62,6 +64,7 @@ Good examples:
 - "RFC 9438 core-algorithm aligned with RFC 9406 HyStart++."
 - "RFC 3168 ECN transport substrate experimental/default-OFF; hosted-runner single-CE and persistent-CE/1-SMSS timer-gate paths qualified; provider/OpenVZ exposure qualification pending."
 - "RFC 6582-style NewReno partial-ACK recovery."
+- "RFC 9937 PRR core model contract implemented; live transport integration pending."
 - "RFC 6298-style SRTT observation; RTO remains transport-owned."
 - "RFC 8985 RACK-TLP experimental/default-OFF; current qualified subset documented separately."
 - "BBRv1-style compact controller qualified against Linux BBR references."

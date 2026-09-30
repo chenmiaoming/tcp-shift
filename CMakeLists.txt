@@ -186,6 +186,12 @@ add_library(tcp_shift_rack_tlp STATIC
 target_include_directories(tcp_shift_rack_tlp PUBLIC "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_rack_tlp PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+add_library(tcp_shift_prr STATIC
+    src/lwip/prr.c
+)
+target_include_directories(tcp_shift_prr PUBLIC "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp_shift_prr PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 add_library(tcp_shift_lwip_cc_adapter STATIC
     src/lwip/cc_adapter.c
     src/lwip/cc_selector.c
@@ -568,6 +574,15 @@ target_compile_options(tcp-shift-rack-tlp-contract PRIVATE
     -Wall -Wextra -Wpedantic -Werror
 )
 target_link_libraries(tcp-shift-rack-tlp-contract PRIVATE tcp_shift_rack_tlp)
+
+add_executable(tcp-shift-prr-contract
+    src/tests/prr_test.c
+)
+target_include_directories(tcp-shift-prr-contract PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_compile_options(tcp-shift-prr-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-prr-contract PRIVATE tcp_shift_prr)
 
 add_executable(tcp-shift-rack-resource-size-contract
     src/tests/rack_resource_size_test.c

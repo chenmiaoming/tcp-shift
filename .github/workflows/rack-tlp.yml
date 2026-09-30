@@ -7,6 +7,9 @@ on:
     paths:
       - 'CMakeLists.txt'
       - 'src/lwip/rack_tlp.c'
+      - 'src/lwip/prr.c'
+      - 'src/lwip/prr.h'
+      - 'src/tests/prr_test.c'
       - 'src/lwip/rack_tlp.h'
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_adapter.h'
@@ -141,6 +144,7 @@ jobs:
         run: |
           cmake --build .build-rack --target \
             tcp-shift-rack-tlp-contract \
+            tcp-shift-prr-contract \
             tcp-shift-rack-tlp-adapter-contract \
             tcp-shift-rack-tlp-loop-lifecycle-contract \
             tcp-shift-p2 \
@@ -149,6 +153,9 @@ jobs:
 
       - name: Run RFC 8985 core contract
         run: .build-rack/tcp-shift-rack-tlp-contract
+
+      - name: Run RFC 9937 PRR core contract
+        run: .build-rack/tcp-shift-prr-contract
 
       - name: Run live adapter RACK contract
         run: .build-rack/tcp-shift-rack-tlp-adapter-contract
