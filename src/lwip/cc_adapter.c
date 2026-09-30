@@ -2465,7 +2465,6 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     if (adapter->controller.ops != NULL &&
         adapter->controller.ops->name != NULL &&
         strncmp(adapter->controller.ops->name, "cubic", 5U) == 0 &&
-        (adapter->stats == NULL || adapter->stats->loss_events == 0U) &&
         adapter->controller.state != NULL) {
         /* The production pacing wrapper temporarily points
          * controller.state at the adapter while it delegates the actual CUBIC
@@ -2476,20 +2475,33 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
             &adapter->controller_state.cubic;
         uint64_t event_index =
             adapter->stats != NULL ? adapter->stats->ack_events + 1U : 0U;
+        uint64_t episode =
+            adapter->stats != NULL ? adapter->stats->loss_events : 0U;
         uint32_t sacked_ahead_bytes = 0U;
+        unsigned recovery_active =
+            tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+        unsigned prr_active = 0U;
+        const char *trace_event =
+            episode == 0U ? "preloss-ack" : "postloss-ack";
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         sacked_ahead_bytes =
             tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
+        prr_active = adapter->prr.active;
 #endif
         fprintf(stderr,
-                "tcp-shift-cubic-trace: event=preloss-ack index=%llu "
+                "tcp-shift-cubic-trace: event=%s index=%llu episode=%llu "
                 "time_ns=%llu lastack=%u snd_nxt=%u mss=%u "
                 "acked_bytes=%u rate_delivered_bytes=%u "
                 "rate_delivered_total_bytes=%llu sacked_ahead_bytes=%u "
                 "inflight_bytes=%u pre_cwnd=%u post_cwnd=%u "
                 "pre_ssthresh=%u post_ssthresh=%u "
                 "srtt_ns=%llu sample_rtt_ns=%llu rate_flags=%u "
+                "recovery_active=%u prr_active=%u pacing_Bps=%llu "
+                "cwnd_q16=%llu w_max_q16=%llu w_est_q16=%llu "
+                "cwnd_prior_q16=%llu cwnd_epoch_q16=%llu "
+                "k_q10=%llu epoch_start_ns=%llu last_target_q16=%llu "
+                "epoch_active=%u app_limited_paused=%u "
                 "hystart_next_round_delivered=%llu "
                 "hystart_last_round_min_rtt_ns=%llu "
                 "hystart_current_round_min_rtt_ns=%llu "
@@ -2498,7 +2510,9 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 "hystart_exit_pending=%u hystart_initial_complete=%u "
                 "hystart_css_enters=%u hystart_css_reverts=%u "
                 "hystart_exits=%u\n",
+                trace_event,
                 (unsigned long long)event_index,
+                (unsigned long long)episode,
                 (unsigned long long)ack.ack_time_ns,
                 pcb->lastack, pcb->snd_nxt, pcb->mss,
                 ack.acked_bytes, ack.rate.delivered_bytes,
@@ -2508,6 +2522,17 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 trace_pre_ssthresh, policy.ssthresh_bytes,
                 (unsigned long long)ack.smoothed_rtt_ns,
                 (unsigned long long)ack.rate.rtt_ns, ack.rate.flags,
+                recovery_active, prr_active,
+                (unsigned long long)adapter->pacing_rate_bytes_per_sec,
+                (unsigned long long)model->cwnd_q16,
+                (unsigned long long)model->w_max_q16,
+                (unsigned long long)model->w_est_q16,
+                (unsigned long long)model->cwnd_prior_q16,
+                (unsigned long long)model->cwnd_epoch_q16,
+                (unsigned long long)model->k_q10,
+                (unsigned long long)model->epoch_start_ns,
+                (unsigned long long)model->last_target_q16,
+                model->epoch_active, model->app_limited_paused,
                 (unsigned long long)model->hystart_next_round_delivered,
                 (unsigned long long)model->hystart_last_round_min_rtt_ns,
                 (unsigned long long)model->hystart_current_round_min_rtt_ns,
