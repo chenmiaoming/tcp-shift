@@ -187,6 +187,11 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             "rack_dsack_events=%llu rack_reordering_events=%llu "
             "rack_reo_wnd_mult=%u rack_reo_wnd_mult_max=%u "
             "rack_reo_wnd_persist=%u "
+            "prr_recovery_enters=%llu prr_recovery_exits=%llu "
+            "prr_ack_events=%llu prr_safe_ack_events=%llu "
+            "prr_tx_events=%llu prr_tx_bytes=%llu prr_send_blocks=%llu "
+            "prr_last_recover_fs_bytes=%u prr_last_inflight_bytes=%u "
+            "prr_last_sndcnt_bytes=%u "
             "delivered_payload_bytes=%llu metadata_alloc_failures=%llu "
             "metadata_misses=%llu metadata_abandoned_slots=%llu "
             "clock_errors=%llu timestamp_regressions=%llu "
@@ -205,6 +210,16 @@ static void print_delivery_stats(const struct tcp_shift_lwip_cc_stats *stats)
             stats->rack_reo_wnd_mult,
             stats->rack_reo_wnd_mult_max,
             stats->rack_reo_wnd_persist,
+            (unsigned long long)stats->prr_recovery_enters,
+            (unsigned long long)stats->prr_recovery_exits,
+            (unsigned long long)stats->prr_ack_events,
+            (unsigned long long)stats->prr_safe_ack_events,
+            (unsigned long long)stats->prr_tx_events,
+            (unsigned long long)stats->prr_tx_bytes,
+            (unsigned long long)stats->prr_send_blocks,
+            stats->prr_last_recover_fs_bytes,
+            stats->prr_last_inflight_bytes,
+            stats->prr_last_sndcnt_bytes,
             (unsigned long long)stats->delivery_payload_bytes,
             (unsigned long long)stats->delivery_metadata_alloc_failures,
             (unsigned long long)stats->delivery_metadata_misses,
