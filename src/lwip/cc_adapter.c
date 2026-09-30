@@ -2713,6 +2713,7 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
 {
     uint64_t now_ns;
     uint64_t event_index;
+    uint32_t sacked_ahead_bytes = 0U;
 
     if (!tcp_shift_lwip_cc_cubic_trace_active(adapter) || pcb == NULL ||
         transport == NULL || policy == NULL) {
@@ -2720,17 +2721,23 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
     }
     now_ns = tcp_shift_delivery_now_ns(adapter);
     event_index = adapter->stats != NULL ? adapter->stats->loss_events + 1U : 0U;
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    sacked_ahead_bytes =
+        tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
+#endif
     fprintf(stderr,
             "tcp-shift-cubic-trace: event=loss index=%llu time_ns=%llu "
             "recovery_active_before=%u lastack=%u snd_nxt=%u "
             "recovery_end_seq=%u mss=%u inflight_bytes=%u "
+            "sacked_ahead_bytes=%u "
             "pre_cwnd=%u post_cwnd=%u pre_ssthresh=%u post_ssthresh=%u "
             "pre_pacing_Bps=%llu post_pacing_Bps=%llu\n",
             (unsigned long long)event_index,
             (unsigned long long)now_ns,
             tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook),
             pcb->lastack, pcb->snd_nxt, pcb->snd_nxt, pcb->mss,
-            transport->inflight_bytes, pre_cwnd, policy->cwnd_bytes,
+            transport->inflight_bytes, sacked_ahead_bytes,
+            pre_cwnd, policy->cwnd_bytes,
             pre_ssthresh, policy->ssthresh_bytes,
             (unsigned long long)pre_pacing,
             (unsigned long long)policy->pacing_rate_bytes_per_sec);

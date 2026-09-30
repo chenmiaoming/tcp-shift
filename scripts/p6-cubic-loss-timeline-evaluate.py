@@ -152,8 +152,14 @@ first_linux_transition = linux_transitions[0][1]
 first_ts_pre_cwnd = int(first_loss["pre_cwnd"])
 first_ts_flight = int(first_loss["inflight_bytes"])
 first_ts_post_cwnd = int(first_loss["post_cwnd"])
+if "sacked_ahead_bytes" not in first_loss:
+    raise SystemExit(f"tcp-shift first loss missing SACK-ahead evidence: {first_loss}")
+first_ts_sacked_ahead = int(first_loss["sacked_ahead_bytes"])
 first_linux_pre_cwnd = int(linux_pre_first["snd_cwnd"]) * 1460
 first_linux_post_ssthresh = int(first_linux_transition["snd_ssthresh"]) * 1460
+first_cwnd_gap = first_linux_pre_cwnd - first_ts_pre_cwnd
+first_rfc_plus_sack_cwnd = first_ts_pre_cwnd + first_ts_sacked_ahead
+first_gap_minus_sack = first_cwnd_gap - first_ts_sacked_ahead
 
 print(
     "p6_cubic_loss_timeline=ok "
@@ -176,8 +182,12 @@ print(
     f"linux_event_pacing_median_Bps={int(median(linux_event_pacing))} "
     f"tcp_shift_first_pre_cwnd_bytes={first_ts_pre_cwnd} "
     f"tcp_shift_first_flight_bytes={first_ts_flight} "
+    f"tcp_shift_first_sacked_ahead_bytes={first_ts_sacked_ahead} "
+    f"tcp_shift_first_rfc_plus_sack_cwnd_bytes={first_rfc_plus_sack_cwnd} "
     f"tcp_shift_first_post_cwnd_bytes={first_ts_post_cwnd} "
     f"linux_pre_first_retrans_cwnd_bytes={first_linux_pre_cwnd} "
+    f"linux_minus_tcp_shift_first_cwnd_bytes={first_cwnd_gap} "
+    f"first_cwnd_gap_minus_sack_bytes={first_gap_minus_sack} "
     f"linux_first_retrans_ssthresh_bytes={first_linux_post_ssthresh}"
 )
 print("tcp_shift_summary=" + ts_text)
