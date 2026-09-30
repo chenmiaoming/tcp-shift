@@ -57,7 +57,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
                if (pcb->dupacks > 3) {
                  /* Inflate the congestion window */
 -                TCP_WND_INC(pcb->cwnd, pcb->mss);
-+                if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++                if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
++                    !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +                  TCP_WND_INC(pcb->cwnd, pcb->mss);
 +                }
                }
@@ -180,7 +181,8 @@ diff --git a/src/core/tcp_in.c b/src/core/tcp_in.c
 +      pcb->dupacks = recovery_partial ? 3U : 0U;
 +      pcb->lastack = ackno;
 +
-+      if (recovery_partial && recovery_native_window) {
++      if (recovery_partial && recovery_native_window &&
++          !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +        /* RFC 6582 section 3: deflate by newly acknowledged data and add one
 +           SMSS back when the partial ACK covers at least one full segment.
 +           Keep at least one SMSS so the retransmission can make progress. */
@@ -330,7 +332,8 @@ diff --git a/src/core/tcp_out.c b/src/core/tcp_out.c
 +      /* Reno/CUBIC retain native fast-recovery inflation. A controller that
 +       * explicitly owns recovery cwnd (internal BBR) keeps its published
 +       * packet-conservation window instead. */
-+      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb)) {
++      if (!tcp_shift_lwip_cc_hook_recovery_controller_owned(pcb) &&
++                    !tcp_shift_lwip_cc_hook_prr_active(pcb)) {
 +        pcb->cwnd = pcb->ssthresh + 3 * pcb->mss;
 +      }
        tcp_set_flags(pcb, TF_INFR);
