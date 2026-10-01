@@ -781,6 +781,7 @@ target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_m
 
 add_executable(tcp-shift-bbr-exposure-selector-contract
     src/tests/bbr_exposure_selector_test.c
+    src/platform.c
 )
 target_include_directories(tcp-shift-bbr-exposure-selector-contract PRIVATE
     ${LWIP_INCLUDE_DIRS}
