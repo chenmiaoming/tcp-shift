@@ -129,6 +129,51 @@ Interpretation rules for the next work:
 4. Do not tune BBR gains, CUBIC beta, FlightSize, or CI thresholds to hide the remaining differential.
 5. RACK-TLP, PRR integration, and ECN remain experimental/default-OFF pending provider/OpenVZ qualification and an explicit exposure decision.
 
+## 2026-10-01 CUBIC/RACK/PRR closeout
+
+PRs #94-#101 complete the post-#92 differential investigation and change the handoff rule: do not keep reopening RFC 9937 recovery or RFC 9438 CUBIC arithmetic merely because Linux CUBIC is faster on the deterministic loss benchmark.
+
+The retained evidence is:
+
+- #94 localized the residual gap after the first loss and ruled out another app-limited cwnd freeze.
+- #95 independently recomputed 1771 post-loss CUBIC ACK updates and found zero W_est/K/epoch/target/cwnd/fast-convergence mismatches; a separate audit reproduced every RFC 9438 FlightSize-based multiplicative decrease.
+- #96 showed the RFC 9438 section 4.7 single-flow/no-cross-traffic profile benefits materially from disabling fast convergence on the controlled one-flow benchmark.
+- #97 showed that globally disabling fast convergence is not justified: on four CUBIC flows sharing one bottleneck it slightly reduced aggregate goodput and did not improve fairness. Production therefore keeps fast convergence enabled by default.
+- #98 retained a residual single-flow Linux differential after the no-fast profile and localized the next candidate to recovery integration rather than CUBIC fixed-point math.
+- #99 proved tcp-shift leaves generic pacing static during PRR while Linux refreshes it, and that Linux generic pacing uses a packets_out-like outstanding basis.
+- #100 A/B-tested both recovery pacing refresh bases. The SACK-aware refresh changed goodput by about 0.01%; the raw-outstanding/packets_out-shaped refresh by about 0.3%. Neither is a material explanation and neither should be promoted to production for parity.
+- #101 compared actual RFC 9937 recovery bytes. In steady episodes 9-28, tcp-shift's PRR-exit inflight is within one MSS of ssthresh in all 20 episodes (median shortfall 730 B, maximum 1313 B at MSS 1460). The lower recovery send volume follows primarily from a lower congestion-control target, not from unused PRR SndCnt credit.
+
+Current same-path #101 qualification:
+
+```text
+RTT=260 ms, rate=10 Mbit/s, payload=4 MiB, 28 deterministic first-send drops
+
+default CUBIC goodput:        0.558634 Mbit/s
+single-flow no-fast profile: 0.620693 Mbit/s
+Linux CUBIC:                 0.739464 Mbit/s
+
+no-fast steady PRR:
+RecoverFS median:            18980 B
+PRRDelivered median:         17520 B
+PRROut / exit inflight:      13140 B
+ssthresh median:             14307 B
+target shortfall median/max: 730 / 1313 B
+within one MSS:              20 / 20 episodes
+fault drops/retransmissions: 28 / 28
+RTO / unrelated qdisc drops: 0 / 0
+payload integrity:           exact
+```
+
+Interpretation rules going forward:
+
+1. Keep RFC 9438 cumulative-new-ACK growth semantics; do not feed pure SACK delivery into Reno/CUBIC cwnd growth.
+2. Keep RFC 9438 FlightSize-based multiplicative decrease. Linux cwnd-based reduction is differential evidence, not the tcp-shift normative rule.
+3. Keep RFC 9937 PRR formulas/SafeACK/SndCnt fixed unless a standards error is demonstrated by a targeted contract. The 28-drop workload's zero SafeACK/SSRB events are not by themselves a bug; the dedicated two-loss SafeACK/SSRB qualification remains the relevant positive gate.
+4. Do not change recovery pacing cadence/basis for Linux parity; #100 demonstrated negligible benefit.
+5. Treat the remaining Linux CUBIC throughput gap as an implementation differential, not an open correctness defect.
+6. Return performance-development effort to compact internal BBR and provider/OpenVZ qualification rather than tuning standards-defined CUBIC/RACK/PRR behavior.
+
 ## Pinned lwIP and controlled patch
 
 Production lwIP pin:
