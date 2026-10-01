@@ -30,7 +30,7 @@ Historical milestone documents explain design evolution; they do not override `A
 
 ## RFC 9937 PRR recovery — integrated
 
-RFC 9937 Proportional Rate Reduction (PRR) is now the recovery-rate mechanism for the experimental RACK+SACK path when Reno or CUBIC owns congestion policy.
+RFC 9937 Proportional Rate Reduction (PRR) is the recovery-rate mechanism for the default RACK+SACK path when Reno or CUBIC owns congestion policy.
 
 Ownership is intentionally split:
 
@@ -127,7 +127,7 @@ Interpretation rules for the next work:
 2. The pre-first-loss 10-SMSS divergence is closed. Do not reintroduce Linux-style pure SACK cwnd credit to solve a problem that was caused by app-limited slow-start handling.
 3. Investigate the remaining differential after the first loss: PRR recovery timing, inflight/window headroom, pacing publication, recovery exit, and subsequent CUBIC CA epochs versus Linux.
 4. Do not tune BBR gains, CUBIC beta, FlightSize, or CI thresholds to hide the remaining differential.
-5. RACK-TLP, PRR integration, and ECN remain experimental/default-OFF pending provider/OpenVZ qualification and an explicit exposure decision.
+5. Sender SACK evidence and RFC 8985 RACK-TLP are now default-ON; RFC 9937 PRR is the default Reno/CUBIC recovery-rate mechanism on that path. RFC 3168 ECN remains default-OFF.
 
 ## 2026-10-01 CUBIC/RACK/PRR closeout
 
@@ -174,6 +174,40 @@ Interpretation rules going forward:
 5. Treat the remaining Linux CUBIC throughput gap as an implementation differential, not an open correctness defect.
 6. Return performance-development effort to compact internal BBR and provider/OpenVZ qualification rather than tuning standards-defined CUBIC/RACK/PRR behavior.
 
+## 2026-10-01 BBR default-build availability checkpoint
+
+PRs #103-#104 move compact BBR from qualification-only exposure into the normal IPv4 production build without changing the implicit controller choice.
+
+Current product boundary:
+
+- the default CMake/Make profile enables sender SACK evidence and RFC 8985 RACK-TLP;
+- ordinary IPv4 `tcp-shift-p2 ... bbr` is supported without an extra exposure flag;
+- omitting `[cc]` still selects Reno; `cubic` and `bbr` are explicit alternatives;
+- compact BBR remains adapter-bound rather than registered in the pure-C controller registry;
+- BBR keeps controller-owned recovery and RFC 9937 PRR counters remain zero;
+- RFC 3168 ECN remains default-OFF; an ECN-enabled build stays usable for Reno/CUBIC but fails closed if `bbr` is selected because compact BBR has no ECN congestion response;
+- IPv6 controller-selection parity is not complete yet; provider/OpenVZ field qualification remains separate from hosted-runner qualification.
+
+#104 completed with 50/50 GitHub checks green. The default-build deterministic BBR path preserves the established loss contract: 28 injected first-send drops, 28 retransmissions, zero RTO fallback, zero unrelated qdisc drops, and exact payload integrity.
+
+Promoting RACK/SACK into the default profile changes the retained P3 process-memory envelope, so #104 reran the resource gates instead of silently keeping the old P5c baseline:
+
+```text
+warm fixed process PSS:             507 KiB
+conservative idle slope:            1.148438 KiB/flow
+fully-window-resident slope:       44.773438 KiB/flow
+128-active projected PSS:        6238 KiB
+8-MiB process budget remaining:   1954 KiB = 15.266 KiB/flow
+3x128 first->last drain growth:      5 KiB
+maximum warm drain floor:          149 KiB
+warm-floor gate:                   160 KiB
+idle CPU:                            0 ticks/s
+```
+
+The 160-KiB absolute warm-floor gate is not a leak/ratchet relaxation. The independent RACK OFF/ON resource A/B on the same implementation reports 184 bytes static state per flow, +24 KiB post-drain process PSS in the RACK build, and zero idle recovery-timer wakeups. The separate first-to-last drain ratchet gate remains 32 KiB; #104 measured only 5 KiB.
+
+Next work should focus on IPv6 controller-selection parity, provider/OpenVZ BBR qualification, and BBR-specific behavior gaps. Do not reopen RFC-first CUBIC/RACK/PRR semantics merely to chase Linux CUBIC throughput parity.
+
 ## Pinned lwIP and controlled patch
 
 Production lwIP pin:
@@ -184,7 +218,7 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 The repository-owned integration is a controlled two-patch chain: `patches/lwip-p4-cc-hooks.patch` followed by `patches/lwip-sack-recovery.patch`. `scripts/fetch-lwip.sh` records pristine critical-source hashes before applying either patch. Provenance CI independently proves the modified `tcp.c`, `tcp_in.c`, and `tcp_out.c` are exactly the chained patch result for the pin.
 
-The SACK/RACK patch remains an experimental transport increment, with evidence and recovery policy kept separate. `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE` enables the SACK negotiation/scoreboard/delivery substrate needed by RACK; `TCP_SHIFT_EXPERIMENTAL_RACK_TLP` is the only project-owned selective-retransmission policy. The old fixed-count selector and `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` compatibility alias have been removed and their old CMake flags fail closed. RACK builds must enable SACK evidence. The experimental RACK path must not silently become part of production/default builds. Both patches stay within the existing three-file upstream boundary; any new upstream file still requires an architectural reason, bounded surface, provenance coverage, and regression evidence.
+The SACK/RACK patch is now part of the default production profile. `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE` and `TCP_SHIFT_EXPERIMENTAL_RACK_TLP` retain their historical option names as explicit build controls, but both default ON. The old fixed-count selector and `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` compatibility alias have been removed and their old CMake flags fail closed. RACK still requires SACK evidence. Both patches stay within the existing three-file upstream boundary; any new upstream file still requires an architectural reason, bounded surface, provenance coverage, and regression evidence.
 
 ## Current architecture
 
@@ -342,7 +376,7 @@ RACK-TLP:
 - TLP probe opportunity -> ordinary RTO restart semantics qualified
 ```
 
-RACK-TLP stays experimental/default-OFF pending provider/OpenVZ evidence and a separate exposure decision. Recovery work should not be reopened to compensate for congestion-controller performance.
+RACK-TLP and sender SACK evidence are default-ON after #104. Provider/OpenVZ evidence remains a deployment qualification task; recovery work should not be reopened to compensate for congestion-controller performance.
 
 The next standards milestone is ECN, split by ownership rather than folded into CUBIC:
 
