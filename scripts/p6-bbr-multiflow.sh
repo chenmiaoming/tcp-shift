@@ -485,14 +485,15 @@ pacing_tx_bytes=$(printf '%s\n' "$pacing" | sed -n 's/.* tx_bytes=\([0-9][0-9]*\
 loop_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* loop_callback_errors=\([0-9][0-9]*\).*/\1/p')
 heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*\).*/\1/p')
 heap_peak=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_peak=\([0-9][0-9]*\).*/\1/p')
+expected_pacing_tx_bytes=$((TOTAL_WIRE_BYTES + expected_faults * 1460))
 [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge "$FLOWS" ] &&
 [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge "$FLOWS" ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
-[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$TOTAL_WIRE_BYTES" ] &&
+[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$expected_pacing_tx_bytes" ] &&
 [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
 [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] &&
 [ -n "$heap_peak" ] && [ "$heap_peak" -ge 2 ] || {
-    echo "invalid BBR multi-flow shared-pacer telemetry" >&2
+    echo "invalid multi-flow shared-pacer telemetry: tx=${pacing_tx_bytes:-missing} expected_tx=$expected_pacing_tx_bytes deferrals=${pacing_deferrals:-missing} resumes=${pacing_resumes:-missing}" >&2
     exit 1
 }
 
