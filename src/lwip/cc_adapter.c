@@ -21,6 +21,11 @@
 #define TCP_SHIFT_PACING_INITIAL_REGISTRY 32U
 #define TCP_SHIFT_NSEC_PER_SEC UINT64_C(1000000000)
 
+#if defined(TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_ACTUAL_QUALIFICATION) && \
+    defined(TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_RAW_QUALIFICATION)
+#error "select exactly one CUBIC PRR pacing refresh qualification basis"
+#endif
+
 struct tcp_shift_lwip_cc_listener_binding {
     struct tcp_pcb *listener;
     tcp_accept_fn accept;
@@ -1295,6 +1300,60 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 next_unsent_seq, next_unsent_len, next_unsent_extent,
                 window_allows, next_is_retrans,
                 (unsigned long long)unsent_bytes, unsent_segments);
+    }
+#endif
+#if defined(TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_ACTUAL_QUALIFICATION) || \
+    defined(TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_RAW_QUALIFICATION)
+    if (adapter->controller.ops != NULL &&
+        adapter->controller.ops->name != NULL &&
+        strncmp(adapter->controller.ops->name, "cubic", 5U) == 0) {
+        struct tcp_shift_cc_transport refresh_transport;
+        struct tcp_shift_cc_policy refresh_policy;
+        uint32_t raw_outstanding = pcb->snd_nxt - pcb->lastack;
+        uint64_t old_rate = adapter->pacing_rate_bytes_per_sec;
+        uint64_t new_rate;
+        const char *basis;
+
+        refresh_transport.mss_bytes = pcb->mss;
+        refresh_transport.send_window_bytes = pcb->snd_wnd;
+        refresh_transport.cwnd_limit_bytes = tcp_shift_lwip_cc_cwnd_limit();
+#if defined(TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_RAW_QUALIFICATION)
+        refresh_transport.inflight_bytes = raw_outstanding;
+        basis = "raw-outstanding";
+#else
+        refresh_transport.inflight_bytes = inflight;
+        basis = "actual-inflight";
+#endif
+        refresh_policy.cwnd_bytes = result.cwnd;
+        refresh_policy.ssthresh_bytes = adapter->prr.ssthresh;
+        refresh_policy.pacing_rate_bytes_per_sec = 0U;
+        new_rate = tcp_shift_transport_pacing_window_rate(
+            &refresh_transport, &refresh_policy,
+            adapter->srtt.smoothed_rtt_ns);
+        if (new_rate == 0U) {
+            return -1;
+        }
+        adapter->pacing_rate_bytes_per_sec = new_rate;
+        if (adapter->stats != NULL) {
+            adapter->stats->pacing_last_rate_bytes_per_sec = new_rate;
+        }
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+        fprintf(stderr,
+                "tcp-shift-cubic-trace: event=prr-pacing-refresh "
+                "episode=%llu basis=%s old_Bps=%llu new_Bps=%llu "
+                "prr_cwnd=%u ssthresh=%u inflight_bytes=%u "
+                "raw_outstanding_bytes=%u srtt_ns=%llu "
+                "pacing_scheduled=%u next_send_ns=%llu\n",
+                (unsigned long long)(adapter->stats != NULL
+                                         ? adapter->stats->prr_recovery_enters
+                                         : 0U),
+                basis, (unsigned long long)old_rate,
+                (unsigned long long)new_rate, result.cwnd,
+                adapter->prr.ssthresh, inflight, raw_outstanding,
+                (unsigned long long)adapter->srtt.smoothed_rtt_ns,
+                adapter->pacing_scheduled,
+                (unsigned long long)adapter->pacing_next_send_ns);
+#endif
     }
 #endif
     pcb->cwnd = (tcpwnd_size_t)result.cwnd;
