@@ -56,6 +56,17 @@ static void usage(const char *program)
             "<public-port> <backend-port> bbr-internal\n",
             program);
 #else
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    fprintf(stderr,
+            "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
+            "<public-port> <backend-port> [cc]\n"
+            "  cc: reno (default) | cubic | bbr "
+            "(experimental provider qualification)\n"
+            "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
+            "18090 19090 bbr\n",
+            program, program);
+#else
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
             "<public-port> <backend-port> [cc]\n"
@@ -63,6 +74,7 @@ static void usage(const char *program)
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
             "18090 19090 cubic\n",
             program, program);
+#endif
 #endif
 }
 
@@ -484,6 +496,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "congestion controller registry unavailable\n");
         return EXIT_FAILURE;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (strcmp(cc_name, "bbr") == 0) {
+        fprintf(stderr,
+                "tcp-shift-p2: experimental compact BBR exposure enabled; "
+                "provider qualification only\n");
+    }
+#endif
 #endif
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
