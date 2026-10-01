@@ -34,6 +34,24 @@ The public and backend TCP connections are distinct. Public-side congestion cont
 
 The deployment target includes small 32/64/128-MiB systems and IPv6-only low-cost VPSes. Memory, idle CPU, cleanup behavior, forwarding prerequisites, firewall ownership, and wakeup behavior are product properties.
 
+## Operator configuration boundary
+
+The long-lived service interface is `tcp-shift --config FILE`. The versioned
+configuration contains the public listener/backend mapping, public-side
+congestion controller, and optional TUN addressing. The listener literal
+selects IPv4 or IPv6; operators do not choose a family-specific product command.
+
+Version 1 currently admits exactly one `[[forward]]` table because the bridge
+owns one listener. The array-of-tables spelling is reserved for a later
+multi-listener runtime and a second mapping fails closed today. Configuration is
+startup-only; there is no SIGHUP/hot-reload path.
+
+The `tcp-shift` entrypoint validates configuration before mutation and then
+dispatches to the existing qualified p2 runtime for the selected family. Public
+ingress ownership is not decorative configuration: when a public address is
+present, p2 checks the family forwarding prerequisite, installs exact nftables
+DNAT to the lwIP TUN address, and removes the owned table during shutdown.
+
 ## Host and packet-path ownership
 
 The production path is routed L3 TUN, not TAP/Ethernet. The outer Linux stack continues to own physical ARP/NDP. TUN carries complete IPv4/IPv6 packets only.
@@ -227,9 +245,9 @@ Current merged behavior head:
 90e2c973cc5b72dc0a2ae9296b566fee1b7e3291
 ```
 
-The sender-SACK extension remains compile-time experimental and OFF by default. When enabled for qualification, it still lives inside the transport-owned lwIP recovery surface: inbound SACK blocks mark existing outstanding segments, selective requeue remains bounded, and sequence space / queues / retransmission execution / RTO stay in lwIP. PR #45 lets the generic delivery sidecar charge newly SACKed out-of-order payload exactly once so internal BBR sees delivery progress before cumulative ACK repair. PR #49 closes the remaining accounting mismatch between that BBR inflight view and native `tcp_output()`: in the SACK experiment only, the hook supplies an effective cwnd that credits bytes already proven delivered by SACK while preserving the peer `snd_wnd` limit. The initial fast retransmit and later selective holes now use the same three-later-SACK loss proof, preventing the temporary SACK-block ambiguity exposed by the larger flight. Reno/CUBIC native policy and default SACK-OFF builds remain unchanged.
+Sender SACK delivery evidence and RFC 8985 RACK-TLP are default-enabled in the production profile. They remain transport-owned: the scoreboard/timing evidence drives RACK loss detection and selective repair, while sequence space, retransmission execution, PTO/RTO fallback, and queues remain in lwIP. RFC 9937 PRR controls RACK+SACK recovery send credit for Reno/CUBIC; compact BBR deliberately retains controller-owned recovery with PRR disabled.
 
-Production `tcp-shift-p2` still exposes only `reno|cubic`; `bbr` remains an internal qualification controller. The current product boundary is to qualify the experimental BBR + sender-SACK combination on the target provider/OpenVZ class and continue measurement-led work on the remaining deterministic-loss gap. Public `bbr` exposure remains a separate explicit decision after that evidence.
+The config-driven product path and both family-specific p2 runtimes expose `reno|cubic|bbr` in the ordinary default build. Omitting a controller in the legacy p2 interface still selects Reno; the versioned service configuration requires an explicit `cc`. Compact BBR remains adapter-bound rather than registered in the pure-C controller registry. RFC 3168 ECN remains default-OFF, and ECN-enabled builds fail BBR selection closed because compact BBR has no ECN congestion response.
 
 This is GitHub-runner qualification, not provider/OpenVZ qualification. Provider qualification must separately prove TUN, capabilities, nftables/conntrack, forwarding, timing, loss behavior, and memory on the target VPS class.
 

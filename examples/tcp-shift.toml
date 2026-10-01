@@ -1,0 +1,15 @@
+version = 1
+cc = "bbr"
+
+# Optional. If omitted, the kernel chooses an available TUN name.
+# tun_name = "ts0"
+
+# Optional family-specific defaults:
+# IPv4: 198.18.0.1/30 <-> 198.18.0.2
+# IPv6: fd00:198:18::1/126 <-> fd00:198:18::2
+# tun_host_address = "198.18.0.1/30"
+# tun_guest_address = "198.18.0.2"
+
+[[forward]]
+listen = "203.0.113.10:443"
+backend = "127.0.0.1:443"

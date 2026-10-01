@@ -6,6 +6,7 @@
 
 #include "bridge/bridge.h"
 #include "host/ifconfig.h"
+#include "host/nft_ingress.h"
 #include "host/tun.h"
 #include "lwip/cc_adapter.h"
 #include "lwip/init.h"
@@ -14,6 +15,7 @@
 #include "runtime/lwip_loop.h"
 
 #define TCP_SHIFT_P2_MTU 1500U
+#define TCP_SHIFT_P2_NFT_TABLE "tcp_shift_p2"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -61,18 +63,18 @@ static void usage(const char *program)
     !(defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN)
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "<public-port> <backend-port> [cc]\n"
+            "<public-port> <backend-port> [cc [public-ipv4]]\n"
             "  cc: reno (default) | cubic | bbr\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18090 19090 bbr\n",
+            "18090 19090 bbr 203.0.113.10\n",
             program, program);
 #else
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "<public-port> <backend-port> [cc]\n"
+            "<public-port> <backend-port> [cc [public-ipv4]]\n"
             "  cc: reno (default) | cubic\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18090 19090 cubic\n",
+            "18090 19090 cubic 203.0.113.10\n",
             program, program);
 #endif
 #endif
@@ -446,23 +448,32 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_bridge bridge;
+    struct tcp_shift_nft_ingress ingress;
     const struct tcp_shift_lwip_cc_stats *cc_stats;
     const char *cc_name;
+    const char *public_ipv4 = NULL;
     ip4_addr_t address;
     ip4_addr_t netmask;
     ip4_addr_t gateway;
+#ifndef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    ip4_addr_t public_address;
+#endif
     uint16_t public_port;
     uint16_t backend_port;
     int l3_attached = 0;
     int loop_started = 0;
     int pacer_configured = 0;
     int bridge_started = 0;
+    int forwarding;
     int status = EXIT_FAILURE;
 
     tun.fd = -1;
     loop.epoll_fd = -1;
     bridge.listener = NULL;
     bridge.flows = NULL;
+    ingress.table_name[0] = '\0';
+    ingress.ip_version = 0U;
+    ingress.installed = 0;
 
 #ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
     if (argc != 8 || strcmp(argv[7], "bbr-internal") != 0) {
@@ -470,7 +481,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 #else
-    if (argc != 7 && argc != 8) {
+    if (argc != 7 && argc != 8 && argc != 9) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -482,11 +493,19 @@ int main(int argc, char **argv)
         parse_port(argv[6], &backend_port) < 0) {
         return EXIT_FAILURE;
     }
+#ifndef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
+    if (argc == 9) {
+        if (parse_ipv4(argv[8], &public_address) < 0) {
+            return EXIT_FAILURE;
+        }
+        public_ipv4 = argv[8];
+    }
+#endif
 
 #ifdef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
     cc_name = "bbr-internal";
 #else
-    cc_name = argc == 8 ? argv[7] : "reno";
+    cc_name = argc >= 8 ? argv[7] : "reno";
     if (tcp_shift_lwip_cc_configure_controller(cc_name) < 0) {
         fprintf(stderr, "unsupported congestion controller: %s\n", cc_name);
         return EXIT_FAILURE;
@@ -505,6 +524,20 @@ int main(int argc, char **argv)
     }
 #endif
 #endif
+
+    if (public_ipv4 != NULL) {
+        forwarding = tcp_shift_host_ipv4_forwarding_enabled();
+        if (forwarding < 0) {
+            perror("read net.ipv4.ip_forward");
+            return EXIT_FAILURE;
+        }
+        if (forwarding == 0) {
+            fprintf(stderr,
+                    "tcp-shift-p2: IPv4 forwarding is disabled; "
+                    "configure net.ipv4.ip_forward=1 before public ingress\n");
+            return EXIT_FAILURE;
+        }
+    }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
         signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR) {
@@ -556,10 +589,28 @@ int main(int argc, char **argv)
     }
     bridge_started = 1;
 
-    printf("tcp-shift-p2: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u "
-           "public-port=%u backend=127.0.0.1:%u cc=%s\n",
-           tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
-           (unsigned)public_port, (unsigned)backend_port, cc_name);
+    if (public_ipv4 != NULL) {
+        if (tcp_shift_nft_ingress_install_ipv4(
+                &ingress, TCP_SHIFT_P2_NFT_TABLE,
+                public_ipv4, public_port, argv[2], public_port) < 0) {
+            perror("install nft ingress");
+            goto out;
+        }
+    }
+
+    if (public_ipv4 != NULL) {
+        printf("tcp-shift-p2: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u "
+               "public-port=%u public-ipv4=%s backend=127.0.0.1:%u "
+               "cc=%s nft-table=%s\n",
+               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)public_port, public_ipv4, (unsigned)backend_port,
+               cc_name, ingress.table_name);
+    } else {
+        printf("tcp-shift-p2: ready tun=%s host-ipv4=%s lwip-ipv4=%s mtu=%u "
+               "public-port=%u backend=127.0.0.1:%u cc=%s\n",
+               tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)public_port, (unsigned)backend_port, cc_name);
+    }
     fflush(stdout);
 
     status = EXIT_SUCCESS;
@@ -642,6 +693,11 @@ int main(int argc, char **argv)
     print_bbr_stats(cc_stats);
 
 out:
+    if (ingress.installed != 0 &&
+        tcp_shift_nft_ingress_remove(&ingress) < 0) {
+        perror("remove nft ingress");
+        status = EXIT_FAILURE;
+    }
     if (bridge_started != 0) {
         tcp_shift_bridge_stop(&bridge);
         fprintf(stderr,

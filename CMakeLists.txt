@@ -516,13 +516,39 @@ add_executable(tcp-shift-config-contract src/config_contract.c)
 target_include_directories(tcp-shift-config-contract PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift-config-contract PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+add_library(tcp_shift_service_config STATIC
+    src/service_config.c
+)
+target_include_directories(tcp_shift_service_config PUBLIC
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_options(tcp_shift_service_config PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+
+add_executable(tcp-shift-service-config-contract
+    src/tests/service_config_test.c
+)
+target_include_directories(tcp-shift-service-config-contract PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_options(tcp-shift-service-config-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-service-config-contract PRIVATE
+    tcp_shift_service_config
+)
+
 add_executable(tcp-shift src/main.c src/platform.c)
 target_include_directories(tcp-shift PRIVATE ${LWIP_INCLUDE_DIRS})
 target_compile_options(tcp-shift PRIVATE
     -Wall -Wextra -Wpedantic -Werror
     -ffunction-sections -fdata-sections
 )
-target_link_libraries(tcp-shift PRIVATE tcp_shift_lwip)
+target_link_libraries(tcp-shift PRIVATE
+    tcp_shift_lwip
+    tcp_shift_service_config
+)
 target_link_options(tcp-shift PRIVATE -Wl,--gc-sections)
 
 add_executable(tcp-shift-p1 src/p1_main.c src/platform.c)
@@ -700,6 +726,11 @@ target_link_libraries(tcp-shift-p2-ipv6 PRIVATE
     tcp_shift_host
     tcp_shift_bridge
 )
+if(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE)
+    target_compile_definitions(tcp-shift-p2-ipv6 PRIVATE
+        TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE=1
+    )
+endif()
 target_link_options(tcp-shift-p2-ipv6 PRIVATE -Wl,--gc-sections)
 
 add_executable(tcp-shift-p1-backpressure-contract

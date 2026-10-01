@@ -31,6 +31,32 @@ The public and backend TCP connections are distinct. Congestion control for the 
 
 The runtime uses lwIP `NO_SYS=1`: no lwIP socket/netconn layer, no TCP/IP worker thread, and no TAP/Ethernet requirement. The same L3 adapter and event-loop owner serve IPv4 and IPv6.
 
+
+## Operator configuration
+
+The service entrypoint is configuration-driven. IPv4/IPv6 selection comes from
+the public listener address, and the same `cc` setting selects Reno, CUBIC, or
+compact BBR on either family:
+
+```toml
+version = 1
+cc = "bbr"
+
+[[forward]]
+listen = "203.0.113.10:443"
+backend = "127.0.0.1:443"
+```
+
+```bash
+sudo tcp-shift --config /etc/tcp-shift/tcp-shift.toml
+sudo tcp-shift --config /etc/tcp-shift/tcp-shift.toml --check
+```
+
+The version-1 service schema is strict and startup-only. It uses one
+`[[forward]]` mapping today because the current bridge owns one listener;
+additional mappings fail closed until the multi-listener runtime exists. See
+[`docs/configuration.md`](docs/configuration.md).
+
 ## Module boundaries
 
 ```text
@@ -52,7 +78,7 @@ P5 completed the prerequisites for model-based congestion control:
 1. **P5a — delivery ledger: complete.** High-resolution send/ACK timestamps, unique delivered-byte accounting, and retransmission-safe lazy sidecar metadata.
 2. **P5b — rate sampler + app-limited: complete.** Transport-neutral ACK delivery-rate samples with send/ACK intervals, RTT validity, prior inflight, retransmission metadata, and event-driven app-limited marking.
 3. **P5c — event-driven pacer: complete.** Controller pacing policy now gates real data sends through one process-wide deadline heap and one one-shot `CLOCK_MONOTONIC` timerfd registered in the existing epoll owner. There is no fixed pacing tick, per-flow timerfd/thread, or busy spin.
-4. **P6 — tcp-shift BBR: active and default-build selectable.** The compact BBRv1-style controller publishes real cwnd/pacing policy through the generic adapter, runs on the shared process-wide pacer, and is qualified against Linux BBR on clean single-flow, multi-flow, app-limited, loss, and long-RTT burst scenarios. The normal IPv4 `tcp-shift-p2` build accepts `bbr`; omitting the controller still selects Reno. IPv6 selector parity and provider/OpenVZ field qualification remain follow-up work.
+4. **P6 — tcp-shift BBR: active and default-build selectable.** The compact BBRv1-style controller publishes real cwnd/pacing policy through the generic adapter, runs on the shared process-wide pacer, and is qualified against Linux BBR on clean single-flow, multi-flow, app-limited, loss, and long-RTT burst scenarios. The config-driven service and both IPv4/IPv6 p2 runtimes select `reno|cubic|bbr`; provider/OpenVZ field qualification remains follow-up work.
 
 An experimental controller will not be described as Linux BBR unless the relevant transport semantics are actually equivalent.
 

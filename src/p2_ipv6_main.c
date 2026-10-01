@@ -2,9 +2,11 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "bridge/bridge.h"
 #include "host/ifconfig.h"
+#include "host/nft_ingress.h"
 #include "host/tun.h"
 #include "lwip/cc_adapter.h"
 #include "lwip/init.h"
@@ -13,6 +15,7 @@
 #include "runtime/lwip_loop.h"
 
 #define TCP_SHIFT_P2_MTU 1500U
+#define TCP_SHIFT_P2_IPV6_NFT_TABLE "tcp_shift_p2"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -51,9 +54,10 @@ static void usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv6> <host-ipv6-cidr> "
-            "<public-port> <backend-port>\n"
+            "<public-port> <backend-port> [cc [public-ipv6]]\n"
+            "  cc: reno (default) | cubic | bbr\n"
             "example: %s ts6 fd00:198:22::2 fd00:198:22::1/126 "
-            "18091 19091\n",
+            "18091 19091 bbr 2001:db8::10\n",
             program, program);
 }
 
@@ -175,22 +179,30 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_bridge bridge;
+    struct tcp_shift_nft_ingress ingress;
     const struct tcp_shift_lwip_cc_stats *cc_stats;
+    const char *cc_name;
+    const char *public_ipv6 = NULL;
     ip6_addr_t address;
+    ip6_addr_t public_address;
     uint16_t public_port;
     uint16_t backend_port;
     int l3_attached = 0;
     int loop_started = 0;
     int pacer_configured = 0;
     int bridge_started = 0;
+    int forwarding;
     int status = EXIT_FAILURE;
 
     tun.fd = -1;
     loop.epoll_fd = -1;
     bridge.listener = NULL;
     bridge.flows = NULL;
+    ingress.table_name[0] = '\0';
+    ingress.ip_version = 0U;
+    ingress.installed = 0;
 
-    if (argc != 6) {
+    if (argc != 6 && argc != 7 && argc != 8) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
@@ -198,6 +210,46 @@ int main(int argc, char **argv)
         parse_port(argv[4], &public_port) < 0 ||
         parse_port(argv[5], &backend_port) < 0) {
         return EXIT_FAILURE;
+    }
+    if (argc == 8) {
+        if (parse_ipv6(argv[7], &public_address) < 0) {
+            return EXIT_FAILURE;
+        }
+        public_ipv6 = argv[7];
+    }
+
+    cc_name = argc >= 7 ? argv[6] : "reno";
+    if (tcp_shift_lwip_cc_configure_controller(cc_name) < 0) {
+        fprintf(stderr, "unsupported congestion controller: %s\n", cc_name);
+        return EXIT_FAILURE;
+    }
+    cc_name = tcp_shift_lwip_cc_configured_controller_name();
+    if (cc_name == NULL) {
+        fprintf(stderr, "congestion controller registry unavailable\n");
+        return EXIT_FAILURE;
+    }
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (strcmp(cc_name, "bbr") == 0) {
+        fprintf(stderr,
+                "tcp-shift-p2-ipv6: compact BBR selected; "
+                "controller-owned recovery enabled\n");
+    }
+#endif
+
+    if (public_ipv6 != NULL) {
+        forwarding = tcp_shift_host_ipv6_forwarding_enabled();
+        if (forwarding < 0) {
+            perror("read net.ipv6.conf.all.forwarding");
+            return EXIT_FAILURE;
+        }
+        if (forwarding == 0) {
+            fprintf(stderr,
+                    "tcp-shift-p2-ipv6: IPv6 forwarding is disabled; "
+                    "configure net.ipv6.conf.all.forwarding=1 before "
+                    "public ingress\n");
+            return EXIT_FAILURE;
+        }
     }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
@@ -249,10 +301,28 @@ int main(int argc, char **argv)
     }
     bridge_started = 1;
 
-    printf("tcp-shift-p2-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s mtu=%u "
-           "public-port=%u backend=127.0.0.1:%u\n",
-           tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
-           (unsigned)public_port, (unsigned)backend_port);
+    if (public_ipv6 != NULL) {
+        if (tcp_shift_nft_ingress_install_ipv6(
+                &ingress, TCP_SHIFT_P2_IPV6_NFT_TABLE,
+                public_ipv6, public_port, argv[2], public_port) < 0) {
+            perror("install IPv6 nft ingress");
+            goto out;
+        }
+    }
+
+    if (public_ipv6 != NULL) {
+        printf("tcp-shift-p2-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
+               "mtu=%u public-port=%u public-ipv6=%s "
+               "backend=127.0.0.1:%u cc=%s nft-table=%s\n",
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)public_port, public_ipv6, (unsigned)backend_port,
+               cc_name, ingress.table_name);
+    } else {
+        printf("tcp-shift-p2-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
+               "mtu=%u public-port=%u backend=127.0.0.1:%u cc=%s\n",
+               tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
+               (unsigned)public_port, (unsigned)backend_port, cc_name);
+    }
     fflush(stdout);
 
     status = EXIT_SUCCESS;
@@ -331,6 +401,11 @@ int main(int argc, char **argv)
             (unsigned long long)cc_stats->pacing_scheduler_errors);
 
 out:
+    if (ingress.installed != 0 &&
+        tcp_shift_nft_ingress_remove(&ingress) < 0) {
+        perror("remove IPv6 nft ingress");
+        status = EXIT_FAILURE;
+    }
     if (bridge_started != 0) {
         tcp_shift_bridge_stop(&bridge);
     }
