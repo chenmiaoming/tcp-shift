@@ -20,6 +20,8 @@ on:
       - 'scripts/p6-cubic-pacing-ab-evaluate.py'
       - 'scripts/p6-cubic-preloss-ack-evaluate.py'
       - 'scripts/p6-cubic-postloss-trajectory-evaluate.py'
+      - 'scripts/p6-cubic-rfc9438-growth-audit.py'
+      - 'scripts/p6-cubic-loss-reduction-audit.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -749,6 +751,8 @@ jobs:
           python3 -m py_compile scripts/p6-cubic-loss-timeline-evaluate.py
           python3 -m py_compile scripts/p6-cubic-preloss-ack-evaluate.py
           python3 -m py_compile scripts/p6-cubic-postloss-trajectory-evaluate.py
+          python3 -m py_compile scripts/p6-cubic-rfc9438-growth-audit.py
+          python3 -m py_compile scripts/p6-cubic-loss-reduction-audit.py
           python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
@@ -913,6 +917,18 @@ jobs:
             "$root/linux-cubic/tcp-info-trace.tsv" \
             "$root/linux-cubic/summary.txt" \
             | tee "$root/cubic-postloss-trajectory.txt"
+
+      - name: Audit RFC 9438 CUBIC growth
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-rfc9438-growth-audit.py             "$root/tcp-shift-cubic/runtime.stderr"             | tee "$root/cubic-rfc9438-growth-audit.txt"
+
+      - name: Audit RFC 9438 FlightSize loss reduction
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-loss-reduction-audit.py             "$root/tcp-shift-cubic/runtime.stderr"             "$root/linux-cubic/tcp-info-trace.tsv"             | tee "$root/cubic-loss-reduction-audit.txt"
 
       - name: Compare post-PRR recovery differential
         run: |
