@@ -24,6 +24,7 @@ on:
       - 'scripts/p6-cubic-loss-reduction-audit.py'
       - 'scripts/p6-cubic-fast-convergence-ab-evaluate.py'
       - 'scripts/p6-cubic-multiflow-fast-convergence-ab-evaluate.py'
+      - 'scripts/p6-cubic-single-flow-residual-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -1088,6 +1089,47 @@ jobs:
             "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
             | tee "$root/cubic-rfc9438-single-flow-growth-audit.txt"
 
+      - name: Compare no-fast single-flow post-loss trajectory
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-postloss-trajectory-evaluate.py \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            "$root/linux-cubic/tcp-info-trace.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-single-flow-postloss-trajectory.txt"
+
+      - name: Audit no-fast single-flow FlightSize loss reduction
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-loss-reduction-audit.py \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            "$root/linux-cubic/tcp-info-trace.tsv" \
+            | tee "$root/cubic-single-flow-loss-reduction-audit.txt"
+
+      - name: Compare no-fast single-flow PRR recovery differential
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-prr-recovery-differential-evaluate.py \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            "$root/linux-cubic/tcp-info.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-single-flow-prr-recovery-differential.txt"
+
+      - name: Summarize no-fast single-flow residual
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-single-flow-residual-evaluate.py \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-single-flow-residual.txt"
+
       - name: Audit RFC 9438 FlightSize loss reduction
         run: |
           set -o pipefail
@@ -1128,6 +1170,10 @@ jobs:
               "$root/cubic-postloss-trajectory.txt" \
               "$root/cubic-rfc9438-growth-audit.txt" \
               "$root/cubic-rfc9438-single-flow-growth-audit.txt" \
+              "$root/cubic-single-flow-postloss-trajectory.txt" \
+              "$root/cubic-single-flow-loss-reduction-audit.txt" \
+              "$root/cubic-single-flow-prr-recovery-differential.txt" \
+              "$root/cubic-single-flow-residual.txt" \
               "$root/cubic-loss-reduction-audit.txt" \
               "$root/prr-recovery-differential.txt"; do
               if [ -f "$file" ]; then
