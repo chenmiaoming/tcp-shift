@@ -1,6 +1,6 @@
 # RFC 8985 RACK-TLP
 
-Status: active transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, application-limited tail repair, lost-retransmission recovery, deterministic 28-drop recovery across Reno/CUBIC/internal-BBR, reordering/D-SACK adaptation, recovery-timer teardown, and incremental resource cost are live-qualified, experimental/default-OFF.
+Status: default-enabled transport-recovery implementation; timer-driven RACK repair, tail-loss TLP, application-limited tail repair, lost-retransmission recovery, deterministic 28-drop recovery across Reno/CUBIC/compact-BBR, reordering/D-SACK adaptation, recovery-timer teardown, and incremental resource cost are live-qualified.
 
 tcp-shift is moving sender loss detection from a fixed DupAck/SACK-count heuristic toward RFC 8985 RACK-TLP. This work is deliberately transport-level and independent of Reno, CUBIC, and BBR controller policy.
 
@@ -99,6 +99,6 @@ The implementation is beyond the core-math-only stage. The experimental build no
 - RFC 2883 D-SACK classification uses the cumulative ACK carried in the same packet rather than stale sender state;
 - deterministic reordering beyond the initial reordering window is live-qualified to trigger bounded spurious recovery, D-SACK feedback, RACK.reo_wnd_mult growth, and persistence without RTO or qdisc loss.
 
-The feature remains **experimental/default-OFF** while the RFC 8985 exposure-readiness audit closes remaining normative timer/recovery details and reruns full qualification. Provider/OpenVZ production evidence and any default/public exposure decision remain separate from the protocol implementation audit.
+PR #104 promotes sender SACK evidence and RFC 8985 RACK-TLP into the default production build after full regression/resource qualification. Provider/OpenVZ production evidence remains separate from hosted-runner protocol qualification.
 
-Accordingly, the correct current claim is **RFC 8985-driven experimental implementation with live timer-driven RACK repair, ordinary and application-limited tail-loss TLP, lost-retransmission recovery, exact 28-drop recovery accounting across Reno/CUBIC/internal-BBR, reordering/D-SACK adaptation, generation-safe recovery-timer teardown, and incremental resource cost qualified on deterministic paths**, not complete RFC 8985 or production conformance.
+Accordingly, the current claim is **default-enabled RFC 8985-driven transport recovery with live timer-driven RACK repair, ordinary and application-limited tail-loss TLP, lost-retransmission recovery, exact 28-drop recovery accounting across Reno/CUBIC/compact-BBR, reordering/D-SACK adaptation, generation-safe recovery-timer teardown, and bounded resource cost qualified on deterministic paths**. This still does not claim complete RFC 8985 coverage outside the implemented/qualified subset.
