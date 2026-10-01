@@ -886,6 +886,7 @@ jobs:
           python3 -m py_compile scripts/p6-cubic-single-flow-residual-evaluate.py
           python3 -m py_compile scripts/p6-cubic-recovery-pacing-publication-evaluate.py
           python3 -m py_compile scripts/p6-cubic-prr-pacing-refresh-ab-evaluate.py
+          python3 -m py_compile scripts/p6-prr-recovery-byte-trajectory-evaluate.py
           python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
@@ -1169,6 +1170,17 @@ jobs:
             "$root/linux-cubic/summary.txt" \
             | tee "$root/cubic-single-flow-prr-recovery-differential.txt"
 
+      - name: Compare no-fast PRR recovery byte trajectory
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-prr-recovery-byte-trajectory-evaluate.py \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            "$root/linux-cubic/tcp-info-trace.tsv" \
+            "$root/linux-cubic/summary.txt" \
+            | tee "$root/cubic-single-flow-prr-byte-trajectory.txt"
+
       - name: Summarize no-fast single-flow residual
         run: |
           set -o pipefail
@@ -1245,6 +1257,7 @@ jobs:
               "$root/cubic-single-flow-postloss-trajectory.txt" \
               "$root/cubic-single-flow-loss-reduction-audit.txt" \
               "$root/cubic-single-flow-prr-recovery-differential.txt" \
+              "$root/cubic-single-flow-prr-byte-trajectory.txt" \
               "$root/cubic-single-flow-residual.txt" \
               "$root/cubic-recovery-pacing-publication.txt" \
               "$root/cubic-prr-pacing-refresh-ab.txt" \
