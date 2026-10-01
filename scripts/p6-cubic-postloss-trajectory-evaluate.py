@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+import statistics
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+MSS = 1460
+APP_LIMITED = 0x02
+TCP_CA_OPEN = 0
+
+
+def kv_fields(text):
+    fields = {}
+    for token in text.strip().split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    return fields
+
+
+def read_summary(path):
+    text = Path(path).read_text(encoding="utf-8").strip()
+    if not text:
+        raise SystemExit(f"empty summary: {path}")
+    return text, kv_fields(text)
+
+
+def parse_tcp_shift(path):
+    events = defaultdict(list)
+    marker = "tcp-shift-cubic-trace: "
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        if marker not in raw:
+            continue
+        fields = kv_fields(raw.split(marker, 1)[1])
+        event = fields.get("event")
+        if event:
+            events[event].append(fields)
+    return events
+
+
+def read_linux_trace(path):
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    if len(lines) < 2:
+        raise SystemExit("missing high-resolution Linux TCP_INFO trace")
+    header = lines[0].split("\t")
+    required = {
+        "sample",
+        "source",
+        "elapsed_ns",
+        "ca_state",
+        "delivery_rate_app_limited",
+        "unacked",
+        "sacked",
+        "lost",
+        "retrans",
+        "rtt_us",
+        "snd_cwnd",
+        "snd_ssthresh",
+        "snd_wnd",
+        "pacing_rate_Bps",
+        "bytes_acked",
+        "delivered",
+        "bytes_sent",
+        "bytes_retrans",
+        "busy_time_us",
+        "rwnd_limited_us",
+        "sndbuf_limited_us",
+        "total_retrans",
+    }
+    missing = sorted(required.difference(header))
+    if missing:
+        raise SystemExit("Linux trace missing fields: " + ",".join(missing))
+    rows = [dict(zip(header, line.split("\t"))) for line in lines[1:] if line]
+    if not rows:
+        raise SystemExit("empty Linux TCP_INFO trace")
+    return rows
+
+
+def median_int(values):
+    return int(statistics.median(values)) if values else 0
+
+
+def pct(part, whole):
+    return float(part) / float(whole) if whole else 0.0
+
+
+def episode_num(row, key="episode"):
+    return int(row.get(key, "0"))
+
+
+if len(sys.argv) != 5:
+    raise SystemExit(
+        "usage: p6-cubic-postloss-trajectory-evaluate.py "
+        "<tcp-shift-runtime.stderr> <tcp-shift-summary> "
+        "<linux-tcp-info-trace.tsv> <linux-summary>"
+    )
+
+trace_path, ts_summary_path, linux_trace_path, linux_summary_path = sys.argv[1:]
+ts_text, ts = read_summary(ts_summary_path)
+linux_text, linux = read_summary(linux_summary_path)
+events = parse_tcp_shift(trace_path)
+linux_rows = read_linux_trace(linux_trace_path)
+
+losses = events["loss"]
+prr_acks = events["prr-ack"]
+prr_txs = events["prr-tx"]
+prr_exits = events["prr-exit"]
+recovery_close_acks = events["recovery-close-ack"]
+ca_acks = events["ca-ack"]
+
+expected = int(ts.get("fault_marker_count", "0"))
+if expected <= 0:
+    raise SystemExit("missing deterministic fault count")
+if int(ts.get("loss_events", "0")) != expected:
+    raise SystemExit("tcp-shift loss count no longer matches deterministic faults")
+if int(ts.get("retransmit_events", "0")) != expected:
+    raise SystemExit("tcp-shift retransmit count no longer matches deterministic faults")
+if int(ts.get("timeout_events", "0")) != 0:
+    raise SystemExit("tcp-shift unexpectedly fell back to RTO")
+if int(linux.get("total_retrans", "0")) != expected:
+    raise SystemExit("Linux retransmit count no longer matches deterministic faults")
+if len(losses) != expected:
+    raise SystemExit(f"loss trace mismatch: trace={len(losses)} expected={expected}")
+if len(prr_exits) != expected:
+    raise SystemExit(
+        f"PRR exit trace mismatch: trace={len(prr_exits)} expected={expected}"
+    )
+if len(recovery_close_acks) != expected:
+    raise SystemExit(
+        "recovery-closing ACK trace mismatch: "
+        f"trace={len(recovery_close_acks)} expected={expected}"
+    )
+
+acks_by_episode = defaultdict(list)
+txs_by_episode = defaultdict(list)
+exits_by_episode = {}
+close_by_episode = {}
+ca_by_episode = defaultdict(list)
+for row in prr_acks:
+    acks_by_episode[episode_num(row)].append(row)
+for row in prr_txs:
+    txs_by_episode[episode_num(row)].append(row)
+for row in prr_exits:
+    exits_by_episode[episode_num(row)] = row
+for row in recovery_close_acks:
+    close_by_episode[episode_num(row)] = row
+for row in ca_acks:
+    ca_by_episode[episode_num(row)].append(row)
+
+recovery_ns = []
+post_exit_to_first_ca_ns = []
+ca_total = 0
+ca_app_limited = 0
+ca_no_growth = 0
+ca_app_limited_no_growth = 0
+episodes_with_ca = 0
+episode_rows = []
+
+for episode in range(1, expected + 1):
+    loss = losses[episode - 1]
+    exit_row = exits_by_episode.get(episode)
+    close_row = close_by_episode.get(episode)
+    if exit_row is None:
+        raise SystemExit(f"missing PRR exit for episode {episode}")
+    if close_row is None:
+        raise SystemExit(f"missing recovery-closing ACK for episode {episode}")
+
+    loss_time = int(loss["time_ns"])
+    exit_time = int(exit_row["time_ns"])
+    if exit_time < loss_time:
+        raise SystemExit(f"episode {episode} PRR exit precedes loss")
+    recovery_ns.append(exit_time - loss_time)
+
+    rows = ca_by_episode.get(episode, [])
+    ack_rows = acks_by_episode.get(episode, [])
+    tx_rows = txs_by_episode.get(episode, [])
+    recovery_end_seq = int(loss["recovery_end_seq"])
+    repair_tx_bytes = sum(
+        int(row["bytes"]) for row in tx_rows
+        if int(row["seq"]) < recovery_end_seq
+    )
+    new_tx_bytes = sum(
+        int(row["bytes"]) for row in tx_rows
+        if int(row["seq"]) >= recovery_end_seq
+    )
+    receiver_window_blocks = sum(
+        1 for row in ack_rows
+        if int(row.get("window_allows", "1")) == 0
+        and int(row.get("snd_wnd", "0")) < int(row.get("seq_cwnd", "0"))
+    )
+    prr_window_blocks = sum(
+        1 for row in ack_rows
+        if int(row.get("window_allows", "1")) == 0
+        and int(row.get("snd_wnd", "0")) >= int(row.get("seq_cwnd", "0"))
+    )
+    max_sndcnt = max((int(row.get("sndcnt", "0")) for row in ack_rows), default=0)
+    min_snd_wnd = min((int(row.get("snd_wnd", "0")) for row in ack_rows), default=0)
+    max_snd_wnd = max((int(row.get("snd_wnd", "0")) for row in ack_rows), default=0)
+    ca_total += len(rows)
+    app_count = sum(
+        1 for row in rows if int(row.get("rate_flags", "0")) & APP_LIMITED
+    )
+    no_growth = sum(
+        1 for row in rows if int(row["post_cwnd"]) == int(row["pre_cwnd"])
+    )
+    app_no_growth = sum(
+        1
+        for row in rows
+        if (int(row.get("rate_flags", "0")) & APP_LIMITED)
+        and int(row["post_cwnd"]) == int(row["pre_cwnd"])
+    )
+    ca_app_limited += app_count
+    ca_no_growth += no_growth
+    ca_app_limited_no_growth += app_no_growth
+
+    first_ca = rows[0] if rows else None
+    last_ca = rows[-1] if rows else None
+    if first_ca is not None:
+        episodes_with_ca += 1
+        first_time = int(first_ca["time_ns"])
+        if first_time >= exit_time:
+            post_exit_to_first_ca_ns.append(first_time - exit_time)
+
+    episode_rows.append(
+        {
+            "episode": episode,
+            "loss_pre": int(loss["pre_cwnd"]),
+            "loss_post": int(loss["post_cwnd"]),
+            "loss_inflight": int(loss["inflight_bytes"]),
+            "exit_cwnd": int(exit_row["cwnd"]),
+            "exit_inflight": int(exit_row.get("inflight_bytes", "0")),
+            "recovery_ns": exit_time - loss_time,
+            "close_acked_bytes": int(close_row["acked_bytes"]),
+            "close_pre_cwnd": int(close_row["pre_cwnd"]),
+            "close_post_cwnd": int(close_row["post_cwnd"]),
+            "close_growth": int(close_row["post_cwnd"]) - int(close_row["pre_cwnd"]),
+            "close_flags": int(close_row["rate_flags"]),
+            "close_epoch": int(close_row["epoch_active"]),
+            "prr_acks": len(ack_rows),
+            "prr_txs": len(tx_rows),
+            "prr_repair_tx_bytes": repair_tx_bytes,
+            "prr_new_tx_bytes": new_tx_bytes,
+            "receiver_window_blocks": receiver_window_blocks,
+            "prr_window_blocks": prr_window_blocks,
+            "max_sndcnt": max_sndcnt,
+            "min_snd_wnd": min_snd_wnd,
+            "max_snd_wnd": max_snd_wnd,
+            "exit_recover_fs": int(exit_row.get("recover_fs", "0")),
+            "exit_prr_delivered": int(exit_row.get("prr_delivered", "0")),
+            "exit_prr_out": int(exit_row.get("prr_out", "0")),
+            "ca_acks": len(rows),
+            "ca_app": app_count,
+            "ca_no_growth": no_growth,
+            "first_ca_cwnd": int(first_ca["post_cwnd"]) if first_ca else 0,
+            "first_ca_flags": int(first_ca["rate_flags"]) if first_ca else 0,
+            "first_ca_epoch": int(first_ca["epoch_active"]) if first_ca else 0,
+            "first_ca_paused": int(first_ca["app_limited_paused"]) if first_ca else 0,
+            "last_ca_cwnd": int(last_ca["post_cwnd"]) if last_ca else 0,
+        }
+    )
+
+linux_state_counts = Counter(int(row["ca_state"]) for row in linux_rows)
+linux_transitions = []
+prior_retrans = int(linux_rows[0]["total_retrans"])
+for index, row in enumerate(linux_rows[1:], start=1):
+    current = int(row["total_retrans"])
+    if current > prior_retrans:
+        for episode in range(prior_retrans + 1, current + 1):
+            linux_transitions.append((episode, index))
+    prior_retrans = current
+
+linux_by_episode = {}
+for position, (episode, index) in enumerate(linux_transitions):
+    next_index = (
+        linux_transitions[position + 1][1]
+        if position + 1 < len(linux_transitions)
+        else len(linux_rows)
+    )
+    before = linux_rows[index - 1] if index > 0 else linux_rows[index]
+    transition = linux_rows[index]
+    window = linux_rows[index:next_index]
+    recovery_rows = [row for row in window if int(row["ca_state"]) != TCP_CA_OPEN]
+    open_after = next(
+        (row for row in window[1:] if int(row["ca_state"]) == TCP_CA_OPEN),
+        None,
+    )
+    last = window[-1] if window else transition
+    recovery_end = open_after if open_after is not None else last
+    sent_delta = max(
+        0, int(recovery_end["bytes_sent"]) - int(transition["bytes_sent"])
+    )
+    retrans_delta = max(
+        0, int(recovery_end["bytes_retrans"]) - int(transition["bytes_retrans"])
+    )
+    recovery_new_bytes = max(0, sent_delta - retrans_delta)
+    rwnd_limited_delta = max(
+        0,
+        int(recovery_end["rwnd_limited_us"])
+        - int(transition["rwnd_limited_us"]),
+    )
+    sndbuf_limited_delta = max(
+        0,
+        int(recovery_end["sndbuf_limited_us"])
+        - int(transition["sndbuf_limited_us"]),
+    )
+    busy_delta = max(
+        0, int(recovery_end["busy_time_us"]) - int(transition["busy_time_us"])
+    )
+    linux_by_episode[episode] = {
+        "before_cwnd": int(before["snd_cwnd"]) * MSS,
+        "transition_cwnd": int(transition["snd_cwnd"]) * MSS,
+        "transition_state": int(transition["ca_state"]),
+        "transition_inflight": max(
+            0,
+            int(transition["unacked"])
+            - int(transition["sacked"])
+            - int(transition["lost"])
+            + int(transition["retrans"]),
+        )
+        * MSS,
+        "transition_pacing": int(transition["pacing_rate_Bps"]),
+        "transition_snd_wnd": int(transition["snd_wnd"]),
+        "open_cwnd": int(open_after["snd_cwnd"]) * MSS if open_after else 0,
+        "open_snd_wnd": int(open_after["snd_wnd"]) if open_after else 0,
+        "open_elapsed_ns": int(open_after["elapsed_ns"]) if open_after else 0,
+        "transition_elapsed_ns": int(transition["elapsed_ns"]),
+        "last_cwnd": int(last["snd_cwnd"]) * MSS,
+        "last_snd_wnd": int(last["snd_wnd"]),
+        "min_snd_wnd": min(int(row["snd_wnd"]) for row in window),
+        "recovery_samples": len(recovery_rows),
+        "window_samples": len(window),
+        "recovery_sent_bytes": sent_delta,
+        "recovery_retrans_bytes": retrans_delta,
+        "recovery_new_bytes": recovery_new_bytes,
+        "rwnd_limited_us": rwnd_limited_delta,
+        "sndbuf_limited_us": sndbuf_limited_delta,
+        "busy_us": busy_delta,
+        "app_limited_samples": sum(
+            int(row["delivery_rate_app_limited"]) != 0 for row in window
+        ),
+    }
+
+linux_observed_episodes = len(linux_by_episode)
+linux_recovery_episodes = sum(
+    1 for row in linux_by_episode.values() if row["recovery_samples"] > 0
+)
+linux_open_after_episodes = sum(
+    1 for row in linux_by_episode.values() if row["open_cwnd"] > 0
+)
+
+first = episode_rows[0]
+first_linux = linux_by_episode.get(1, {})
+ts_prr_new = [row["prr_new_tx_bytes"] for row in episode_rows]
+ts_prr_repair = [row["prr_repair_tx_bytes"] for row in episode_rows]
+ts_rwnd_blocks = sum(row["receiver_window_blocks"] for row in episode_rows)
+ts_prr_blocks = sum(row["prr_window_blocks"] for row in episode_rows)
+linux_recovery_new = [
+    row["recovery_new_bytes"] for row in linux_by_episode.values()
+]
+linux_rwnd_limited = [
+    row["rwnd_limited_us"] for row in linux_by_episode.values()
+]
+linux_sndbuf_limited = [
+    row["sndbuf_limited_us"] for row in linux_by_episode.values()
+]
+linux_recovery_busy = [
+    row["busy_us"] for row in linux_by_episode.values()
+]
+
+print(
+    "p6_cubic_postloss_trajectory=ok "
+    f"tcp_shift_episodes={expected} "
+    f"tcp_shift_ca_episodes={episodes_with_ca} "
+    f"tcp_shift_recovery_close_ack_events={len(recovery_close_acks)} "
+    f"tcp_shift_recovery_close_growth_median_bytes="
+    f"{median_int([row['close_growth'] for row in episode_rows])} "
+    f"tcp_shift_ca_ack_events={ca_total} "
+    f"tcp_shift_ca_app_limited_events={ca_app_limited} "
+    f"tcp_shift_ca_app_limited_fraction={pct(ca_app_limited, ca_total):.6f} "
+    f"tcp_shift_ca_no_growth_events={ca_no_growth} "
+    f"tcp_shift_ca_app_limited_no_growth_events={ca_app_limited_no_growth} "
+    f"tcp_shift_recovery_median_ms={median_int(recovery_ns) / 1_000_000:.3f} "
+    f"tcp_shift_exit_to_first_ca_median_ms="
+    f"{median_int(post_exit_to_first_ca_ns) / 1_000_000:.3f} "
+    f"tcp_shift_first_loss_pre_cwnd_bytes={first['loss_pre']} "
+    f"tcp_shift_first_loss_post_cwnd_bytes={first['loss_post']} "
+    f"tcp_shift_first_exit_cwnd_bytes={first['exit_cwnd']} "
+    f"tcp_shift_first_ca_cwnd_bytes={first['first_ca_cwnd']} "
+    f"tcp_shift_first_ca_flags={first['first_ca_flags']} "
+    f"tcp_shift_prr_new_tx_median_bytes={median_int(ts_prr_new)} "
+    f"tcp_shift_prr_repair_tx_median_bytes={median_int(ts_prr_repair)} "
+    f"tcp_shift_receiver_window_block_events={ts_rwnd_blocks} "
+    f"tcp_shift_prr_window_block_events={ts_prr_blocks} "
+    f"linux_trace_samples={len(linux_rows)} "
+    f"linux_retrans_transition_episodes={linux_observed_episodes} "
+    f"linux_recovery_state_episodes={linux_recovery_episodes} "
+    f"linux_open_after_recovery_episodes={linux_open_after_episodes} "
+    f"linux_ca_open_samples={linux_state_counts[TCP_CA_OPEN]} "
+    f"linux_ca_nonopen_samples={len(linux_rows) - linux_state_counts[TCP_CA_OPEN]} "
+    f"linux_recovery_new_median_bytes={median_int(linux_recovery_new)} "
+    f"linux_recovery_rwnd_limited_median_us={median_int(linux_rwnd_limited)} "
+    f"linux_recovery_sndbuf_limited_median_us={median_int(linux_sndbuf_limited)} "
+    f"linux_recovery_busy_median_us={median_int(linux_recovery_busy)} "
+    f"linux_first_pre_retrans_cwnd_bytes={first_linux.get('before_cwnd', 0)} "
+    f"linux_first_transition_cwnd_bytes={first_linux.get('transition_cwnd', 0)} "
+    f"linux_first_open_cwnd_bytes={first_linux.get('open_cwnd', 0)}"
+)
+
+for row in episode_rows[:8]:
+    linux_row = linux_by_episode.get(row["episode"], {})
+    print(
+        "episode="
+        f"{row['episode']} "
+        f"ts_loss_pre={row['loss_pre']} "
+        f"ts_loss_post={row['loss_post']} "
+        f"ts_loss_inflight={row['loss_inflight']} "
+        f"ts_exit_cwnd={row['exit_cwnd']} "
+        f"ts_exit_inflight={row['exit_inflight']} "
+        f"ts_recovery_ms={row['recovery_ns'] / 1_000_000:.3f} "
+        f"ts_close_ack={row['close_acked_bytes']} "
+        f"ts_close_cwnd={row['close_pre_cwnd']}>{row['close_post_cwnd']} "
+        f"ts_close_growth={row['close_growth']} "
+        f"ts_close_flags={row['close_flags']} "
+        f"ts_close_epoch={row['close_epoch']} "
+        f"ts_prr_acks={row['prr_acks']} "
+        f"ts_prr_txs={row['prr_txs']} "
+        f"ts_prr_repair_bytes={row['prr_repair_tx_bytes']} "
+        f"ts_prr_new_bytes={row['prr_new_tx_bytes']} "
+        f"ts_rwnd_blocks={row['receiver_window_blocks']} "
+        f"ts_prr_window_blocks={row['prr_window_blocks']} "
+        f"ts_max_sndcnt={row['max_sndcnt']} "
+        f"ts_snd_wnd={row['min_snd_wnd']}/{row['max_snd_wnd']} "
+        f"ts_recover_fs={row['exit_recover_fs']} "
+        f"ts_prr_delivered={row['exit_prr_delivered']} "
+        f"ts_prr_out={row['exit_prr_out']} "
+        f"ts_ca_acks={row['ca_acks']} "
+        f"ts_ca_app={row['ca_app']} "
+        f"ts_ca_no_growth={row['ca_no_growth']} "
+        f"ts_first_ca_cwnd={row['first_ca_cwnd']} "
+        f"ts_first_ca_flags={row['first_ca_flags']} "
+        f"ts_first_ca_epoch={row['first_ca_epoch']} "
+        f"ts_first_ca_paused={row['first_ca_paused']} "
+        f"ts_last_ca_cwnd={row['last_ca_cwnd']} "
+        f"linux_pre={linux_row.get('before_cwnd', 0)} "
+        f"linux_transition={linux_row.get('transition_cwnd', 0)} "
+        f"linux_state={linux_row.get('transition_state', -1)} "
+        f"linux_inflight={linux_row.get('transition_inflight', 0)} "
+        f"linux_pacing={linux_row.get('transition_pacing', 0)} "
+        f"linux_snd_wnd={linux_row.get('transition_snd_wnd', 0)}/"
+        f"{linux_row.get('open_snd_wnd', 0)}/"
+        f"{linux_row.get('last_snd_wnd', 0)} "
+        f"linux_min_snd_wnd={linux_row.get('min_snd_wnd', 0)} "
+        f"linux_recovery_samples={linux_row.get('recovery_samples', 0)} "
+        f"linux_recovery_new_bytes={linux_row.get('recovery_new_bytes', 0)} "
+        f"linux_rwnd_limited_us={linux_row.get('rwnd_limited_us', 0)} "
+        f"linux_sndbuf_limited_us={linux_row.get('sndbuf_limited_us', 0)} "
+        f"linux_busy_us={linux_row.get('busy_us', 0)} "
+        f"linux_app_limited_samples={linux_row.get('app_limited_samples', 0)} "
+        f"linux_open={linux_row.get('open_cwnd', 0)} "
+        f"linux_last={linux_row.get('last_cwnd', 0)}"
+    )
+
+steady_ts = episode_rows[8:]
+steady_linux = [
+    linux_by_episode[row["episode"]]
+    for row in steady_ts
+    if row["episode"] in linux_by_episode
+]
+print(
+    "steady_state="
+    f"episodes={len(steady_ts)} "
+    f"ts_loss_pre_median={median_int([row['loss_pre'] for row in steady_ts])} "
+    f"ts_exit_cwnd_median={median_int([row['exit_cwnd'] for row in steady_ts])} "
+    f"ts_close_growth_median={median_int([row['close_growth'] for row in steady_ts])} "
+    f"ts_prr_new_median={median_int([row['prr_new_tx_bytes'] for row in steady_ts])} "
+    f"ts_rwnd_blocks={sum(row['receiver_window_blocks'] for row in steady_ts)} "
+    f"ts_prr_window_blocks={sum(row['prr_window_blocks'] for row in steady_ts)} "
+    f"linux_pre_median={median_int([row['last_cwnd'] for row in steady_linux])} "
+    f"linux_open_median={median_int([row['open_cwnd'] for row in steady_linux])} "
+    f"linux_recovery_new_median={median_int([row['recovery_new_bytes'] for row in steady_linux])} "
+    f"linux_rwnd_limited_median_us={median_int([row['rwnd_limited_us'] for row in steady_linux])} "
+    f"linux_sndbuf_limited_median_us={median_int([row['sndbuf_limited_us'] for row in steady_linux])}"
+)
+
+print(
+    "linux_ca_state_counts="
+    + ",".join(f"{key}:{linux_state_counts[key]}" for key in sorted(linux_state_counts))
+)
+print("tcp_shift_summary=" + ts_text)
+print("linux_summary=" + linux_text)

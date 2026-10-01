@@ -2465,7 +2465,8 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
     if (adapter->controller.ops != NULL &&
         adapter->controller.ops->name != NULL &&
         strncmp(adapter->controller.ops->name, "cubic", 5U) == 0 &&
-        (adapter->stats == NULL || adapter->stats->loss_events == 0U) &&
+        (adapter->stats == NULL || adapter->stats->loss_events == 0U ||
+         tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook) == 0U) &&
         adapter->controller.state != NULL) {
         /* The production pacing wrapper temporarily points
          * controller.state at the adapter while it delegates the actual CUBIC
@@ -2476,6 +2477,20 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
             &adapter->controller_state.cubic;
         uint64_t event_index =
             adapter->stats != NULL ? adapter->stats->ack_events + 1U : 0U;
+        uint64_t episode =
+            adapter->stats != NULL ? adapter->stats->loss_events : 0U;
+        unsigned recovery_active =
+            tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+        unsigned recovery_close_ack =
+            episode != 0U && recovery_active == 0U
+                ? tcp_shift_lwip_cc_hook_take_recovery_exit(&adapter->hook)
+                : 0U;
+        const char *event =
+            episode == 0U
+                ? "preloss-ack"
+                : (recovery_close_ack != 0U
+                       ? "recovery-close-ack"
+                       : "ca-ack");
         uint32_t sacked_ahead_bytes = 0U;
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
@@ -2483,8 +2498,9 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
             tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
 #endif
         fprintf(stderr,
-                "tcp-shift-cubic-trace: event=preloss-ack index=%llu "
-                "time_ns=%llu lastack=%u snd_nxt=%u mss=%u "
+                "tcp-shift-cubic-trace: event=%s index=%llu episode=%llu "
+                "time_ns=%llu recovery_active=%u "
+                "lastack=%u snd_nxt=%u mss=%u "
                 "acked_bytes=%u rate_delivered_bytes=%u "
                 "rate_delivered_total_bytes=%llu sacked_ahead_bytes=%u "
                 "inflight_bytes=%u pre_cwnd=%u post_cwnd=%u "
@@ -2497,9 +2513,15 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 "hystart_enabled=%u hystart_css=%u hystart_ack_css=%u "
                 "hystart_exit_pending=%u hystart_initial_complete=%u "
                 "hystart_css_enters=%u hystart_css_reverts=%u "
-                "hystart_exits=%u\n",
+                "hystart_exits=%u epoch_active=%u app_limited_paused=%u "
+                "epoch_start_ns=%llu w_max_q16=%llu w_est_q16=%llu "
+                "cwnd_prior_q16=%llu last_target_q16=%llu "
+                "pacing_Bps=%llu\n",
+                event,
                 (unsigned long long)event_index,
+                (unsigned long long)episode,
                 (unsigned long long)ack.ack_time_ns,
+                recovery_active,
                 pcb->lastack, pcb->snd_nxt, pcb->mss,
                 ack.acked_bytes, ack.rate.delivered_bytes,
                 (unsigned long long)ack.rate.delivered_total_bytes,
@@ -2517,7 +2539,14 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 model->hystart_initial_complete,
                 model->hystart_css_enter_events,
                 model->hystart_css_revert_events,
-                model->hystart_exit_events);
+                model->hystart_exit_events,
+                model->epoch_active, model->app_limited_paused,
+                (unsigned long long)model->epoch_start_ns,
+                (unsigned long long)model->w_max_q16,
+                (unsigned long long)model->w_est_q16,
+                (unsigned long long)model->cwnd_prior_q16,
+                (unsigned long long)model->last_target_q16,
+                (unsigned long long)adapter->pacing_rate_bytes_per_sec);
     }
 #endif
 
@@ -3019,6 +3048,11 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
 
         if (adapter->prr.active != 0U) {
             uint32_t cwnd = 0U;
+#if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
+            uint64_t trace_prr_delivered = adapter->prr.prr_delivered;
+            uint64_t trace_prr_out = adapter->prr.prr_out;
+            uint32_t trace_recover_fs = adapter->prr.recover_fs;
+#endif
 
             if (tcp_shift_prr_complete(&adapter->prr, &cwnd) != 0 ||
                 cwnd == 0U || cwnd > tcp_shift_lwip_cc_cwnd_limit()) {
@@ -3036,14 +3070,29 @@ static int tcp_shift_lwip_cc_on_recovery_exit(
                     adapter->stats != NULL
                         ? adapter->stats->prr_recovery_enters
                         : 0U;
-                fprintf(stderr,
-                        "tcp-shift-cubic-trace: event=prr-exit episode=%llu "
-                        "time_ns=%llu ack_seq=%u cwnd=%u ssthresh=%u "
-                        "pacing_Bps=%llu\n",
-                        (unsigned long long)episode,
-                        (unsigned long long)now_ns, ack_seq, cwnd,
-                        (uint32_t)pcb->ssthresh,
-                        (unsigned long long)adapter->pacing_rate_bytes_per_sec);
+                {
+                    uint32_t inflight =
+                        tcp_shift_lwip_cc_prr_inflight(adapter, pcb);
+                    uint32_t raw_outstanding =
+                        pcb->snd_nxt - pcb->lastack;
+
+                    fprintf(stderr,
+                            "tcp-shift-cubic-trace: event=prr-exit "
+                            "episode=%llu time_ns=%llu ack_seq=%u "
+                            "recovery_end_seq=%u cwnd=%u ssthresh=%u "
+                            "inflight_bytes=%u raw_outstanding_bytes=%u "
+                            "recover_fs=%u prr_delivered=%llu prr_out=%llu "
+                            "pacing_Bps=%llu\n",
+                            (unsigned long long)episode,
+                            (unsigned long long)now_ns, ack_seq,
+                            adapter->hook.recovery_end_seq, cwnd,
+                            (uint32_t)pcb->ssthresh, inflight,
+                            raw_outstanding, trace_recover_fs,
+                            (unsigned long long)trace_prr_delivered,
+                            (unsigned long long)trace_prr_out,
+                            (unsigned long long)
+                                adapter->pacing_rate_bytes_per_sec);
+                }
             }
 #endif
             adapter->prr_send_credit_bytes = 0U;
