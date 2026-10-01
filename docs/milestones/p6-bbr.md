@@ -1,6 +1,38 @@
 # P6: tcp-shift BBR
 
-Status: **active; compact internal BBR, explicit-loss ProbeBW, bounded sender-SACK recovery, deterministic first-send-loss qualification, SACK-aware delivery accounting, and SACK-aware effective-cwnd send gating are merged through PR #49; public `bbr` selection remains intentionally disabled pending provider/OpenVZ qualification, residual-gap review, and an explicit exposure decision**.
+Status: **active; compact internal BBR now runs over the shared RFC 8985 RACK-TLP transport-recovery substrate, retains controller-owned recovery rather than RFC 9937 PRR, and remains intentionally unavailable through the public selector. Hosted-runner controller/recovery qualification is substantially complete; provider/OpenVZ qualification, current-main BBR differential review, and an explicit exposure decision remain required**.
+
+## 2026-10-01 handoff after CUBIC/RACK/PRR closeout
+
+The standards-defined CUBIC recovery investigation is no longer the blocker for P6. PRs #91-#101 found and fixed the RFC 9406 initial slow-start defect, independently audited RFC 9438 congestion-avoidance/loss-reduction math, qualified RFC 9438 fast-convergence policy, and verified RFC 9937 PRR converges Reno/CUBIC recovery to the controller target within one MSS on the deterministic 28-drop path.
+
+Do not tune compact BBR gains or reopen CUBIC/RACK/PRR semantics to compensate for Linux CUBIC implementation differences.
+
+Current ownership for the next BBR work is:
+
+```text
+SACK delivery ledger
+    -> delivery/rate evidence
+
+RFC 8985 RACK-TLP
+    -> loss detection
+    -> selective repair
+    -> PTO / RTO fallback
+
+Reno / CUBIC
+    -> congestion response
+    -> RFC 9937 PRR send credit during RACK recovery
+
+internal compact BBR
+    -> congestion/model policy
+    -> controller-owned recovery window
+    -> PRR intentionally disabled
+
+shared pacer
+    -> event-driven send scheduling
+```
+
+The next BBR decision should therefore be driven by current-main deterministic loss/reference evidence and provider/OpenVZ qualification. Public `bbr` exposure remains a separate decision; Linux BBR is a behavioral reference rather than an equivalence claim.
 
 ## Congestion-control architecture
 
