@@ -54,6 +54,12 @@ if(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE AND
         "TCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON")
 endif()
 
+if(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE AND TCP_SHIFT_EXPERIMENTAL_ECN)
+    message(FATAL_ERROR
+        "Experimental BBR exposure cannot be combined with ECN yet; "
+        "compact BBR has no ECN congestion response")
+endif()
+
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")
 if(NOT EXISTS "${LWIP_DIR}/src/Filelists.cmake")
     message(FATAL_ERROR "lwIP source not found at ${LWIP_DIR}; run scripts/fetch-lwip.sh first")
@@ -772,6 +778,19 @@ target_compile_options(tcp-shift-tcp-memory-contract PRIVATE
 )
 target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_memory)
 
+
+add_executable(tcp-shift-bbr-exposure-selector-contract
+    src/tests/bbr_exposure_selector_test.c
+)
+target_include_directories(tcp-shift-bbr-exposure-selector-contract PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-bbr-exposure-selector-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-bbr-exposure-selector-contract PRIVATE
+    tcp_shift_lwip_cc_adapter
+)
 
 add_executable(tcp-shift-rack-tlp-contract
     src/tests/rack_tlp_test.c
