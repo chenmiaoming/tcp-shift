@@ -4,6 +4,7 @@
 
 #if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
 #include "cc/cubic.h"
+#include "cc/transport_pacing.h"
 #endif
 
 #include <limits.h>
@@ -1214,6 +1215,10 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
         uint32_t next_unsent_extent = 0U;
         uint32_t seq_cwnd = raw_outstanding;
         uint32_t output_wnd;
+        struct tcp_shift_cc_transport trace_transport;
+        struct tcp_shift_cc_policy trace_policy;
+        uint64_t refreshed_actual_inflight_Bps;
+        uint64_t refreshed_raw_outstanding_Bps;
         unsigned window_allows = 0U;
         unsigned next_is_retrans = 0U;
         const struct tcp_seg *unsent;
@@ -1241,13 +1246,33 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
             unsent_segments++;
         }
 
+        trace_transport.mss_bytes = pcb->mss;
+        trace_transport.inflight_bytes = inflight;
+        trace_transport.send_window_bytes = pcb->snd_wnd;
+        trace_transport.cwnd_limit_bytes = tcp_shift_lwip_cc_cwnd_limit();
+        trace_policy.cwnd_bytes = result.cwnd;
+        trace_policy.ssthresh_bytes = adapter->prr.ssthresh;
+        trace_policy.pacing_rate_bytes_per_sec = 0U;
+        refreshed_actual_inflight_Bps =
+            tcp_shift_transport_pacing_window_rate(
+                &trace_transport, &trace_policy,
+                adapter->srtt.smoothed_rtt_ns);
+        trace_transport.inflight_bytes = raw_outstanding;
+        refreshed_raw_outstanding_Bps =
+            tcp_shift_transport_pacing_window_rate(
+                &trace_transport, &trace_policy,
+                adapter->srtt.smoothed_rtt_ns);
+
         fprintf(stderr,
                 "tcp-shift-cubic-trace: event=prr-ack episode=%llu "
                 "time_ns=%llu delivered_data=%u inflight_bytes=%u "
                 "raw_outstanding_bytes=%u recover_fs=%u ssthresh=%u "
                 "safe_ack=%u mode=%s sndcnt=%u cwnd=%u "
                 "prr_delivered=%llu prr_out=%llu srtt_ns=%llu "
-                "pacing_Bps=%llu mss=%u snd_buf=%u snd_queuelen=%u "
+                "pacing_Bps=%llu refreshed_actual_inflight_Bps=%llu "
+                "refreshed_raw_outstanding_Bps=%llu "
+                "controller_cwnd_q16=%llu "
+                "mss=%u snd_buf=%u snd_queuelen=%u "
                 "snd_wnd=%u lastack=%u snd_nxt=%u seq_cwnd=%u output_wnd=%u "
                 "next_unsent_seq=%u next_unsent_len=%u next_unsent_extent=%u "
                 "window_allows=%u next_is_retrans=%u "
@@ -1261,6 +1286,9 @@ static int tcp_shift_lwip_cc_prr_apply_ack(
                 (unsigned long long)adapter->prr.prr_out,
                 (unsigned long long)adapter->srtt.smoothed_rtt_ns,
                 (unsigned long long)adapter->pacing_rate_bytes_per_sec,
+                (unsigned long long)refreshed_actual_inflight_Bps,
+                (unsigned long long)refreshed_raw_outstanding_Bps,
+                (unsigned long long)adapter->controller_state.cubic.cwnd_q16,
                 (unsigned)pcb->mss, (unsigned)pcb->snd_buf,
                 (unsigned)pcb->snd_queuelen, (unsigned)pcb->snd_wnd,
                 pcb->lastack, pcb->snd_nxt, seq_cwnd, output_wnd,
