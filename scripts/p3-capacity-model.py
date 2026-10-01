@@ -75,8 +75,12 @@ def main() -> None:
     parser.add_argument(
         "--max-warm-floor-delta-kb",
         type=float,
-        default=128.0,
-        help="maximum allowed drained PSS floor above the ready process",
+        default=160.0,
+        help=(
+            "maximum allowed drained PSS floor above the ready process; "
+            "160 KiB retains the prior 128-KiB bound plus the independently "
+            "qualified default RACK recovery footprint"
+        ),
     )
     args = parser.parse_args()
 
@@ -118,6 +122,11 @@ def main() -> None:
             "P3 repeated-drain ratchet exceeded gate: "
             f"growth={ratchet_growth_kb:.3f} KiB limit={args.max_ratchet_kb:.3f} KiB"
         )
+    # Default RFC 8985 recovery adds a bounded process/flow footprint. The
+    # independent RACK resource A/B qualifies +23 KiB fixed PSS, +24 KiB
+    # post-drain retention, 184 B static/flow, and zero idle CPU ticks. Keep
+    # the leak/ratchet gate separate at 32 KiB; this absolute warm-floor bound
+    # only budgets the promoted default recovery substrate.
     if warm_floor_delta_kb > args.max_warm_floor_delta_kb:
         raise SystemExit(
             "P3 repeated-drain warm floor exceeded gate: "
