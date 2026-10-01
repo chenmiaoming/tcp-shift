@@ -22,6 +22,7 @@ on:
       - 'scripts/p6-cubic-postloss-trajectory-evaluate.py'
       - 'scripts/p6-cubic-rfc9438-growth-audit.py'
       - 'scripts/p6-cubic-loss-reduction-audit.py'
+      - 'scripts/p6-cubic-fast-convergence-ab-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -542,6 +543,7 @@ jobs:
               "$root/linux-bbr/summary.txt" \
               "$root/comparison.txt" \
               "$root/tcp-shift-cubic/summary.txt" \
+              "$root/tcp-shift-cubic-single-flow/summary.txt" \
               "$root/tcp-shift-cubic-pacing-bypass/summary.txt" \
               "$root/linux-cubic/summary.txt" \
               "$root/controller-matrix.txt" \"; do
@@ -753,6 +755,7 @@ jobs:
           python3 -m py_compile scripts/p6-cubic-postloss-trajectory-evaluate.py
           python3 -m py_compile scripts/p6-cubic-rfc9438-growth-audit.py
           python3 -m py_compile scripts/p6-cubic-loss-reduction-audit.py
+          python3 -m py_compile scripts/p6-cubic-fast-convergence-ab-evaluate.py
           python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
@@ -761,7 +764,7 @@ jobs:
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
-          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass tcp-shift-p6-cubic-recovery-trace --parallel
+          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass tcp-shift-p6-cubic-recovery-trace tcp-shift-p6-cubic-single-flow --parallel
 
       - name: Run tcp-shift deterministic first-send loss
         run: |
@@ -785,6 +788,24 @@ jobs:
           out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic"
           sudo env \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-recovery-trace" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run tcp-shift CUBIC with single-flow fast convergence disabled
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic-single-flow"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-single-flow" \
             TCP_SHIFT_P6_BBR_LONG_CC=cubic \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
@@ -887,6 +908,17 @@ jobs:
             "$root/linux-cubic/summary.txt" \
             | tee "$root/cubic-pacing-ab.txt"
 
+      - name: Compare CUBIC fast-convergence single-flow A/B
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-fast-convergence-ab-evaluate.py \
+            "$root/tcp-shift-cubic/runtime.stderr" \
+            "$root/tcp-shift-cubic/summary.txt" \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            | tee "$root/cubic-fast-convergence-ab.txt"
+
       - name: Compare CUBIC loss-window timeline
         run: |
           set -o pipefail
@@ -924,6 +956,14 @@ jobs:
           root="$PWD/.build/p6-bbr-first-send-loss"
           python3 scripts/p6-cubic-rfc9438-growth-audit.py             "$root/tcp-shift-cubic/runtime.stderr"             | tee "$root/cubic-rfc9438-growth-audit.txt"
 
+      - name: Audit RFC 9438 CUBIC growth with fast convergence disabled
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-rfc9438-growth-audit.py \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            | tee "$root/cubic-rfc9438-single-flow-growth-audit.txt"
+
       - name: Audit RFC 9438 FlightSize loss reduction
         run: |
           set -o pipefail
@@ -958,9 +998,13 @@ jobs:
               "$root/linux-cubic/summary.txt" \
               "$root/controller-matrix.txt" \
               "$root/cubic-pacing-ab.txt" \
+              "$root/cubic-fast-convergence-ab.txt" \
               "$root/cubic-loss-timeline.txt" \
               "$root/cubic-preloss-ack.txt" \
               "$root/cubic-postloss-trajectory.txt" \
+              "$root/cubic-rfc9438-growth-audit.txt" \
+              "$root/cubic-rfc9438-single-flow-growth-audit.txt" \
+              "$root/cubic-loss-reduction-audit.txt" \
               "$root/prr-recovery-differential.txt"; do
               if [ -f "$file" ]; then
                 echo
