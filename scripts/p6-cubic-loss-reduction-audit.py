@@ -49,6 +49,11 @@ def median_int(values):
     return int(statistics.median(values)) if values else 0
 
 
+def q16_roundtrip_bytes(value, mss):
+    q16 = (value << 16) // mss
+    return (q16 * mss) >> 16
+
+
 if len(sys.argv) != 3:
     raise SystemExit(
         "usage: p6-cubic-loss-reduction-audit.py "
@@ -89,11 +94,18 @@ for episode, row in enumerate(losses, start=1):
     post_cwnd = int(row["post_cwnd"])
     floor = 2 * mss
 
-    rfc_flight_post = max((inflight * RFC_BETA_NUM) // RFC_BETA_DEN, floor)
-    cwnd_based_post = max((pre_cwnd * RFC_BETA_NUM) // RFC_BETA_DEN, floor)
-    linux_style_post = max(
+    rfc_flight_target = max(
+        (inflight * RFC_BETA_NUM) // RFC_BETA_DEN, floor
+    )
+    cwnd_based_target = max(
+        (pre_cwnd * RFC_BETA_NUM) // RFC_BETA_DEN, floor
+    )
+    linux_style_target = max(
         (pre_cwnd * LINUX_BETA_NUM) // LINUX_BETA_DEN, floor
     )
+    rfc_flight_post = q16_roundtrip_bytes(rfc_flight_target, mss)
+    cwnd_based_post = q16_roundtrip_bytes(cwnd_based_target, mss)
+    linux_style_post = q16_roundtrip_bytes(linux_style_target, mss)
 
     if post_cwnd != rfc_flight_post:
         rfc_mismatches += 1
