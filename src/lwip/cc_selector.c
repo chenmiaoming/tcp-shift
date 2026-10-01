@@ -85,13 +85,19 @@ int tcp_shift_lwip_cc_configure_controller(const char *name)
 #if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
     TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
     if (name != NULL && strcmp(name, "bbr") == 0) {
-        /* Compact BBR is adapter-bound and therefore deliberately absent from
-         * the pure-C registry.  Experimental exposure selects a listener mode
-         * that chains ordinary adapter/pacer binding into the existing BBR
-         * sidecar.  Default builds never enter this branch. */
+        /* Compact BBR is adapter-bound and deliberately absent from the
+         * pure-C registry. The ordinary selector chains adapter/pacer binding
+         * into the existing BBR sidecar. RFC 3168 ECN is still unsupported by
+         * compact BBR, so an ECN-capable build keeps Reno/CUBIC available but
+         * fails closed if BBR itself is requested. */
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+        tcp_shift_cc_selector_internal_bbr = 0U;
+        return -1;
+#else
         tcp_shift_cc_selector_ops = tcp_shift_cc_default_ops();
         tcp_shift_cc_selector_internal_bbr = 1U;
         return tcp_shift_cc_selector_ops != NULL ? 0 : -1;
+#endif
     }
 #endif
 
