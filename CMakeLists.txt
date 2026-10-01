@@ -8,12 +8,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE
     "Enable sender SACK negotiation, scoreboard tags, and delivery evidence"
-    OFF
+    ON
 )
 
 option(TCP_SHIFT_EXPERIMENTAL_RACK_TLP
-    "Enable experimental RFC 8985 RACK-TLP sender loss detection"
-    OFF
+    "Enable RFC 8985 RACK-TLP sender loss detection"
+    ON
 )
 
 option(TCP_SHIFT_EXPERIMENTAL_ECN
@@ -22,8 +22,8 @@ option(TCP_SHIFT_EXPERIMENTAL_ECN
 )
 
 option(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
-    "Expose compact internal BBR through tcp-shift-p2 for provider qualification"
-    OFF
+    "Enable compact BBR selection through the ordinary tcp-shift-p2 path"
+    ON
 )
 
 option(TCP_SHIFT_LEGACY_INITIAL_WINDOW
@@ -52,12 +52,6 @@ if(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE AND
         "Experimental BBR exposure requires "
         "TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON and "
         "TCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON")
-endif()
-
-if(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE AND TCP_SHIFT_EXPERIMENTAL_ECN)
-    message(FATAL_ERROR
-        "Experimental BBR exposure cannot be combined with ECN yet; "
-        "compact BBR has no ECN congestion response")
 endif()
 
 set(LWIP_DIR "${CMAKE_SOURCE_DIR}/.deps/lwip" CACHE PATH "Path to the pinned lwIP checkout")

@@ -66,7 +66,11 @@ jobs:
 
       - name: Build default and RFC 8985 resource binaries
         run: |
-          cmake -S . -B .build-resource-default -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B .build-resource-default \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=OFF \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=OFF \
+            -DTCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE=OFF
           cmake --build .build-resource-default --target \
             tcp-shift-p2 \
             tcp-shift-rack-resource-size-contract \

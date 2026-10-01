@@ -98,9 +98,13 @@ int main(void)
     uint32_t seq = UINT32_C(300000);
     uint16_t payload;
     unsigned char segment;
+    unsigned char loss_segments[4];
+    unsigned i;
 
     CHECK(tcp_shift_cc_find_ops("bbr") == NULL);
-    CHECK(tcp_shift_lwip_cc_configure_controller("bbr") < 0);
+    CHECK(tcp_shift_lwip_cc_configure_controller("bbr") == 0);
+    CHECK(strcmp(tcp_shift_lwip_cc_configured_controller_name(), "bbr") == 0);
+    CHECK(tcp_shift_lwip_cc_configure_controller("reno") == 0);
 
     memset(&adapter, 0, sizeof(adapter));
     memset(&stats, 0, sizeof(stats));
@@ -163,11 +167,18 @@ int main(void)
     tcp_shift_lwip_cc_hook_segment_acked(pcb, &segment, payload);
     CHECK(stats.delivery_live_slots == 0U);
 
-    /* Fast loss is owned by BBR packet conservation. The lwIP hook reports
-     * raw outstanding sequence space, so the internal binding removes the one
-     * MSS loss before entering recovery. */
+    /* Fast loss is owned by BBR packet conservation. With default SACK/RACK
+     * enabled, the adapter's transport view is delivery-ledger based rather
+     * than reconstructed only from SND.NXT-SND.UNA. Register four genuinely
+     * outstanding MSS so the one-MSS loss leaves three MSS in flight. */
     prior_cwnd = (uint32_t)pcb->cwnd;
     pcb->lastack = seq + payload;
+    for (i = 0U; i < 4U; i++) {
+        uint32_t loss_seq = pcb->lastack + (i * payload);
+
+        tcp_shift_lwip_cc_hook_segment_tx(
+            pcb, &loss_segments[i], loss_seq, payload);
+    }
     pcb->snd_nxt = pcb->lastack + (4U * payload);
     CHECK(tcp_shift_lwip_cc_hook_loss(pcb, payload) != 0);
     CHECK(tcp_shift_lwip_cc_hook_recovery_is_active(&adapter.hook) != 0U);
@@ -216,7 +227,7 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_clear_pacer() == 0);
     tcp_abort(pcb);
 
-    printf("bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 "
+    printf("bbr_lwip_binding=ok pure_registry=disabled selector=enabled sidecar=pcb-ext-2 "
            "ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok "
            "sndbuf_hint=3xcwnd passive_open_hint=deferred recovery=controller-owned "
            "rto_post_loss_inflight=0 pacing_after_rto=preserved "

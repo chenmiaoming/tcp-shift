@@ -9,6 +9,8 @@ CC=${CC:-cc}
 for archive in \
     "$BUILD/libtcp_shift_lwip_cc_adapter.a" \
     "$BUILD/libtcp_shift_lwip_tcp_memory.a" \
+    "$BUILD/libtcp_shift_rack_tlp.a" \
+    "$BUILD/libtcp_shift_prr.a" \
     "$BUILD/src/cc/libtcp_shift_cc.a" \
     "$BUILD/libtcp_shift_lwip.a" \
     "$BUILD/libtcp_shift_pacer.a"
@@ -20,6 +22,8 @@ do
 done
 
 "$CC" -std=gnu11 -Wall -Wextra -Wpedantic -Werror \
+    -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=1 \
+    -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=1 \
     -I"$ROOT/src" \
     -I"$ROOT/.deps/lwip/src/include" \
     -I"$ROOT/.deps/lwip/contrib/ports/unix/port/include" \
@@ -27,13 +31,15 @@ done
     "$ROOT/src/platform.c" \
     "$BUILD/libtcp_shift_lwip_cc_adapter.a" \
     "$BUILD/libtcp_shift_lwip_tcp_memory.a" \
+    "$BUILD/libtcp_shift_rack_tlp.a" \
+    "$BUILD/libtcp_shift_prr.a" \
     "$BUILD/src/cc/libtcp_shift_cc.a" \
     "$BUILD/libtcp_shift_lwip.a" \
     "$BUILD/libtcp_shift_pacer.a" \
     -o "$OUT"
 
 "$OUT" | tee "$BUILD/p6-bbr-lwip-binding-summary.txt"
-grep -F 'bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 ' \
+grep -F 'bbr_lwip_binding=ok pure_registry=disabled selector=enabled sidecar=pcb-ext-2 ' \
     "$BUILD/p6-bbr-lwip-binding-summary.txt" >/dev/null
 grep -F 'ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok sndbuf_hint=3xcwnd passive_open_hint=deferred recovery=controller-owned' \
     "$BUILD/p6-bbr-lwip-binding-summary.txt" >/dev/null

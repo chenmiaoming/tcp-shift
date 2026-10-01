@@ -1,6 +1,6 @@
 # P6: tcp-shift BBR
 
-Status: **active; compact internal BBR now runs over the shared RFC 8985 RACK-TLP transport-recovery substrate, retains controller-owned recovery rather than RFC 9937 PRR, and remains intentionally unavailable through the public selector. Hosted-runner controller/recovery qualification is substantially complete; provider/OpenVZ qualification, current-main BBR differential review, and an explicit exposure decision remain required**.
+Status: **active; compact BBR runs over the shared RFC 8985 RACK-TLP transport-recovery substrate, retains controller-owned recovery rather than RFC 9937 PRR, and is selectable through the ordinary IPv4 `tcp-shift-p2` default build. Reno remains the implicit controller when no name is supplied. Hosted-runner controller/recovery qualification is substantially complete; IPv6 selector parity and provider/OpenVZ qualification remain required**.
 
 ## 2026-10-01 handoff after CUBIC/RACK/PRR closeout
 
@@ -32,7 +32,7 @@ shared pacer
     -> event-driven send scheduling
 ```
 
-The next BBR decision should therefore be driven by current-main deterministic loss/reference evidence and provider/OpenVZ qualification. Public `bbr` exposure remains a separate decision; Linux BBR is a behavioral reference rather than an equivalence claim.
+Default-build `bbr` availability is now driven by the completed hosted-runner deterministic loss/reference evidence. Provider/OpenVZ qualification remains a deployment evidence task rather than a blocker for compiling/selecting BBR. Linux BBR remains a behavioral reference rather than an equivalence claim.
 
 ## Congestion-control architecture
 
@@ -40,14 +40,14 @@ tcp-shift is not a single-algorithm stack. Congestion control remains selectable
 
 - `reno`: standard Reno; production default and live-selectable;
 - `cubic`: RFC 9438 CUBIC; live-selectable after independent model/controller/adapter qualification;
-- `bbr`: tcp-shift's compact BBRv1-style core with selected BBRv3-informed fixes; not registered yet;
+- `bbr`: tcp-shift's compact BBRv1-style core with selected BBRv3-informed fixes; selectable through the adapter-bound production path rather than the pure-C registry;
 - `bbrv3`: reserved for a future independent controller intended to track the then-current IETF BBRv3 semantics more closely; unavailable today.
 
 `bbr` and `bbrv3` must remain separate implementations and names. A future `bbrv3` must not silently change the semantics of the compact `bbr` controller.
 
 The adapter/runtime contains no algorithm-specific state-machine policy. Selection resolves an ops table plus bounded controller-owned state; all controllers consume the same transport-neutral ACK/loss/timeout observations and emit the same cwnd/pacing policy. lwIP continues to own sequence space, segment queues, retransmission, SACK/recovery, RTT/RTO machinery, and packet construction.
 
-Production `tcp-shift-p2` accepts an optional controller name. Omission retains `reno`; `cubic` is explicitly selectable; unknown or unbuilt names fail before TUN setup. The production listener snapshots the chosen ops table and applies it to each newly accepted child before bridge code sees the flow. P5c's deterministic fixed-pacing qualification wrapper remains separate.
+Production IPv4 `tcp-shift-p2` accepts an optional controller name. Omission retains `reno`; `cubic` and compact `bbr` are explicitly selectable in the default build; unknown or unavailable names fail before TUN setup. BBR remains adapter-bound with a lazily allocated PCB sidecar and controller-owned recovery rather than being forced into the pure-C registry. IPv6 controller selection remains a follow-up. P5c's deterministic fixed-pacing qualification wrapper remains separate.
 
 ## Algorithm target for `bbr`
 

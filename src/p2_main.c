@@ -57,12 +57,12 @@ static void usage(const char *program)
             program);
 #else
 #if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
-    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE && \
+    !(defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN)
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
             "<public-port> <backend-port> [cc]\n"
-            "  cc: reno (default) | cubic | bbr "
-            "(experimental provider qualification)\n"
+            "  cc: reno (default) | cubic | bbr\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
             "18090 19090 bbr\n",
             program, program);
@@ -500,8 +500,8 @@ int main(int argc, char **argv)
     TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
     if (strcmp(cc_name, "bbr") == 0) {
         fprintf(stderr,
-                "tcp-shift-p2: experimental compact BBR exposure enabled; "
-                "provider qualification only\n");
+                "tcp-shift-p2: compact BBR selected; "
+                "controller-owned recovery enabled\n");
     }
 #endif
 #endif
