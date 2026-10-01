@@ -47,15 +47,16 @@ P2 qualifies stream integrity, real bidirectional blocking, half-close, refusal/
 
 P3 separates tcp-shift process residency from backend Linux TCP/kernel state and measures idle flows, both active-window directions, repeated load/drain floors, and CPU.
 
-Latest P5c-head evidence:
+Latest default recovery/BBR-availability evidence:
 
 ```text
-warm fixed process PSS:           367 KiB
-fully-window-resident slope:      37.773438 KiB/flow
-128-active projected PSS:        5202 KiB
-8-MiB process budget remaining:  2990 KiB = 23.359 KiB/flow
-3x128 first-to-last drain growth: 5 KiB
-idle CPU:                        0 ticks/s
+warm fixed process PSS:             507 KiB
+fully-window-resident slope:       44.773438 KiB/flow
+128-active projected PSS:        6238 KiB
+8-MiB process budget remaining:   1954 KiB = 15.266 KiB/flow
+3x128 first-to-last drain growth:   5 KiB
+maximum warm drain floor:         149 KiB (160-KiB gate)
+idle CPU:                           0 ticks/s
 ```
 
 This remains a process-PSS planning model, not a full-host capacity guarantee.
@@ -64,7 +65,7 @@ This remains a process-PSS planning model, not a full-host capacity guarantee.
 
 P4 established an independently buildable pure-C controller boundary. The generic controller consumes transport-neutral MSS, inflight, peer send window, and cwnd limit; events are init/ACK/loss/RTO; policy publishes cwnd, ssthresh, and optional pacing rate. Conventional Reno uses 16 bytes caller-owned state and requests zero pacing.
 
-Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. The controlled patch chain remains confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. The second sender-SACK patch is default OFF and exists only for evidence-driven recovery qualification. lwIP still retains retransmission execution, duplicate-ACK processing, recovery/RTO machinery, queues, sequence space, packet construction, and output; tcp-shift only adds bounded scoreboard/selective-requeue logic inside that transport-owned path when the experiment is enabled.
+Pinned lwIP remains at `d08f4773edd0182b7910fc8f046eed82ffcd67c9`. The controlled patch chain remains confined to `tcp.c`, `tcp_in.c`, and `tcp_out.c`. The sender-SACK/RACK patch is part of the default production profile after #104; the historical build-option names remain explicit controls for qualification and rollback. lwIP still retains retransmission execution, duplicate-ACK processing, recovery/RTO machinery, queues, sequence space, packet construction, and output; tcp-shift only adds bounded scoreboard/selective-requeue logic inside that transport-owned path when the experiment is enabled.
 
 ## P5a: retransmission-safe delivery ledger — complete
 
@@ -136,7 +137,7 @@ The observed delivery rate is window-limited near 43.7 KiB/s, consistent with a 
 
 ## P6: tcp-shift BBR + RFC-first transport recovery — active
 
-The compact internal `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer, while remaining intentionally absent from the public production registry.
+The compact `bbr` controller runs on real lwIP PCBs through the generic CC adapter and shared event-driven pacer. It remains absent from the pure-C registry but is selectable through the default IPv4 production selector.
 
 The transport/recovery stack has now converged on the following ownership:
 
@@ -189,8 +190,8 @@ The next development steps are:
 2. investigate **post-first-loss** CUBIC evolution: PRR recovery timing, inflight/window headroom, pacing-rate publication, recovery exit, and subsequent congestion-avoidance epochs versus Linux;
 3. distinguish RFC-semantic differences from Linux implementation details before changing behavior;
 4. rerun the same deterministic path after each narrowly justified change; preserve exact drop/retransmission count, zero RTO/qdisc drops, and payload integrity;
-5. keep RACK-TLP, PRR integration, ECN, and public `bbr` exposure separate from provider/OpenVZ qualification and explicit exposure review;
-6. do not tune BBR gains, CUBIC beta, FlightSize, or qualification thresholds to compensate for unexplained differences.
+5. keep RFC 3168 ECN default-OFF until compact BBR has an explicit ECN response; ECN builds fail BBR selection closed while keeping Reno/CUBIC available;
+6. finish IPv6 controller-selection parity and provider/OpenVZ BBR qualification without tuning BBR gains or RFC recovery semantics to chase reference parity.
 
 BBR remains a compact BBRv1-style controller rather than a Linux-BBR implementation. Because BBR has no published RFC target, Linux BBR remains the primary behavioral/differential reference; the current IETF BBR draft is secondary semantic guidance.
 
@@ -205,7 +206,7 @@ P4 generic CC boundary     complete
 P5a delivery ledger        complete
 P5b rate/app-limited       complete
 P5c event-driven pacing    complete
-P6 BBR + RFC recovery      active / RACK + PRR runner-qualified; initial CUBIC slow-start gap closed, post-loss differential under investigation
+P6 BBR + RFC recovery      active / default-build IPv4 BBR selectable; RACK + PRR runner-qualified; IPv6 selector parity + provider qualification pending
 ```
 
 ## Stop criteria
