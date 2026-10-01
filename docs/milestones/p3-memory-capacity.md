@@ -153,6 +153,30 @@ For the conservative P4 admission case — a 32-MiB host with only 25% (8 MiB) a
 
 The same model projects approximately 209 fully-window-resident flows inside that 8-MiB tcp-shift process budget. This is not a 209-connection full-host guarantee because backend kernel/application memory is explicitly excluded.
 
+## 2026-10-01 default recovery/BBR profile rerun
+
+P3 remains continuously rerun as transport defaults change. PR #104 promoted sender SACK evidence, RFC 8985 RACK-TLP, and compact BBR availability into the normal IPv4 build, so the older pre-recovery baseline above is retained as historical evidence rather than the current admission envelope.
+
+The #104 default-profile capacity model reports:
+
+```text
+warm fixed process PSS:             507 KiB
+conservative idle PSS slope:        1.148438 KiB/flow
+controlled active payload delta:   43.625 KiB/flow
+fully-window-resident slope:       44.773438 KiB/flow
+128 active projected PSS:        6238 KiB
+8-MiB process budget remaining:   1954 KiB = 15.266 KiB/flow
+projected max active flows
+  inside 8-MiB process budget:      171
+3x128 first->last drain growth:      5 KiB
+maximum drain floor above ready:   149 KiB
+idle CPU:                            0 ticks/s
+```
+
+The absolute warm-floor gate is now 160 KiB. This is a measured profile rebase, not a relaxation of the leak detector: the first-to-last repeated-drain ratchet gate remains 32 KiB and the observed ratchet remains 5 KiB. Independent RACK OFF/ON qualification measures 184 bytes of static state per flow, +24 KiB post-drain process PSS in the RACK build on the latest A/B rerun, and zero idle recovery-timer wakeups.
+
+The conservative 32-MiB host / 25% tcp-shift process budget still admits 128 fully-window-resident flows with 1954 KiB process-PSS headroom. Backend kernel/application/provider memory remains outside this model.
+
 ## Exit criteria
 
 P3 exit criteria are satisfied on the GitHub runner:

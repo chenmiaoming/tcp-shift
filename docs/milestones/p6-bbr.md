@@ -182,7 +182,26 @@ The deterministic periodic-loss injector was intentionally excluded because it c
 
 The retained source checkpoint passed all 15 workflows with the existing P3 memory gate unchanged. PR #38 was replayed on top of #37 and squash-merged as `1c8b7b4477f71edde0f5961674f37de0a0dd9832`.
 
-Current product boundary: production `tcp-shift-p2` still exposes `reno|cubic`; internal BBR remains available only through qualification targets. The sender-SACK transport extension remains compile-time experimental/default-OFF. The next product decision requires both provider/OpenVZ qualification of the combined BBR + sender-SACK path and a measurement-led review of the remaining deterministic-loss gap; only after those two evidence tracks should the project make a separate explicit decision on public `bbr` exposure. Reno remains the default.
+Current product boundary after #104: the normal IPv4 `tcp-shift-p2` default build exposes `reno|cubic|bbr`; omission of `[cc]` still selects Reno. Sender SACK evidence and RFC 8985 RACK-TLP are default-ON. Compact BBR remains adapter-bound with controller-owned recovery and is not registered in the pure-C controller registry. RFC 3168 ECN remains default-OFF; an ECN-enabled build rejects `bbr` selection because compact BBR has no ECN congestion response. IPv6 selector parity and provider/OpenVZ qualification remain the next product evidence tracks.
+
+## Default-build BBR availability — merged PRs #103/#104
+
+PR #103 first exposed compact BBR through ordinary `tcp-shift-p2` behind an explicit qualification gate while preserving all existing recovery ownership: RACK selects loss/repair, compact BBR owns its recovery cwnd, and RFC 9937 PRR stays disabled for BBR.
+
+PR #104 promoted the qualified prerequisites into the default IPv4 build:
+
+- sender SACK evidence default ON;
+- RFC 8985 RACK-TLP default ON;
+- compact `bbr` selector availability default ON;
+- Reno remains the implicit controller when `[cc]` is omitted;
+- ECN-enabled builds stay valid for Reno/CUBIC but fail BBR selection closed;
+- the pure-C registry still does not expose BBR because the current implementation is adapter-bound.
+
+#104 passed 50/50 checks. The default-build BBR deterministic 260 ms / 10 Mbit/s / 4 MiB / 28-drop path retained exact 28 drops / 28 retransmissions, zero RTO, zero unrelated qdisc drops, exact payload integrity, and zero PRR entries.
+
+The promoted recovery profile was also requalified against P3. Current process-PSS planning inputs are 507 KiB warm fixed PSS, 44.773438 KiB/flow fully-window-resident slope, and 6238 KiB projected PSS for 128 active flows. The 8-MiB planning budget retains 1954 KiB headroom. Repeated 3x128 drain growth remains 5 KiB; the current warm drain floor is 149 KiB with a 160-KiB absolute gate and the independent 32-KiB ratchet gate unchanged.
+
+This promotion establishes **default-build availability**, not Linux-BBR equivalence and not provider/OpenVZ field qualification. IPv6 controller-selection parity is still outstanding.
 
 ## ProbeBW loss semantics — merged PR #40
 
@@ -217,7 +236,7 @@ Two live integration failures shaped the final boundary: the SACK compile defini
 
 The merged deterministic repeated-burst reference remains exact: 6/6, 9/9, and 12/12 injected drops/retransmissions for two/three/four bursts, zero RTOs, and goodput ratios versus Linux BBR of 0.950308 / 0.889202 / 0.862150. A hosted random 260 ms / 10 Mbit/s / 1% realization measured tcp-shift BBR at 4.716169 Mbit/s versus Linux BBR at 5.728751 Mbit/s (0.823246 diagnostic ratio), with tcp-shift 29 drops / 29 retransmissions / 0 RTO.
 
-PR #41 was squash-merged as `ae8108a892f9cabd9f5ad7312b4211f1ab849289`. Sender SACK remains default-OFF.
+PR #41 was squash-merged as `ae8108a892f9cabd9f5ad7312b4211f1ab849289`. The historical sender-SACK-only checkpoint above predates RFC 8985 RACK-TLP promotion; sender SACK evidence is now default-ON as RACK input.
 
 ## Recovery batching experiments — PRs #42/#43 closed without merge
 
@@ -314,7 +333,7 @@ PR #49 passed all 15 workflows on head `4e77cbf71efaa11ee6e2133de96c79e8cc2061c2
 
 ## Original planned order from P6d
 
-Items 1–8 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, WAN-burst/repeated-burst, sampling/Startup, SACK-delivery, and SACK-aware send-window checkpoints. The next product step is provider/OpenVZ qualification plus measurement-led investigation of the remaining deterministic-loss gap; controlled public `bbr` exposure remains gated on that evidence and a separate explicit decision. Frequent/high aggregate loss remains an evidence-gathering area rather than a reason to preemptively add a larger sender-recovery stack.
+Items 1–8 below are retained as the original P6d plan. Most are now qualified, and the exposure decision has since been completed by #103/#104: compact `bbr` is selectable in the ordinary default IPv4 build while remaining adapter-bound rather than entering the pure-C registry. Provider/OpenVZ qualification, IPv6 selector parity, and frequent/high aggregate loss remain evidence-gathering work; they are not reasons to preemptively add a larger sender-recovery stack.
 
 
 
