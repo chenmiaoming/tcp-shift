@@ -333,7 +333,7 @@ PR #49 passed all 15 workflows on head `4e77cbf71efaa11ee6e2133de96c79e8cc2061c2
 
 ## Original planned order from P6d
 
-Items 1–8 below are now substantially qualified by the compact-controller/runtime, Linux-reference, deterministic multiple-loss, WAN-burst/repeated-burst, sampling/Startup, SACK-delivery, and SACK-aware send-window checkpoints. The next product step is provider/OpenVZ qualification plus measurement-led investigation of the remaining deterministic-loss gap; controlled public `bbr` exposure remains gated on that evidence and a separate explicit decision. Frequent/high aggregate loss remains an evidence-gathering area rather than a reason to preemptively add a larger sender-recovery stack.
+Items 1–8 below are retained as the original P6d plan. Most are now qualified, and the exposure decision has since been completed by #103/#104: compact `bbr` is selectable in the ordinary default IPv4 build while remaining adapter-bound rather than entering the pure-C registry. Provider/OpenVZ qualification, IPv6 selector parity, and frequent/high aggregate loss remain evidence-gathering work; they are not reasons to preemptively add a larger sender-recovery stack.
 
 
 
