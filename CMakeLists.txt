@@ -791,6 +791,7 @@ target_compile_options(tcp-shift-bbr-exposure-selector-contract PRIVATE
 )
 target_link_libraries(tcp-shift-bbr-exposure-selector-contract PRIVATE
     tcp_shift_lwip_cc_adapter
+    tcp_shift_lwip_tcp_memory
 )
 
 add_executable(tcp-shift-rack-tlp-contract
