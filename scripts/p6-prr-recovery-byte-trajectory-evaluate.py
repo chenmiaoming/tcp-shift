@@ -190,6 +190,12 @@ for episode in range(1, expected + 1):
                 half_tx_delay_ns = int(row["time_ns"]) - loss_ns
                 break
 
+    exit_ssthresh = int(exit_row["ssthresh"])
+    exit_inflight = int(exit_row.get("inflight_bytes", "0"))
+    mss = int(loss["mss"])
+    target_shortfall = max(0, exit_ssthresh - exit_inflight)
+    target_overshoot = max(0, exit_inflight - exit_ssthresh)
+
     ts_episodes.append(
         {
             "episode": episode,
@@ -199,6 +205,14 @@ for episode in range(1, expected + 1):
             "delivered": exit_delivered,
             "recover_fs": recover_fs,
             "prr_out": exit_prr_out,
+            "ssthresh": exit_ssthresh,
+            "exit_inflight": exit_inflight,
+            "mss": mss,
+            "target_shortfall": target_shortfall,
+            "target_overshoot": target_overshoot,
+            "target_within_mss": 1
+            if max(target_shortfall, target_overshoot) < mss
+            else 0,
             "tx_total": tx_total,
             "repair_tx": repair_tx,
             "new_tx": new_tx,
@@ -351,6 +365,15 @@ for episode, index in enumerate(transitions, start=1):
             "strict_new_tx": strict_new_delta,
             "strict_first_tx_delay_ns": strict_first_tx_delay_ns,
             "strict_half_tx_delay_ns": strict_half_tx_delay_ns,
+            "open_inflight": max(
+                0,
+                int(end_row["unacked"])
+                - int(end_row["sacked"])
+                - int(end_row["lost"])
+                + int(end_row["retrans"]),
+            )
+            * 1460,
+            "open_ssthresh": int(end_row["snd_ssthresh"]) * 1460,
             "start_cwnd": int(linux_rows[start]["snd_cwnd"]),
             "start_ssthresh": int(linux_rows[start]["snd_ssthresh"]),
         }
@@ -390,7 +413,10 @@ print(
     f"tcp_shift_new_median_bytes={median_int([x['new_tx'] for x in ts_episodes])} "
     f"linux_strict_new_median_bytes={median_int([x['strict_new_tx'] for x in linux_episodes])} "
     f"linux_bracket_new_median_bytes={median_int([x['new_tx'] for x in linux_episodes])} "
-    f"tcp_shift_new_over_linux_episode_median={median_float(episode_new_ratios):.6f} "
+    f"tcp_shift_new_over_linux_strict_episode_median={median_float(episode_new_ratios):.6f} "
+    f"tcp_shift_target_shortfall_median_bytes={median_int([x['target_shortfall'] for x in ts_episodes])} "
+    f"tcp_shift_target_within_mss_episodes={sum(x['target_within_mss'] for x in ts_episodes)} "
+    f"linux_open_target_shortfall_median_bytes={median_int([max(0, x['open_ssthresh'] - x['open_inflight']) for x in linux_episodes])} "
     f"tcp_shift_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in ts_episodes]) / 1e6:.3f} "
     f"linux_strict_first_tx_delay_median_ms={median_int([x['strict_first_tx_delay_ns'] for x in linux_episodes]) / 1e6:.3f} "
     f"tcp_shift_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in ts_episodes]) / 1e6:.3f} "
@@ -406,6 +432,9 @@ for ts_row, linux_row in list(zip(ts_episodes, linux_episodes))[:10]:
         f"ts_acks={ts_row['acks']} ts_tx_events={ts_row['tx_events']} "
         f"ts_recover_fs={ts_row['recover_fs']} "
         f"ts_delivered={ts_row['delivered']} ts_prr_out={ts_row['prr_out']} "
+        f"ts_exit_inflight={ts_row['exit_inflight']} "
+        f"ts_ssthresh={ts_row['ssthresh']} "
+        f"ts_target_shortfall={ts_row['target_shortfall']} "
         f"ts_tx={ts_row['tx_total']} ts_repair={ts_row['repair_tx']} "
         f"ts_new={ts_row['new_tx']} "
         f"ts_first_tx_ms={ts_row['first_tx_delay_ns'] / 1e6:.3f} "
@@ -414,6 +443,8 @@ for ts_row, linux_row in list(zip(ts_episodes, linux_episodes))[:10]:
         f"ts_last_to_exit_ms={ts_row['last_tx_to_exit_ns'] / 1e6:.3f} "
         f"linux_recovery_ms={linux_row['recovery_ns'] / 1e6:.3f} "
         f"linux_samples={linux_row['samples']} linux_acked={linux_row['acked']} "
+        f"linux_open_inflight={linux_row['open_inflight']} "
+        f"linux_open_ssthresh={linux_row['open_ssthresh']} "
         f"linux_strict_tx={linux_row['strict_tx_total']} "
         f"linux_strict_repair={linux_row['strict_repair_tx']} "
         f"linux_strict_new={linux_row['strict_new_tx']} "
@@ -432,6 +463,13 @@ print(
     f"ts_recover_fs_median={median_int([x['recover_fs'] for x in steady_ts])} "
     f"ts_delivered_median={median_int([x['delivered'] for x in steady_ts])} "
     f"ts_prr_out_median={median_int([x['prr_out'] for x in steady_ts])} "
+    f"ts_ssthresh_median={median_int([x['ssthresh'] for x in steady_ts])} "
+    f"ts_exit_inflight_median={median_int([x['exit_inflight'] for x in steady_ts])} "
+    f"ts_target_shortfall_median={median_int([x['target_shortfall'] for x in steady_ts])} "
+    f"ts_target_shortfall_max={max([x['target_shortfall'] for x in steady_ts], default=0)} "
+    f"ts_target_within_mss={sum(x['target_within_mss'] for x in steady_ts)}/{len(steady_ts)} "
+    f"linux_open_ssthresh_median={median_int([x['open_ssthresh'] for x in steady_linux])} "
+    f"linux_open_inflight_median={median_int([x['open_inflight'] for x in steady_linux])} "
     f"ts_tx_median={median_int([x['tx_total'] for x in steady_ts])} "
     f"linux_strict_tx_median={median_int([x['strict_tx_total'] for x in steady_linux])} "
     f"linux_bracket_tx_median={median_int([x['tx_total'] for x in steady_linux])} "
@@ -441,8 +479,8 @@ print(
     f"ts_new_median={median_int([x['new_tx'] for x in steady_ts])} "
     f"linux_strict_new_median={median_int([x['strict_new_tx'] for x in steady_linux])} "
     f"linux_bracket_new_median={median_int([x['new_tx'] for x in steady_linux])} "
-    f"ts_new_over_linux_episode_median={median_float(steady_new_ratios):.6f} "
-    f"ts_total_over_linux_episode_median={median_float(steady_total_ratios):.6f} "
+    f"ts_new_over_linux_strict_episode_median={median_float(steady_new_ratios):.6f} "
+    f"ts_total_over_linux_strict_episode_median={median_float(steady_total_ratios):.6f} "
     f"ts_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in steady_ts]) / 1e6:.3f} "
     f"linux_strict_first_tx_delay_median_ms={median_int([x['strict_first_tx_delay_ns'] for x in steady_linux]) / 1e6:.3f} "
     f"ts_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in steady_ts]) / 1e6:.3f} "
