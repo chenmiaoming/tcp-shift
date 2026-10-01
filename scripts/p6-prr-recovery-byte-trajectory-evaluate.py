@@ -292,6 +292,44 @@ for episode, index in enumerate(transitions, start=1):
             last_progress_ns = int(row["elapsed_ns"])
         prior_sent = max(prior_sent, current_sent)
 
+    # A stricter lower-bound window excludes both the retransmission
+    # transition sample and the first Open sample after recovery.  This avoids
+    # attributing bytes from either 10 ms sampling bucket to recovery when
+    # TCP_INFO cannot resolve their exact state-transition time.
+    transition = linux_rows[index]
+    last_nonopen = linux_rows[end - 1]
+    strict_sent_delta = max(
+        0, int(last_nonopen["bytes_sent"]) - int(transition["bytes_sent"])
+    )
+    strict_retrans_delta = max(
+        0,
+        int(last_nonopen["bytes_retrans"])
+        - int(transition["bytes_retrans"]),
+    )
+    strict_new_delta = max(0, strict_sent_delta - strict_retrans_delta)
+    strict_acked_delta = max(
+        0, int(last_nonopen["bytes_acked"]) - int(transition["bytes_acked"])
+    )
+    transition_ns = int(transition["elapsed_ns"])
+    strict_window = linux_rows[index + 1 : end]
+    strict_progress = [
+        row
+        for row in strict_window
+        if int(row["bytes_sent"]) > int(transition["bytes_sent"])
+    ]
+    strict_first_tx_delay_ns = (
+        int(strict_progress[0]["elapsed_ns"]) - transition_ns
+        if strict_progress
+        else 0
+    )
+    strict_half_tx_delay_ns = first_crossing_ns(
+        strict_window,
+        "bytes_sent",
+        int(transition["bytes_sent"]),
+        (strict_sent_delta + 1) // 2,
+        transition_ns,
+    )
+
     linux_episodes.append(
         {
             "episode": episode,
@@ -307,6 +345,12 @@ for episode, index in enumerate(transitions, start=1):
             "last_tx_to_exit_ns": max(0, end_ns - last_progress_ns)
             if last_progress_ns
             else 0,
+            "strict_acked": strict_acked_delta,
+            "strict_tx_total": strict_sent_delta,
+            "strict_repair_tx": strict_retrans_delta,
+            "strict_new_tx": strict_new_delta,
+            "strict_first_tx_delay_ns": strict_first_tx_delay_ns,
+            "strict_half_tx_delay_ns": strict_half_tx_delay_ns,
             "start_cwnd": int(linux_rows[start]["snd_cwnd"]),
             "start_ssthresh": int(linux_rows[start]["snd_ssthresh"]),
         }
@@ -316,19 +360,19 @@ steady_ts = ts_episodes[8:]
 steady_linux = linux_episodes[8:]
 
 episode_new_ratios = [
-    ratio(ts_row["new_tx"], linux_row["new_tx"])
+    ratio(ts_row["new_tx"], linux_row["strict_new_tx"])
     for ts_row, linux_row in zip(ts_episodes, linux_episodes)
-    if linux_row["new_tx"] > 0
+    if linux_row["strict_new_tx"] > 0
 ]
 steady_new_ratios = [
-    ratio(ts_row["new_tx"], linux_row["new_tx"])
+    ratio(ts_row["new_tx"], linux_row["strict_new_tx"])
     for ts_row, linux_row in zip(steady_ts, steady_linux)
-    if linux_row["new_tx"] > 0
+    if linux_row["strict_new_tx"] > 0
 ]
 steady_total_ratios = [
-    ratio(ts_row["tx_total"], linux_row["tx_total"])
+    ratio(ts_row["tx_total"], linux_row["strict_tx_total"])
     for ts_row, linux_row in zip(steady_ts, steady_linux)
-    if linux_row["tx_total"] > 0
+    if linux_row["strict_tx_total"] > 0
 ]
 
 print(
@@ -338,16 +382,19 @@ print(
     f"tcp_shift_recovery_median_ms={median_int([x['recovery_ns'] for x in ts_episodes]) / 1e6:.3f} "
     f"linux_recovery_median_ms={median_int([x['recovery_ns'] for x in linux_episodes]) / 1e6:.3f} "
     f"tcp_shift_tx_total_median_bytes={median_int([x['tx_total'] for x in ts_episodes])} "
-    f"linux_tx_total_median_bytes={median_int([x['tx_total'] for x in linux_episodes])} "
+    f"linux_strict_tx_median_bytes={median_int([x['strict_tx_total'] for x in linux_episodes])} "
+    f"linux_bracket_tx_median_bytes={median_int([x['tx_total'] for x in linux_episodes])} "
     f"tcp_shift_repair_median_bytes={median_int([x['repair_tx'] for x in ts_episodes])} "
-    f"linux_repair_median_bytes={median_int([x['repair_tx'] for x in linux_episodes])} "
+    f"linux_strict_repair_median_bytes={median_int([x['strict_repair_tx'] for x in linux_episodes])} "
+    f"linux_bracket_repair_median_bytes={median_int([x['repair_tx'] for x in linux_episodes])} "
     f"tcp_shift_new_median_bytes={median_int([x['new_tx'] for x in ts_episodes])} "
-    f"linux_new_median_bytes={median_int([x['new_tx'] for x in linux_episodes])} "
+    f"linux_strict_new_median_bytes={median_int([x['strict_new_tx'] for x in linux_episodes])} "
+    f"linux_bracket_new_median_bytes={median_int([x['new_tx'] for x in linux_episodes])} "
     f"tcp_shift_new_over_linux_episode_median={median_float(episode_new_ratios):.6f} "
     f"tcp_shift_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in ts_episodes]) / 1e6:.3f} "
-    f"linux_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in linux_episodes]) / 1e6:.3f} "
+    f"linux_strict_first_tx_delay_median_ms={median_int([x['strict_first_tx_delay_ns'] for x in linux_episodes]) / 1e6:.3f} "
     f"tcp_shift_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in ts_episodes]) / 1e6:.3f} "
-    f"linux_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in linux_episodes]) / 1e6:.3f} "
+    f"linux_strict_half_tx_delay_median_ms={median_int([x['strict_half_tx_delay_ns'] for x in linux_episodes]) / 1e6:.3f} "
     f"tcp_shift_last_tx_to_exit_median_ms={median_int([x['last_tx_to_exit_ns'] for x in ts_episodes]) / 1e6:.3f} "
     f"linux_last_tx_to_exit_median_ms={median_int([x['last_tx_to_exit_ns'] for x in linux_episodes]) / 1e6:.3f}"
 )
@@ -367,10 +414,14 @@ for ts_row, linux_row in list(zip(ts_episodes, linux_episodes))[:10]:
         f"ts_last_to_exit_ms={ts_row['last_tx_to_exit_ns'] / 1e6:.3f} "
         f"linux_recovery_ms={linux_row['recovery_ns'] / 1e6:.3f} "
         f"linux_samples={linux_row['samples']} linux_acked={linux_row['acked']} "
-        f"linux_tx={linux_row['tx_total']} linux_repair={linux_row['repair_tx']} "
-        f"linux_new={linux_row['new_tx']} "
-        f"linux_first_tx_ms={linux_row['first_tx_delay_ns'] / 1e6:.3f} "
-        f"linux_half_tx_ms={linux_row['half_tx_delay_ns'] / 1e6:.3f} "
+        f"linux_strict_tx={linux_row['strict_tx_total']} "
+        f"linux_strict_repair={linux_row['strict_repair_tx']} "
+        f"linux_strict_new={linux_row['strict_new_tx']} "
+        f"linux_bracket_tx={linux_row['tx_total']} "
+        f"linux_bracket_repair={linux_row['repair_tx']} "
+        f"linux_bracket_new={linux_row['new_tx']} "
+        f"linux_strict_first_tx_ms={linux_row['strict_first_tx_delay_ns'] / 1e6:.3f} "
+        f"linux_strict_half_tx_ms={linux_row['strict_half_tx_delay_ns'] / 1e6:.3f} "
         f"linux_half_new_ms={linux_row['half_new_delay_ns'] / 1e6:.3f} "
         f"linux_last_to_exit_ms={linux_row['last_tx_to_exit_ns'] / 1e6:.3f}"
     )
@@ -382,17 +433,20 @@ print(
     f"ts_delivered_median={median_int([x['delivered'] for x in steady_ts])} "
     f"ts_prr_out_median={median_int([x['prr_out'] for x in steady_ts])} "
     f"ts_tx_median={median_int([x['tx_total'] for x in steady_ts])} "
-    f"linux_tx_median={median_int([x['tx_total'] for x in steady_linux])} "
+    f"linux_strict_tx_median={median_int([x['strict_tx_total'] for x in steady_linux])} "
+    f"linux_bracket_tx_median={median_int([x['tx_total'] for x in steady_linux])} "
     f"ts_repair_median={median_int([x['repair_tx'] for x in steady_ts])} "
-    f"linux_repair_median={median_int([x['repair_tx'] for x in steady_linux])} "
+    f"linux_strict_repair_median={median_int([x['strict_repair_tx'] for x in steady_linux])} "
+    f"linux_bracket_repair_median={median_int([x['repair_tx'] for x in steady_linux])} "
     f"ts_new_median={median_int([x['new_tx'] for x in steady_ts])} "
-    f"linux_new_median={median_int([x['new_tx'] for x in steady_linux])} "
+    f"linux_strict_new_median={median_int([x['strict_new_tx'] for x in steady_linux])} "
+    f"linux_bracket_new_median={median_int([x['new_tx'] for x in steady_linux])} "
     f"ts_new_over_linux_episode_median={median_float(steady_new_ratios):.6f} "
     f"ts_total_over_linux_episode_median={median_float(steady_total_ratios):.6f} "
     f"ts_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in steady_ts]) / 1e6:.3f} "
-    f"linux_first_tx_delay_median_ms={median_int([x['first_tx_delay_ns'] for x in steady_linux]) / 1e6:.3f} "
+    f"linux_strict_first_tx_delay_median_ms={median_int([x['strict_first_tx_delay_ns'] for x in steady_linux]) / 1e6:.3f} "
     f"ts_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in steady_ts]) / 1e6:.3f} "
-    f"linux_half_tx_delay_median_ms={median_int([x['half_tx_delay_ns'] for x in steady_linux]) / 1e6:.3f} "
+    f"linux_strict_half_tx_delay_median_ms={median_int([x['strict_half_tx_delay_ns'] for x in steady_linux]) / 1e6:.3f} "
     f"ts_last_tx_to_exit_median_ms={median_int([x['last_tx_to_exit_ns'] for x in steady_ts]) / 1e6:.3f} "
     f"linux_last_tx_to_exit_median_ms={median_int([x['last_tx_to_exit_ns'] for x in steady_linux]) / 1e6:.3f}"
 )
