@@ -63,18 +63,18 @@ static void usage(const char *program)
     !(defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN)
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "<public-port> <backend-port> [cc]\n"
+            "<public-port> <backend-port> [cc [public-ipv4]]\n"
             "  cc: reno (default) | cubic | bbr\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18090 19090 bbr\n",
+            "18090 19090 bbr 203.0.113.10\n",
             program, program);
 #else
     fprintf(stderr,
             "usage: %s <tun-name> <lwip-ipv4> <netmask> <host-ipv4> "
-            "<public-port> <backend-port> [cc]\n"
+            "<public-port> <backend-port> [cc [public-ipv4]]\n"
             "  cc: reno (default) | cubic\n"
             "example: %s ts0 10.0.0.2 255.255.255.252 10.0.0.1 "
-            "18090 19090 cubic\n",
+            "18090 19090 cubic 203.0.113.10\n",
             program, program);
 #endif
 #endif
