@@ -17,6 +17,7 @@ struct tcp_shift_cc_selector_binding {
 static struct tcp_shift_cc_selector_binding
     tcp_shift_cc_selector_bindings[TCP_SHIFT_CC_SELECTOR_MAX_LISTENERS];
 static const struct tcp_shift_cc_ops *tcp_shift_cc_selector_ops;
+static unsigned tcp_shift_cc_selector_internal_bbr;
 static const struct tcp_shift_lwip_cc_hook_ops *
     tcp_shift_cc_selector_base_hook_ops;
 
@@ -80,6 +81,20 @@ int tcp_shift_lwip_cc_configure_controller(const char *name)
     if (tcp_shift_cc_selector_has_listener() != 0) {
         return -1;
     }
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (name != NULL && strcmp(name, "bbr") == 0) {
+        /* Compact BBR is adapter-bound and therefore deliberately absent from
+         * the pure-C registry.  Experimental exposure selects a listener mode
+         * that chains ordinary adapter/pacer binding into the existing BBR
+         * sidecar.  Default builds never enter this branch. */
+        tcp_shift_cc_selector_ops = tcp_shift_cc_default_ops();
+        tcp_shift_cc_selector_internal_bbr = 1U;
+        return tcp_shift_cc_selector_ops != NULL ? 0 : -1;
+    }
+#endif
+
     if (name == NULL || name[0] == '\0') {
         ops = tcp_shift_cc_default_ops();
     } else {
@@ -89,14 +104,23 @@ int tcp_shift_lwip_cc_configure_controller(const char *name)
         return -1;
     }
     tcp_shift_cc_selector_ops = ops;
+    tcp_shift_cc_selector_internal_bbr = 0U;
     return 0;
 }
 
 const char *tcp_shift_lwip_cc_configured_controller_name(void)
 {
-    const struct tcp_shift_cc_ops *ops = tcp_shift_cc_selector_current();
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (tcp_shift_cc_selector_internal_bbr != 0U) {
+        return "bbr";
+    }
+#endif
+    {
+        const struct tcp_shift_cc_ops *ops = tcp_shift_cc_selector_current();
 
-    return ops != NULL ? ops->name : NULL;
+        return ops != NULL ? ops->name : NULL;
+    }
 }
 
 static int tcp_shift_cc_selector_is_loss_based_ops(
@@ -897,6 +921,16 @@ int tcp_shift_lwip_cc_apply_configured_controller(
     if (adapter == NULL || adapter->pcb == NULL) {
         return -1;
     }
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (tcp_shift_cc_selector_internal_bbr != 0U) {
+        uint32_t cycle_seed =
+            (uint32_t)adapter->pacing_flow_id ^
+            (uint32_t)(adapter->pacing_flow_id >> 32);
+
+        return tcp_shift_lwip_cc_apply_internal_bbr(adapter, cycle_seed);
+    }
+#endif
     return tcp_shift_cc_selector_reinit(adapter, adapter->pcb,
                                         tcp_shift_cc_selector_current());
 }
@@ -938,6 +972,14 @@ void tcp_shift_lwip_cc_accept_selected(struct tcp_pcb *pcb,
                                        tcp_accept_fn accept)
 {
     struct tcp_shift_cc_selector_binding *binding;
+
+#if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
+    TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+    if (tcp_shift_cc_selector_internal_bbr != 0U) {
+        tcp_shift_lwip_cc_accept_internal_bbr(pcb, accept);
+        return;
+    }
+#endif
 
     if (pcb == NULL || pcb->state != LISTEN) {
         tcp_shift_lwip_cc_accept(pcb, accept);
