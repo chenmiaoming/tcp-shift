@@ -25,7 +25,7 @@ d08f4773edd0182b7910fc8f046eed82ffcd67c9
 
 `scripts/fetch-lwip.sh` records pristine critical-source hashes, applies `patches/lwip-p4-cc-hooks.patch` and then `patches/lwip-sack-recovery.patch`, and provenance CI proves exact pin, both patch identities, reverse application of the chain, bounded modified-file scope, no untracked dependency files, and byte-identical independent reapplication.
 
-The controlled patch chain remains confined to `src/core/tcp.c`, `tcp_in.c`, and `tcp_out.c`; no new upstream file is added. SACK negotiation/scoreboard/delivery evidence is enabled only by `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON`; because that changes upstream `struct tcp_pcb`, CMake propagates the definition publicly to every project target that consumes lwIP headers, preventing cross-target PCB ABI skew. RFC 8985 qualification builds combine SACK evidence with `TCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON`. The former fixed three-later-SACK selector and historical `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` alias are removed; CI requires both old configuration flags to fail closed and asserts that the controlled lwIP patch contains no legacy-selector implementation.
+The controlled patch chain remains confined to `src/core/tcp.c`, `tcp_in.c`, and `tcp_out.c`; no new upstream file is added. SACK negotiation/scoreboard/delivery evidence and RFC 8985 RACK-TLP are enabled by the default production profile. Their historical `TCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE` and `TCP_SHIFT_EXPERIMENTAL_RACK_TLP` options remain explicit build controls. Because SACK support changes upstream `struct tcp_pcb`, CMake propagates the definition publicly to every project target that consumes lwIP headers, preventing cross-target PCB ABI skew. The former fixed three-later-SACK selector and historical `TCP_SHIFT_EXPERIMENTAL_SACK_RECOVERY` alias are removed; CI requires both old configuration flags to fail closed and asserts that the controlled lwIP patch contains no legacy-selector implementation.
 
 ## P0/P1/P2 regression layers
 
@@ -46,18 +46,22 @@ cc_controller_errors == 0
 
 P3 measures tcp-shift process residency and CPU separately from backend Linux kernel/application memory. Workloads include 0/8/32/64/128 idle flows, both active-window directions, repeated 128-flow connect/drain rounds, idle/small-operation CPU, and constrained-host process-PSS modeling.
 
-Latest P5c-head run `34870859880`, job `104066205524`, artifact `10358454897`:
+Latest default-RACK/default-BBR availability rerun on PR #104:
 
 ```text
-warm fixed process PSS:           367 KiB
-idle 128-flow PSS:                359 KiB
-conservative active slope:        37.773438 KiB/flow
-128 active projected PSS:        5202 KiB
-8-MiB process budget remaining:  2990 KiB = 23.359 KiB/flow
-3x128 first->last drain growth:   5 KiB
-idle CPU:                        0 ticks/s
-small-operation CPU:             34.179688 us/op
+warm fixed process PSS:             507 KiB
+conservative idle slope:            1.148438 KiB/flow
+conservative active slope:         44.773438 KiB/flow
+128 active projected PSS:        6238 KiB
+8-MiB process budget remaining:   1954 KiB = 15.266 KiB/flow
+3x128 first->last drain growth:      5 KiB
+maximum warm drain floor:          149 KiB
+warm-floor gate:                   160 KiB
+idle CPU:                            0 ticks/s
+small-operation CPU:                19.53125 us/op
 ```
+
+The independent RACK resource A/B retains the recovery-specific budget separately: 184 bytes static per flow, +24 KiB post-drain PSS for the RACK build in the latest rerun, and zero idle recovery-timer wakeups. The 32-KiB repeated-drain ratchet gate is unchanged.
 
 The model remains tcp-shift process PSS only. Backend kernel/application and provider memory are excluded.
 
@@ -200,9 +204,9 @@ The gate does not enable window scaling and does not claim full utilization of a
 
 ## P6 BBR qualification
 
-P6 keeps the compact `bbr` controller internal and treats Linux BBR as a behavioral reference, not an identity claim. The workflow combines pure-C model/controller contracts with live lwIP/TUN qualification so controller policy cannot pass while transport recovery is broken.
+P6 keeps compact `bbr` adapter-bound and treats Linux BBR as a behavioral reference, not an identity claim. Since #104, `bbr` is selectable through the ordinary default IPv4 `tcp-shift-p2` build; omission of `[cc]` still selects Reno. The workflow combines pure-C model/controller contracts with live lwIP/TUN qualification so controller policy cannot pass while transport recovery is broken.
 
-The sender-SACK path is compile-time experimental/default-OFF. Dedicated P6 jobs enable it and require all of the following to remain fail-closed:
+The sender-SACK/RACK path is default-ON. P6 still runs dedicated controller/recovery jobs and requires all of the following to remain fail-closed:
 
 - exact controlled-patch provenance on the same three lwIP TCP core files;
 - deterministic first-send-loss injection with an exact fault count;
