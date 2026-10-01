@@ -9,18 +9,25 @@ int main(void)
 
 #if defined(TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE) && \
     TCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE
+#if defined(TCP_SHIFT_EXPERIMENTAL_ECN) && TCP_SHIFT_EXPERIMENTAL_ECN
+    if (tcp_shift_lwip_cc_configure_controller("bbr") == 0) {
+        fprintf(stderr, "ECN build unexpectedly accepted unsupported bbr\n");
+        return 1;
+    }
+#else
     if (tcp_shift_lwip_cc_configure_controller("bbr") != 0) {
-        fprintf(stderr, "experimental BBR selector rejected bbr\n");
+        fprintf(stderr, "default BBR selector rejected bbr\n");
         return 1;
     }
     name = tcp_shift_lwip_cc_configured_controller_name();
     if (name == NULL || strcmp(name, "bbr") != 0) {
-        fprintf(stderr, "experimental BBR selector name mismatch\n");
+        fprintf(stderr, "default BBR selector name mismatch\n");
         return 1;
     }
+#endif
 #else
     if (tcp_shift_lwip_cc_configure_controller("bbr") == 0) {
-        fprintf(stderr, "default selector unexpectedly accepted bbr\n");
+        fprintf(stderr, "BBR-disabled selector unexpectedly accepted bbr\n");
         return 1;
     }
 #endif
