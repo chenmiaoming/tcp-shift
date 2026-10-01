@@ -26,6 +26,7 @@ on:
       - 'scripts/p2-concurrency-smoke.sh'
       - 'scripts/p2-active-shutdown-smoke.sh'
       - 'scripts/p2-reuse-rss-smoke.sh'
+      - 'scripts/service-config-smoke.sh'
       - 'scripts/validate-p4-adapter-p2-evidence.sh'
       - '.lwip-baseline'
   push:
@@ -56,7 +57,9 @@ jobs:
             cmake \
             git \
             iproute2 \
+            iptables \
             libcap2-bin \
+            nftables \
             python3
 
       - name: Validate bridge harness
@@ -71,6 +74,7 @@ jobs:
           sh -n scripts/p2-concurrency-smoke.sh
           sh -n scripts/p2-active-shutdown-smoke.sh
           sh -n scripts/p2-reuse-rss-smoke.sh
+          sh -n scripts/service-config-smoke.sh
           sh -n scripts/validate-p4-adapter-p2-evidence.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
@@ -80,6 +84,7 @@ jobs:
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build -DCMAKE_BUILD_TYPE=Release
           cmake --build .build --target \
+            tcp-shift \
             tcp-shift-p2 \
             tcp-shift-p2-ipv6 \
             --parallel
@@ -89,6 +94,11 @@ jobs:
           sudo setcap cap_net_admin+ep .build/tcp-shift-p2
           getcap .build/tcp-shift-p2 | tee .build/p2-capability.txt
           grep -F 'cap_net_admin=ep' .build/p2-capability.txt
+
+      - name: Exercise config-driven public ingress end to end
+        run: |
+          sudo env TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
+            sh scripts/service-config-smoke.sh
 
       - name: Exercise IPv4 public bridge and natural teardown
         run: sh scripts/p2-bridge-smoke.sh
@@ -129,6 +139,7 @@ jobs:
           name: tcp-shift-p2-bridge-diagnostics
           path: |
             .build/p2-capability.txt
+            .build/service-config-ci
             .build/p2-bridge-ci
             .build/p2-backpressure-ci
             .build/p2-halfclose-ci
