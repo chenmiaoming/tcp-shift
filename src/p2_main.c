@@ -455,7 +455,9 @@ int main(int argc, char **argv)
     ip4_addr_t address;
     ip4_addr_t netmask;
     ip4_addr_t gateway;
+#ifndef TCP_SHIFT_INTERNAL_BBR_QUALIFICATION
     ip4_addr_t public_address;
+#endif
     uint16_t public_port;
     uint16_t backend_port;
     int l3_attached = 0;
