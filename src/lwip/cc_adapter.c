@@ -2440,6 +2440,14 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
 #if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
     uint32_t trace_pre_cwnd;
     uint32_t trace_pre_ssthresh;
+    uint64_t trace_pre_cwnd_q16;
+    uint64_t trace_pre_w_est_q16;
+    uint64_t trace_pre_w_max_q16;
+    uint64_t trace_pre_cwnd_prior_q16;
+    uint64_t trace_pre_cwnd_epoch_q16;
+    uint64_t trace_pre_k_q10;
+    uint64_t trace_pre_epoch_start_ns;
+    unsigned trace_pre_epoch_active;
 #endif
 
     if (!tcp_shift_lwip_cc_prepare_ack(adapter, pcb, acked_bytes, &ack)) {
@@ -2453,6 +2461,18 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
 #if defined(TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION)
     trace_pre_cwnd = (uint32_t)pcb->cwnd;
     trace_pre_ssthresh = (uint32_t)pcb->ssthresh;
+    trace_pre_cwnd_q16 = adapter->controller_state.cubic.cwnd_q16;
+    trace_pre_w_est_q16 = adapter->controller_state.cubic.w_est_q16;
+    trace_pre_w_max_q16 = adapter->controller_state.cubic.w_max_q16;
+    trace_pre_cwnd_prior_q16 =
+        adapter->controller_state.cubic.cwnd_prior_q16;
+    trace_pre_cwnd_epoch_q16 =
+        adapter->controller_state.cubic.cwnd_epoch_q16;
+    trace_pre_k_q10 = adapter->controller_state.cubic.k_q10;
+    trace_pre_epoch_start_ns =
+        adapter->controller_state.cubic.epoch_start_ns;
+    trace_pre_epoch_active =
+        adapter->controller_state.cubic.epoch_active;
 #endif
     if (tcp_shift_cc_on_ack(&adapter->controller, &transport, &ack,
                             &policy) != 0 ||
@@ -2513,9 +2533,17 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 "hystart_enabled=%u hystart_css=%u hystart_ack_css=%u "
                 "hystart_exit_pending=%u hystart_initial_complete=%u "
                 "hystart_css_enters=%u hystart_css_reverts=%u "
-                "hystart_exits=%u epoch_active=%u app_limited_paused=%u "
-                "epoch_start_ns=%llu w_max_q16=%llu w_est_q16=%llu "
-                "cwnd_prior_q16=%llu last_target_q16=%llu "
+                "hystart_exits=%u "
+                "pre_epoch_active=%u epoch_active=%u "
+                "app_limited_paused=%u "
+                "pre_epoch_start_ns=%llu epoch_start_ns=%llu "
+                "pre_cwnd_q16=%llu cwnd_q16=%llu "
+                "pre_w_max_q16=%llu w_max_q16=%llu "
+                "pre_w_est_q16=%llu w_est_q16=%llu "
+                "pre_cwnd_prior_q16=%llu cwnd_prior_q16=%llu "
+                "pre_cwnd_epoch_q16=%llu cwnd_epoch_q16=%llu "
+                "pre_k_q10=%llu k_q10=%llu "
+                "last_target_q16=%llu fast_convergence=%u "
                 "pacing_Bps=%llu\n",
                 event,
                 (unsigned long long)event_index,
@@ -2540,12 +2568,24 @@ static int tcp_shift_lwip_cc_on_ack(void *arg,
                 model->hystart_css_enter_events,
                 model->hystart_css_revert_events,
                 model->hystart_exit_events,
-                model->epoch_active, model->app_limited_paused,
+                trace_pre_epoch_active, model->epoch_active,
+                model->app_limited_paused,
+                (unsigned long long)trace_pre_epoch_start_ns,
                 (unsigned long long)model->epoch_start_ns,
+                (unsigned long long)trace_pre_cwnd_q16,
+                (unsigned long long)model->cwnd_q16,
+                (unsigned long long)trace_pre_w_max_q16,
                 (unsigned long long)model->w_max_q16,
+                (unsigned long long)trace_pre_w_est_q16,
                 (unsigned long long)model->w_est_q16,
+                (unsigned long long)trace_pre_cwnd_prior_q16,
                 (unsigned long long)model->cwnd_prior_q16,
+                (unsigned long long)trace_pre_cwnd_epoch_q16,
+                (unsigned long long)model->cwnd_epoch_q16,
+                (unsigned long long)trace_pre_k_q10,
+                (unsigned long long)model->k_q10,
                 (unsigned long long)model->last_target_q16,
+                model->fast_convergence,
                 (unsigned long long)adapter->pacing_rate_bytes_per_sec);
     }
 #endif
@@ -2810,10 +2850,15 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
     const struct tcp_shift_cc_policy *policy,
     uint32_t pre_cwnd,
     uint32_t pre_ssthresh,
-    uint64_t pre_pacing)
+    uint64_t pre_pacing,
+    uint64_t pre_cwnd_q16,
+    uint64_t pre_w_max_q16,
+    unsigned pre_has_w_max)
 {
     uint64_t now_ns;
     uint64_t event_index;
+    const struct tcp_shift_cubic_model *model;
+    unsigned fast_convergence_applied;
     uint32_t sacked_ahead_bytes = 0U;
 
     if (!tcp_shift_lwip_cc_cubic_trace_active(adapter) || pcb == NULL ||
@@ -2822,6 +2867,12 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
     }
     now_ns = tcp_shift_delivery_now_ns(adapter);
     event_index = adapter->stats != NULL ? adapter->stats->loss_events + 1U : 0U;
+    model = &adapter->controller_state.cubic;
+    fast_convergence_applied =
+        model->fast_convergence != 0U && pre_has_w_max != 0U &&
+                pre_cwnd_q16 < pre_w_max_q16
+            ? 1U
+            : 0U;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
     sacked_ahead_bytes =
         tcp_shift_lwip_cc_prr_sacked_bytes(adapter, pcb->lastack);
@@ -2832,6 +2883,9 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
             "recovery_end_seq=%u mss=%u inflight_bytes=%u "
             "sacked_ahead_bytes=%u "
             "pre_cwnd=%u post_cwnd=%u pre_ssthresh=%u post_ssthresh=%u "
+            "pre_cwnd_q16=%llu pre_w_max_q16=%llu post_w_max_q16=%llu "
+            "post_cwnd_prior_q16=%llu post_k_q10=%llu "
+            "fast_convergence=%u fast_convergence_applied=%u "
             "pre_pacing_Bps=%llu post_pacing_Bps=%llu\n",
             (unsigned long long)event_index,
             (unsigned long long)now_ns,
@@ -2840,6 +2894,12 @@ static void tcp_shift_lwip_cc_trace_cubic_loss(
             transport->inflight_bytes, sacked_ahead_bytes,
             pre_cwnd, policy->cwnd_bytes,
             pre_ssthresh, policy->ssthresh_bytes,
+            (unsigned long long)pre_cwnd_q16,
+            (unsigned long long)pre_w_max_q16,
+            (unsigned long long)model->w_max_q16,
+            (unsigned long long)model->cwnd_prior_q16,
+            (unsigned long long)model->k_q10,
+            model->fast_convergence, fast_convergence_applied,
             (unsigned long long)pre_pacing,
             (unsigned long long)policy->pacing_rate_bytes_per_sec);
 }
@@ -2899,6 +2959,9 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
         uint32_t pre_cwnd = pcb->cwnd;
         uint32_t pre_ssthresh = pcb->ssthresh;
         uint64_t pre_pacing = adapter->pacing_rate_bytes_per_sec;
+        uint64_t pre_cwnd_q16 = adapter->controller_state.cubic.cwnd_q16;
+        uint64_t pre_w_max_q16 = adapter->controller_state.cubic.w_max_q16;
+        unsigned pre_has_w_max = adapter->controller_state.cubic.has_w_max;
 
         if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
                                  &policy) != 0 ||
@@ -2908,7 +2971,8 @@ static int tcp_shift_lwip_cc_on_loss(void *arg,
         }
         tcp_shift_lwip_cc_trace_cubic_loss(
             adapter, pcb, &transport, &policy,
-            pre_cwnd, pre_ssthresh, pre_pacing);
+            pre_cwnd, pre_ssthresh, pre_pacing,
+            pre_cwnd_q16, pre_w_max_q16, pre_has_w_max);
     }
 #else
     if (tcp_shift_cc_on_loss(&adapter->controller, &transport, &loss,
