@@ -97,15 +97,16 @@ P2 qualifies IPv4/IPv6 public streams bridged to a nonblocking `127.0.0.1` backe
 
 ### P3 memory/capacity
 
-P3 measures tcp-shift process PSS separately from backend/kernel state. On the final P5c behavior head the retained model reports:
+P3 measures tcp-shift process PSS separately from backend/kernel state. The current default-RACK/default-BBR-available profile reports:
 
 ```text
-warm fixed process PSS:           367 KiB
-fully-window-resident slope:      37.773438 KiB/flow
-128-active projected PSS:        5202 KiB
-8-MiB process budget remaining:  2990 KiB = 23.359 KiB/flow
-3x128 drain growth:              5 KiB
-idle CPU:                        0 ticks/s
+warm fixed process PSS:             507 KiB
+fully-window-resident slope:       44.773438 KiB/flow
+128-active projected PSS:        6238 KiB
+8-MiB process budget remaining:   1954 KiB = 15.266 KiB/flow
+3x128 drain growth:                 5 KiB
+maximum warm drain floor:         149 KiB (160-KiB gate)
+idle CPU:                           0 ticks/s
 ```
 
 This is process-PSS planning evidence, not a full-host capacity guarantee.
@@ -159,7 +160,7 @@ heap final:              0
 
 The observed delivery rate becomes window-limited at about 43.7 KiB/s, consistent with a 32 KiB window at roughly 750 ms. P5c therefore proves scheduler correctness/efficiency under BDP pressure; it does not claim the current unscaled window can fully utilize arbitrary high-BDP links. Window scaling remains a later transport concern.
 
-### P6 BBR runtime + RFC 8985 recovery — internal / experimental
+### P6 BBR runtime + RFC 8985 recovery — default-build selectable
 
 The compact `bbr` controller remains internal/experimental, but the transport-recovery direction has changed substantially from the earlier bounded sender-SACK experiment.
 
