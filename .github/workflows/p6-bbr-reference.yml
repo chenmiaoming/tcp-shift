@@ -26,6 +26,7 @@ on:
       - 'scripts/p6-cubic-multiflow-fast-convergence-ab-evaluate.py'
       - 'scripts/p6-cubic-single-flow-residual-evaluate.py'
       - 'scripts/p6-cubic-recovery-pacing-publication-evaluate.py'
+      - 'scripts/p6-cubic-prr-pacing-refresh-ab-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -884,6 +885,7 @@ jobs:
           python3 -m py_compile scripts/p6-cubic-fast-convergence-ab-evaluate.py
           python3 -m py_compile scripts/p6-cubic-single-flow-residual-evaluate.py
           python3 -m py_compile scripts/p6-cubic-recovery-pacing-publication-evaluate.py
+          python3 -m py_compile scripts/p6-cubic-prr-pacing-refresh-ab-evaluate.py
           python3 -m py_compile scripts/p6-prr-recovery-differential-evaluate.py
 
       - name: Build internal BBR with RACK recovery
@@ -892,7 +894,15 @@ jobs:
           cmake -S . -B .build-p6-bbr-first-send \
             -DCMAKE_BUILD_TYPE=Release \
             -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
-          cmake --build .build-p6-bbr-first-send --target tcp-shift-p6-bbr tcp-shift-p2 tcp-shift-p6-cubic-pacing-bypass tcp-shift-p6-cubic-recovery-trace tcp-shift-p6-cubic-single-flow --parallel
+          cmake --build .build-p6-bbr-first-send --target \
+            tcp-shift-p6-bbr \
+            tcp-shift-p2 \
+            tcp-shift-p6-cubic-pacing-bypass \
+            tcp-shift-p6-cubic-recovery-trace \
+            tcp-shift-p6-cubic-single-flow \
+            tcp-shift-p6-cubic-single-flow-prr-pacing-actual \
+            tcp-shift-p6-cubic-single-flow-prr-pacing-raw \
+            --parallel
 
       - name: Run tcp-shift deterministic first-send loss
         run: |
@@ -934,6 +944,42 @@ jobs:
           out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic-single-flow"
           sudo env \
             TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-single-flow" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run no-fast CUBIC with actual-inflight PRR pacing refresh
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic-prr-pacing-actual"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-single-flow-prr-pacing-actual" \
+            TCP_SHIFT_P6_BBR_LONG_CC=cubic \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_QUEUE_PKTS=1784 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$out" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Run no-fast CUBIC with raw-outstanding PRR pacing refresh
+        run: |
+          out="$PWD/.build/p6-bbr-first-send-loss/tcp-shift-cubic-prr-pacing-raw"
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-p6-bbr-first-send/tcp-shift-p6-cubic-single-flow-prr-pacing-raw" \
             TCP_SHIFT_P6_BBR_LONG_CC=cubic \
             TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
             TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
@@ -1142,6 +1188,20 @@ jobs:
             "$root/linux-cubic/tcp-info-trace.tsv" \
             | tee "$root/cubic-recovery-pacing-publication.txt"
 
+      - name: Compare PRR pacing refresh A/B
+        run: |
+          set -o pipefail
+          root="$PWD/.build/p6-bbr-first-send-loss"
+          python3 scripts/p6-cubic-prr-pacing-refresh-ab-evaluate.py \
+            "$root/tcp-shift-cubic-single-flow/summary.txt" \
+            "$root/tcp-shift-cubic-prr-pacing-actual/summary.txt" \
+            "$root/tcp-shift-cubic-prr-pacing-actual/runtime.stderr" \
+            "$root/tcp-shift-cubic-prr-pacing-raw/summary.txt" \
+            "$root/tcp-shift-cubic-prr-pacing-raw/runtime.stderr" \
+            "$root/linux-cubic/summary.txt" \
+            "$root/tcp-shift-cubic-single-flow/runtime.stderr" \
+            | tee "$root/cubic-prr-pacing-refresh-ab.txt"
+
       - name: Audit RFC 9438 FlightSize loss reduction
         run: |
           set -o pipefail
@@ -1187,6 +1247,9 @@ jobs:
               "$root/cubic-single-flow-prr-recovery-differential.txt" \
               "$root/cubic-single-flow-residual.txt" \
               "$root/cubic-recovery-pacing-publication.txt" \
+              "$root/cubic-prr-pacing-refresh-ab.txt" \
+              "$root/tcp-shift-cubic-prr-pacing-actual/summary.txt" \
+              "$root/tcp-shift-cubic-prr-pacing-raw/summary.txt" \
               "$root/cubic-loss-reduction-audit.txt" \
               "$root/prr-recovery-differential.txt"; do
               if [ -f "$file" ]; then
