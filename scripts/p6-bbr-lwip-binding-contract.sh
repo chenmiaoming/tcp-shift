@@ -33,6 +33,8 @@ done
     "$ROOT/src/platform.c" \
     "$BUILD/libtcp_shift_lwip_cc_adapter.a" \
     "$BUILD/libtcp_shift_lwip_tcp_memory.a" \
+    "$BUILD/libtcp_shift_rack_tlp.a" \
+    "$BUILD/libtcp_shift_prr.a" \
     "$BUILD/src/cc/libtcp_shift_cc.a" \
     "$BUILD/libtcp_shift_lwip.a" \
     "$BUILD/libtcp_shift_pacer.a" \
