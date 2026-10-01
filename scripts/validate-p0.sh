@@ -7,6 +7,8 @@ COMPILE_COMMANDS="$BUILD/compile_commands.json"
 TARGET_MANIFEST="$BUILD/CMakeFiles/tcp_shift_lwip.dir/build.make"
 BINARY="$BUILD/tcp-shift"
 CONTRACT="$BUILD/tcp-shift-config-contract"
+SERVICE_CONFIG_CONTRACT="$BUILD/tcp-shift-service-config-contract"
+SERVICE_CONFIG_EXAMPLE="$ROOT/examples/tcp-shift.toml"
 MAX_BINARY_BYTES=${TCP_SHIFT_P0_MAX_BINARY_BYTES:-524288}
 RSS_LIMIT_KIB=${TCP_SHIFT_P0_MAX_RSS_KIB:-16384}
 
@@ -20,6 +22,8 @@ fail()
 [ -f "$TARGET_MANIFEST" ] || fail "missing tcp_shift_lwip build manifest"
 [ -x "$BINARY" ] || fail "missing tcp-shift binary"
 [ -x "$CONTRACT" ] || fail "missing config contract binary"
+[ -x "$SERVICE_CONFIG_CONTRACT" ] || fail "missing service config contract binary"
+[ -f "$SERVICE_CONFIG_EXAMPLE" ] || fail "missing service config example"
 
 # Filelists.cmake defines broad EXCLUDE_FROM_ALL targets, so the global CMake
 # compile database can contain commands for sources that were never built.
@@ -60,6 +64,17 @@ done
 grep -F 'config_contract=ok window_scaling=1 tcp_rcv_scale=0 tcpwnd_size_bytes=4 ' \
     "$BUILD/p0-config-contract.txt" >/dev/null || \
     fail "window-scaling config contract did not report the qualified 32-bit profile"
+
+"$SERVICE_CONFIG_CONTRACT" | tee "$BUILD/p0-service-config-contract.txt"
+grep -F 'service_config=ok ipv4=ok ipv6=ok strict=ok' \
+    "$BUILD/p0-service-config-contract.txt" >/dev/null || \
+    fail "service config parser contract failed"
+
+"$BINARY" --config "$SERVICE_CONFIG_EXAMPLE" --check \
+    > "$BUILD/p0-service-config-check.txt"
+grep -F 'tcp-shift: configuration ok version=1 family=ipv4 cc=bbr ' \
+    "$BUILD/p0-service-config-check.txt" >/dev/null || \
+    fail "service config entrypoint check failed"
 
 "$BINARY" > "$BUILD/p0-smoke.txt"
 grep -F 'tcp-shift: lwIP ' "$BUILD/p0-smoke.txt" >/dev/null || \
