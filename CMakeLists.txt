@@ -274,6 +274,54 @@ target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification 
     tcp_shift_prr
 )
 
+add_library(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification STATIC
+    src/lwip/cc_adapter.c
+    src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
+)
+target_include_directories(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification PRIVATE
+    TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION=1
+    TCP_SHIFT_P6_CUBIC_SINGLE_FLOW_NO_FAST_CONVERGENCE_QUALIFICATION=1
+    TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_ACTUAL_QUALIFICATION=1
+)
+target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification PUBLIC
+    tcp_shift_cc
+    tcp_shift_lwip
+    tcp_shift_pacer
+    tcp_shift_rack_tlp
+    tcp_shift_prr
+)
+
+add_library(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification STATIC
+    src/lwip/cc_adapter.c
+    src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
+)
+target_include_directories(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification PRIVATE
+    TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION=1
+    TCP_SHIFT_P6_CUBIC_SINGLE_FLOW_NO_FAST_CONVERGENCE_QUALIFICATION=1
+    TCP_SHIFT_P6_CUBIC_PRR_PACING_REFRESH_RAW_QUALIFICATION=1
+)
+target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification PUBLIC
+    tcp_shift_cc
+    tcp_shift_lwip
+    tcp_shift_pacer
+    tcp_shift_rack_tlp
+    tcp_shift_prr
+)
+
 add_library(tcp_shift_lwip_cc_bbr_qualification STATIC
     src/lwip/cc_bbr_accept.c
 )
@@ -376,6 +424,48 @@ target_link_libraries(tcp_shift_bridge_cubic_single_flow PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification
+    tcp_shift_lwip_tcp_memory
+)
+
+add_library(tcp_shift_bridge_cubic_single_flow_prr_pacing_actual STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_cubic_single_flow_prr_pacing_actual PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_bridge_cubic_single_flow_prr_pacing_actual PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_bridge_cubic_single_flow_prr_pacing_actual PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_selected
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
+)
+target_link_libraries(tcp_shift_bridge_cubic_single_flow_prr_pacing_actual PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_actual_qualification
+    tcp_shift_lwip_tcp_memory
+)
+
+add_library(tcp_shift_bridge_cubic_single_flow_prr_pacing_raw STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_cubic_single_flow_prr_pacing_raw PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_bridge_cubic_single_flow_prr_pacing_raw PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_bridge_cubic_single_flow_prr_pacing_raw PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_selected
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
+)
+target_link_libraries(tcp_shift_bridge_cubic_single_flow_prr_pacing_raw PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter_cubic_single_flow_prr_pacing_raw_qualification
     tcp_shift_lwip_tcp_memory
 )
 
@@ -519,6 +609,44 @@ target_link_libraries(tcp-shift-p6-cubic-single-flow PRIVATE
     tcp_shift_bridge_cubic_single_flow
 )
 target_link_options(tcp-shift-p6-cubic-single-flow PRIVATE
+    -Wl,--gc-sections
+)
+
+add_executable(tcp-shift-p6-cubic-single-flow-prr-pacing-actual
+    src/p2_main.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p6-cubic-single-flow-prr-pacing-actual PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-p6-cubic-single-flow-prr-pacing-actual PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p6-cubic-single-flow-prr-pacing-actual PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_cubic_single_flow_prr_pacing_actual
+)
+target_link_options(tcp-shift-p6-cubic-single-flow-prr-pacing-actual PRIVATE
+    -Wl,--gc-sections
+)
+
+add_executable(tcp-shift-p6-cubic-single-flow-prr-pacing-raw
+    src/p2_main.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p6-cubic-single-flow-prr-pacing-raw PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-p6-cubic-single-flow-prr-pacing-raw PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p6-cubic-single-flow-prr-pacing-raw PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_cubic_single_flow_prr_pacing_raw
+)
+target_link_options(tcp-shift-p6-cubic-single-flow-prr-pacing-raw PRIVATE
     -Wl,--gc-sections
 )
 
