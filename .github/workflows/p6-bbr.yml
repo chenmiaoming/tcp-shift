@@ -25,6 +25,7 @@ on:
       - 'src/tests/bbr_timeout_test.c'
       - 'src/tests/bbr_delivery_snapshot_test.c'
       - 'src/tests/bbr_lwip_binding_test.c'
+      - 'src/tests/bbr_exposure_selector_test.c'
       - 'scripts/p6-bbr-model-contract.sh'
       - 'scripts/p6-bbr-startup-policy-contract.sh'
       - 'scripts/p6-bbr-drain-policy-contract.sh'
@@ -150,6 +151,107 @@ jobs:
             .build/p6-bbr-lwip-binding-summary.txt
           if-no-files-found: warn
 
+
+  exposure-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install experimental exposure dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            git \
+            iproute2 \
+            iptables \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Fetch pinned lwIP
+        run: sh scripts/fetch-lwip.sh
+
+      - name: Prove default BBR selector is fail-closed
+        run: |
+          cmake -S . -B .build-bbr-default -DCMAKE_BUILD_TYPE=Release
+          cmake --build .build-bbr-default \
+            --target tcp-shift-bbr-exposure-selector-contract --parallel
+          ./.build-bbr-default/tcp-shift-bbr-exposure-selector-contract
+
+      - name: Reject incomplete experimental BBR profiles
+        run: |
+          if cmake -S . -B .build-bbr-invalid \
+            -DTCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE=ON; then
+            echo "BBR exposure unexpectedly configured without SACK/RACK" >&2
+            exit 1
+          fi
+          if cmake -S . -B .build-bbr-ecn-invalid \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_ECN=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE=ON; then
+            echo "BBR exposure unexpectedly configured with unsupported ECN" >&2
+            exit 1
+          fi
+
+      - name: Build experimental production-path BBR
+        run: |
+          cmake -S . -B .build-bbr-exposure \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_BBR_EXPOSURE=ON
+          cmake --build .build-bbr-exposure \
+            --target tcp-shift-p2 tcp-shift-bbr-exposure-selector-contract \
+            --parallel
+          ./.build-bbr-exposure/tcp-shift-bbr-exposure-selector-contract
+
+      - name: Exercise exposed BBR through tcp-shift-p2
+        run: |
+          sudo env \
+            TCP_SHIFT_P6_BBR_LONG_BINARY="$PWD/.build-bbr-exposure/tcp-shift-p2" \
+            TCP_SHIFT_P6_BBR_LONG_CC=bbr \
+            TCP_SHIFT_P6_BBR_LONG_RTT_MS=260 \
+            TCP_SHIFT_P6_BBR_LONG_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_LONG_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MODE=first-send-loss \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_FIRST_PACKET=80 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_COUNT=28 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_GAP_PACKETS=96 \
+            TCP_SHIFT_P6_BBR_LONG_FAULT_MARKER_PREFIX=TSFS \
+            TCP_SHIFT_P6_BBR_LONG_OUT="$PWD/.build/bbr-exposure-first-send-loss" \
+            sh scripts/p6-bbr-long-flow.sh
+
+      - name: Prove exposed BBR kept PRR separate
+        run: |
+          summary=.build/bbr-exposure-first-send-loss/summary.txt
+          grep -F 'cc=bbr ' "$summary"
+          grep -F 'fault_drops=28 ' "$summary"
+          grep -F 'retransmit_events=28 ' "$summary"
+          grep -F 'timeout_events=0 ' "$summary"
+          grep -F 'prr_recovery_enters=0 ' "$summary"
+          grep -F 'prr_recovery_exits=0 ' "$summary"
+          grep -F 'payload_integrity=ok' "$summary"
+          grep -F 'experimental compact BBR exposure enabled' \
+            .build/bbr-exposure-first-send-loss/runtime.stderr
+
+      - name: Upload BBR exposure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-shift-p6-bbr-exposure
+          path: |
+            .build/bbr-exposure-first-send-loss
+            .build/upstream.env
+            .build/lwip-critical.sha256
+            .build/lwip-patch.env
+          if-no-files-found: warn
+          include-hidden-files: true
 
   runtime-recovery:
     runs-on: ubuntu-latest

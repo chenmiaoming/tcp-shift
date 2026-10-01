@@ -906,7 +906,7 @@ recovery_packet_conservation_acks=0
 recovery_last_enter_cwnd_bytes=0
 recovery_last_enter_inflight_bytes=0
 recovery_min_cwnd_bytes=0
-if [ "$CC" = bbr-internal ]; then
+if [ "$CC" = bbr-internal ] || [ "$CC" = bbr ]; then
     [ "$prr_recovery_enters" -eq 0 ] &&
     [ "$prr_recovery_exits" -eq 0 ] &&
     [ "$prr_ack_events" -eq 0 ] &&
