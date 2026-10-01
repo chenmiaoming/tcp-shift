@@ -4,10 +4,15 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 BINARY=${TCP_SHIFT_P6_BBR_MULTI_BINARY:-"$BUILD/tcp-shift-p6-bbr"}
+CC=${TCP_SHIFT_P6_BBR_MULTI_CC:-bbr-internal}
 FLOWS=${TCP_SHIFT_P6_BBR_MULTI_FLOWS:-4}
 RTT_MS=${TCP_SHIFT_P6_BBR_MULTI_RTT_MS:-40}
 RATE_MBIT=${TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT:-10}
 PAYLOAD_BYTES=${TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES:-2097152}
+FAULT_MARKERS_PER_FLOW=${TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKERS_PER_FLOW:-0}
+FAULT_FIRST_PACKET=${TCP_SHIFT_P6_BBR_MULTI_FAULT_FIRST_PACKET:-128}
+FAULT_GAP_PACKETS=${TCP_SHIFT_P6_BBR_MULTI_FAULT_GAP_PACKETS:-256}
+FAULT_MARKER_PREFIX=${TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKER_PREFIX:-TSMF}
 OUT=${TCP_SHIFT_P6_BBR_MULTI_OUT:-"$BUILD/p6-bbr-multiflow"}
 
 TUN_NAME=${TCP_SHIFT_P6_BBR_MULTI_TUN_NAME:-"tsp6mf$$"}
@@ -20,6 +25,9 @@ BACKEND_PORT=${TCP_SHIFT_P6_BBR_MULTI_BACKEND_PORT:-19163}
 
 RUNTIME_PID=
 BACKEND_PID=
+FAULT_CHAIN="P6MF_$TUN_NAME"
+FAULT_CHAIN_CREATED=0
+FAULT_JUMP_INSTALLED=0
 
 mkdir -p "$OUT"
 : > "$OUT/backend.stdout"
@@ -41,7 +49,7 @@ command -v ip >/dev/null 2>&1 || { echo "ip is required" >&2; exit 1; }
 command -v tc >/dev/null 2>&1 || { echo "tc is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
-for value_name in FLOWS RTT_MS RATE_MBIT PAYLOAD_BYTES; do
+for value_name in FLOWS RTT_MS RATE_MBIT PAYLOAD_BYTES FAULT_MARKERS_PER_FLOW FAULT_FIRST_PACKET FAULT_GAP_PACKETS; do
     eval value=\$$value_name
     case "$value" in ''|*[!0-9]*) echo "$value_name must be an integer" >&2; exit 1;; esac
 done
@@ -52,6 +60,20 @@ done
 }
 [ "$RATE_MBIT" -gt 0 ] || { echo "RATE_MBIT must be positive" >&2; exit 1; }
 [ "$PAYLOAD_BYTES" -gt 0 ] || { echo "PAYLOAD_BYTES must be positive" >&2; exit 1; }
+[ "$FAULT_MARKERS_PER_FLOW" -ge 0 ] && [ "$FAULT_MARKERS_PER_FLOW" -le 32 ] || {
+    echo "FAULT_MARKERS_PER_FLOW must be between 0 and 32" >&2
+    exit 1
+}
+[ "$FAULT_GAP_PACKETS" -ge 4 ] || { echo "FAULT_GAP_PACKETS must be at least 4" >&2; exit 1; }
+[ -n "$FAULT_MARKER_PREFIX" ] || { echo "FAULT_MARKER_PREFIX must not be empty" >&2; exit 1; }
+if [ "$FAULT_MARKERS_PER_FLOW" -gt 0 ]; then
+    command -v iptables >/dev/null 2>&1 || { echo "iptables is required for deterministic multi-flow loss" >&2; exit 1; }
+    last_fault_packet=$((FAULT_FIRST_PACKET + (FAULT_MARKERS_PER_FLOW - 1) * FAULT_GAP_PACKETS))
+    [ $((last_fault_packet * 1460 + 512)) -lt "$PAYLOAD_BYTES" ] || {
+        echo "deterministic multi-flow marker range exceeds payload" >&2
+        exit 1
+    }
+fi
 
 HALF_RTT_MS=$((RTT_MS / 2))
 BDP_BYTES=$((RATE_MBIT * RTT_MS * 125))
@@ -75,6 +97,13 @@ cleanup()
     set +e
     stop_pid "${RUNTIME_PID:-}"
     stop_pid "${BACKEND_PID:-}"
+    if [ "$FAULT_JUMP_INSTALLED" -ne 0 ]; then
+        iptables -D INPUT -i "$TUN_NAME" -j "$FAULT_CHAIN" >/dev/null 2>&1 || true
+    fi
+    if [ "$FAULT_CHAIN_CREATED" -ne 0 ]; then
+        iptables -F "$FAULT_CHAIN" >/dev/null 2>&1 || true
+        iptables -X "$FAULT_CHAIN" >/dev/null 2>&1 || true
+    fi
     tc qdisc del dev "$TUN_NAME" root >/dev/null 2>&1 || true
     tc qdisc del dev "$TUN_NAME" ingress >/dev/null 2>&1 || true
     tc qdisc del dev "$IFB_NAME" root >/dev/null 2>&1 || true
@@ -85,7 +114,7 @@ cleanup()
 }
 trap cleanup EXIT HUP INT TERM
 
-python3 - "$BACKEND_PORT" "$FLOWS" "$PAYLOAD_BYTES" \
+python3 - "$BACKEND_PORT" "$FLOWS" "$PAYLOAD_BYTES" "$FAULT_MARKERS_PER_FLOW" "$FAULT_FIRST_PACKET" "$FAULT_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
     > "$OUT/backend.stdout" 2> "$OUT/backend.stderr" <<'PY' &
 import hashlib
 import socket
@@ -96,6 +125,10 @@ import threading
 port = int(sys.argv[1])
 flows = int(sys.argv[2])
 payload_bytes = int(sys.argv[3])
+fault_markers = int(sys.argv[4])
+fault_first_packet = int(sys.argv[5])
+fault_gap_packets = int(sys.argv[6])
+fault_prefix = sys.argv[7]
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -117,8 +150,19 @@ def worker(index, conn):
     # Match the Linux reference harness: complete CPU-heavy payload setup
     # before synchronizing the send start. Otherwise CPython's GIL can stagger
     # the flows after the barrier and contaminate early RTT observations.
-    payload = bytes((((offset * 73) + 19 + index * 17) & 0xFF)
-                    for offset in range(payload_bytes))
+    payload = bytearray((((offset * 73) + 19 + index * 17) & 0xFF)
+                        for offset in range(payload_bytes))
+    for marker_index in range(fault_markers):
+        packet_index = fault_first_packet + marker_index * fault_gap_packets
+        marker = f"{fault_prefix}{index:02d}{marker_index:02d}".encode("ascii")
+        region = marker * 4
+        offset = packet_index * 1460 + 256
+        if offset + len(region) >= payload_bytes:
+            raise RuntimeError(
+                f"marker exceeds payload flow={index} marker={marker_index} offset={offset}"
+            )
+        payload[offset : offset + len(region)] = region
+    payload = bytes(payload)
     header = struct.pack("!IQ", index, payload_bytes)
     digest = hashlib.sha256(payload).hexdigest()
     start.wait()
@@ -173,7 +217,7 @@ grep -F "backend-ready port=$BACKEND_PORT flows=$FLOWS" "$OUT/backend.stdout" >/
 }
 
 "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
-    "$PUBLIC_PORT" "$BACKEND_PORT" bbr-internal \
+    "$PUBLIC_PORT" "$BACKEND_PORT" "$CC" \
     > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 RUNTIME_PID=$!
 
@@ -181,7 +225,7 @@ i=0
 while [ "$i" -lt 100 ]; do
     if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
        grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1 &&
-       grep -F 'cc=bbr-internal' "$OUT/runtime.stdout" >/dev/null 2>&1; then
+       grep -F "cc=$CC" "$OUT/runtime.stdout" >/dev/null 2>&1; then
         break
     fi
     kill -0 "$RUNTIME_PID" 2>/dev/null || {
@@ -212,7 +256,27 @@ tc qdisc replace dev "$TUN_NAME" root netem \
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-before.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-before.txt"
 
-python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOWS" "$PAYLOAD_BYTES" \
+if [ "$FAULT_MARKERS_PER_FLOW" -gt 0 ]; then
+    iptables -N "$FAULT_CHAIN"
+    FAULT_CHAIN_CREATED=1
+    iptables -I INPUT 1 -i "$TUN_NAME" -j "$FAULT_CHAIN"
+    FAULT_JUMP_INSTALLED=1
+    flow_i=0
+    while [ "$flow_i" -lt "$FLOWS" ]; do
+        marker_i=0
+        while [ "$marker_i" -lt "$FAULT_MARKERS_PER_FLOW" ]; do
+            marker=$(printf '%s%02d%02d' "$FAULT_MARKER_PREFIX" "$flow_i" "$marker_i")
+            iptables -A "$FAULT_CHAIN" -s "$LWIP_IP" -d "$HOST_IP" \
+                -p tcp --sport "$PUBLIC_PORT" -m length --length 100:65535 \
+                -m string --algo bm --string "$marker" \
+                -m statistic --mode nth --every 10000 --packet 0 -j DROP
+            marker_i=$((marker_i + 1))
+        done
+        flow_i=$((flow_i + 1))
+    done
+fi
+
+python3 - "$LWIP_IP" "$PUBLIC_PORT" "$FLOWS" "$PAYLOAD_BYTES" "$FAULT_MARKERS_PER_FLOW" "$FAULT_FIRST_PACKET" "$FAULT_GAP_PACKETS" "$FAULT_MARKER_PREFIX" \
     > "$OUT/client.stdout" 2> "$OUT/client.stderr" <<'PY'
 import hashlib
 import json
@@ -226,6 +290,10 @@ host = sys.argv[1]
 port = int(sys.argv[2])
 flows = int(sys.argv[3])
 expected_payload = int(sys.argv[4])
+fault_markers = int(sys.argv[5])
+fault_first_packet = int(sys.argv[6])
+fault_gap_packets = int(sys.argv[7])
+fault_prefix = sys.argv[8]
 barrier = threading.Barrier(flows)
 lock = threading.Lock()
 results = []
@@ -262,8 +330,15 @@ def worker(client_index):
             raise RuntimeError(f"flow={flow_id} unexpected tail data")
         elapsed_ns = time.monotonic_ns() - start_ns
 
-    expected = bytes((((offset * 73) + 19 + flow_id * 17) & 0xFF)
-                     for offset in range(payload_bytes))
+    expected = bytearray((((offset * 73) + 19 + flow_id * 17) & 0xFF)
+                         for offset in range(payload_bytes))
+    for marker_index in range(fault_markers):
+        packet_index = fault_first_packet + marker_index * fault_gap_packets
+        marker = f"{fault_prefix}{flow_id:02d}{marker_index:02d}".encode("ascii")
+        region = marker * 4
+        offset = packet_index * 1460 + 256
+        expected[offset : offset + len(region)] = region
+    expected = bytes(expected)
     digest = hashlib.sha256(payload).hexdigest()
     expected_digest = hashlib.sha256(expected).hexdigest()
     if digest != expected_digest:
@@ -331,6 +406,11 @@ BACKEND_PID=
 
 tc -s qdisc show dev "$TUN_NAME" > "$OUT/tun-qdisc-after.txt"
 tc -s qdisc show dev "$IFB_NAME" > "$OUT/ifb-qdisc-after.txt"
+fault_drops=0
+if [ "$FAULT_MARKERS_PER_FLOW" -gt 0 ]; then
+    iptables -L "$FAULT_CHAIN" -v -n -x > "$OUT/fault-chain.txt"
+    fault_drops=$(awk '$3 == "DROP" { total += $1 } END { print total + 0 }' "$OUT/fault-chain.txt")
+fi
 ifb_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/ifb-qdisc-after.txt" | head -n 1)
 tun_drops=$(sed -n 's/.*(dropped \([0-9][0-9]*\),.*/\1/p' "$OUT/tun-qdisc-after.txt" | head -n 1)
 qdisc_failed=0
@@ -370,20 +450,30 @@ grep -F 'cc_controller_errors=0' "$OUT/runtime.stderr" >/dev/null
 events=$(grep -m1 ' cc_bindings=' "$OUT/runtime.stderr")
 loss_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_loss_events=\([0-9][0-9]*\).*/\1/p')
 timeout_events=$(printf '%s\n' "$events" | sed -n 's/.* cc_timeout_events=\([0-9][0-9]*\).*/\1/p')
-[ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
-[ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
-    echo "multi-flow clean path entered recovery: loss=${loss_events:-missing} timeout=${timeout_events:-missing}" >&2
-    exit 1
-}
+expected_faults=$((FLOWS * FAULT_MARKERS_PER_FLOW))
+if [ "$expected_faults" -eq 0 ]; then
+    [ -n "$loss_events" ] && [ "$loss_events" -eq 0 ] &&
+    [ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
+        echo "multi-flow clean path entered recovery: loss=${loss_events:-missing} timeout=${timeout_events:-missing}" >&2
+        exit 1
+    }
+else
+    [ "$fault_drops" -eq "$expected_faults" ] &&
+    [ -n "$loss_events" ] && [ "$loss_events" -eq "$expected_faults" ] &&
+    [ -n "$timeout_events" ] && [ "$timeout_events" -eq 0 ] || {
+        echo "multi-flow deterministic loss mismatch: injected=$fault_drops expected=$expected_faults loss=${loss_events:-missing} timeout=${timeout_events:-missing}" >&2
+        exit 1
+    }
+fi
 
 delivery=$(grep -m1 'tcp-shift-p2-delivery:' "$OUT/runtime.stderr")
 delivered_bytes=$(printf '%s\n' "$delivery" | sed -n 's/.* delivered_payload_bytes=\([0-9][0-9]*\).*/\1/p')
 retransmit_events=$(printf '%s\n' "$delivery" | sed -n 's/.* retransmit_events=\([0-9][0-9]*\).*/\1/p')
 live_slots=$(printf '%s\n' "$delivery" | sed -n 's/.* live_slots=\([0-9][0-9]*\).*/\1/p')
 [ -n "$delivered_bytes" ] && [ "$delivered_bytes" -eq "$TOTAL_WIRE_BYTES" ] &&
-[ -n "$retransmit_events" ] && [ "$retransmit_events" -eq 0 ] &&
+[ -n "$retransmit_events" ] && [ "$retransmit_events" -eq "$expected_faults" ] &&
 [ -n "$live_slots" ] && [ "$live_slots" -eq 0 ] || {
-    echo "invalid BBR multi-flow delivery telemetry" >&2
+    echo "invalid multi-flow delivery telemetry: delivered=${delivered_bytes:-missing} retrans=${retransmit_events:-missing} expected_retrans=$expected_faults live=${live_slots:-missing}" >&2
     exit 1
 }
 
@@ -395,14 +485,15 @@ pacing_tx_bytes=$(printf '%s\n' "$pacing" | sed -n 's/.* tx_bytes=\([0-9][0-9]*\
 loop_errors=$(printf '%s\n' "$pacing" | sed -n 's/.* loop_callback_errors=\([0-9][0-9]*\).*/\1/p')
 heap_current=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_current=\([0-9][0-9]*\).*/\1/p')
 heap_peak=$(printf '%s\n' "$pacing" | sed -n 's/.* heap_peak=\([0-9][0-9]*\).*/\1/p')
+expected_pacing_tx_bytes=$((TOTAL_WIRE_BYTES + expected_faults * 1460))
 [ -n "$pacing_deferrals" ] && [ "$pacing_deferrals" -ge "$FLOWS" ] &&
 [ -n "$pacing_resumes" ] && [ "$pacing_resumes" -ge "$FLOWS" ] &&
 [ -n "$pacing_errors" ] && [ "$pacing_errors" -eq 0 ] &&
-[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$TOTAL_WIRE_BYTES" ] &&
+[ -n "$pacing_tx_bytes" ] && [ "$pacing_tx_bytes" -eq "$expected_pacing_tx_bytes" ] &&
 [ -n "$loop_errors" ] && [ "$loop_errors" -eq 0 ] &&
 [ -n "$heap_current" ] && [ "$heap_current" -eq 0 ] &&
 [ -n "$heap_peak" ] && [ "$heap_peak" -ge 2 ] || {
-    echo "invalid BBR multi-flow shared-pacer telemetry" >&2
+    echo "invalid multi-flow shared-pacer telemetry: tx=${pacing_tx_bytes:-missing} expected_tx=$expected_pacing_tx_bytes deferrals=${pacing_deferrals:-missing} resumes=${pacing_resumes:-missing}" >&2
     exit 1
 }
 
@@ -410,15 +501,18 @@ aggregate=$(sed -n 's/.* aggregate_goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/
 min_flow=$(sed -n 's/.* min_flow_goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdout" | tail -n 1)
 max_flow=$(sed -n 's/.* max_flow_goodput_mbps=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdout" | tail -n 1)
 jain=$(sed -n 's/.* jain_fairness=\([0-9.][0-9.]*\).*/\1/p' "$OUT/client.stdout" | tail -n 1)
+fast_convergence_events=$(grep -c 'tcp-shift-cubic-trace: event=loss .*fast_convergence_applied=1' "$OUT/runtime.stderr" || true)
+[ -n "$fast_convergence_events" ] || fast_convergence_events=0
 [ -n "$aggregate" ] && [ -n "$min_flow" ] && [ -n "$max_flow" ] && [ -n "$jain" ] || {
     echo "missing BBR multi-flow client metrics" >&2
     exit 1
 }
 
-printf 'p6_bbr_multiflow=ok flows=%s base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s payload_bytes_per_flow=%s total_wire_bytes=%s aggregate_goodput_mbps=%s min_flow_goodput_mbps=%s max_flow_goodput_mbps=%s jain_fairness=%s heap_peak=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s loss_events=%s timeout_events=%s payload_integrity=ok\n' \
-    "$FLOWS" "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" \
+printf 'p6_bbr_multiflow=ok cc=%s flows=%s base_rtt_ms=%s rate_mbit=%s bdp_bytes=%s queue_pkts=%s payload_bytes_per_flow=%s total_wire_bytes=%s aggregate_goodput_mbps=%s min_flow_goodput_mbps=%s max_flow_goodput_mbps=%s jain_fairness=%s heap_peak=%s pacing_deferrals=%s pacing_resumes=%s qdisc_drops=%s/%s fault_markers_per_flow=%s fault_drops=%s retransmit_events=%s loss_events=%s timeout_events=%s fast_convergence_events=%s payload_integrity=ok\n' \
+    "$CC" "$FLOWS" "$RTT_MS" "$RATE_MBIT" "$BDP_BYTES" "$QUEUE_PKTS" \
     "$PAYLOAD_BYTES" "$TOTAL_WIRE_BYTES" "$aggregate" "$min_flow" "$max_flow" "$jain" \
     "$heap_peak" "$pacing_deferrals" "$pacing_resumes" "$ifb_drops" "$tun_drops" \
-    "$loss_events" "$timeout_events" | tee "$OUT/summary.txt"
+    "$FAULT_MARKERS_PER_FLOW" "$fault_drops" "$retransmit_events" "$loss_events" "$timeout_events" \
+    "$fast_convergence_events" | tee "$OUT/summary.txt"
 
-echo "P6 internal BBR multi-flow shared-pacer qualification passed"
+echo "P6 multi-flow shared-pacer qualification passed cc=$CC faults=$expected_faults"

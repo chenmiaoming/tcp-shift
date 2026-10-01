@@ -23,6 +23,7 @@ on:
       - 'scripts/p6-cubic-rfc9438-growth-audit.py'
       - 'scripts/p6-cubic-loss-reduction-audit.py'
       - 'scripts/p6-cubic-fast-convergence-ab-evaluate.py'
+      - 'scripts/p6-cubic-multiflow-fast-convergence-ab-evaluate.py'
       - 'src/cc/**'
       - 'src/lwip/**'
       - 'src/runtime/**'
@@ -366,6 +367,129 @@ jobs:
             .build/p6-bbr-multiflow/edge-bdp-repeat-2
             .build/p6-bbr-multiflow/edge-bdp-repeat-3
             .build/linux-bbr-multiflow/edge-bdp
+          if-no-files-found: warn
+          include-hidden-files: true
+
+  cubic-fast-convergence-multiflow-reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout tcp-shift
+        uses: actions/checkout@v4
+
+      - name: Install CUBIC multi-flow dependencies
+        run: |
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ethtool \
+            git \
+            iproute2 \
+            iptables \
+            kmod \
+            python3
+          sudo modprobe tun || true
+          sudo modprobe ifb || true
+          test -c /dev/net/tun
+
+      - name: Validate CUBIC multi-flow harness
+        run: |
+          sh -n scripts/p6-bbr-multiflow.sh
+          python3 -m py_compile scripts/p6-cubic-multiflow-fast-convergence-ab-evaluate.py
+
+      - name: Build CUBIC fast-convergence A/B targets
+        run: |
+          sh scripts/fetch-lwip.sh
+          cmake -S . -B .build-p6-cubic-multiflow \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=ON \
+            -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=ON
+          cmake --build .build-p6-cubic-multiflow \
+            --target tcp-shift-p6-cubic-recovery-trace tcp-shift-p6-cubic-single-flow \
+            --parallel
+
+      - name: Run default CUBIC deterministic multi-flow loss
+        run: |
+          out="$PWD/.build/p6-cubic-fast-convergence-multiflow/default"
+          sudo env \
+            TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-cubic-multiflow/tcp-shift-p6-cubic-recovery-trace" \
+            TCP_SHIFT_P6_BBR_MULTI_CC=cubic \
+            TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKERS_PER_FLOW=8 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_FIRST_PACKET=128 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_GAP_PACKETS=256 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKER_PREFIX=TSMF \
+            TCP_SHIFT_P6_BBR_MULTI_TUN_NAME=tsp6mfc0 \
+            TCP_SHIFT_P6_BBR_MULTI_IFB_NAME=p6mfcif0 \
+            TCP_SHIFT_P6_BBR_MULTI_PUBLIC_PORT=18460 \
+            TCP_SHIFT_P6_BBR_MULTI_BACKEND_PORT=19460 \
+            TCP_SHIFT_P6_BBR_MULTI_OUT="$out" \
+            sh scripts/p6-bbr-multiflow.sh
+
+      - name: Run CUBIC multi-flow with fast convergence disabled
+        run: |
+          out="$PWD/.build/p6-cubic-fast-convergence-multiflow/no-fast"
+          sudo env \
+            TCP_SHIFT_P6_BBR_MULTI_BINARY="$PWD/.build-p6-cubic-multiflow/tcp-shift-p6-cubic-single-flow" \
+            TCP_SHIFT_P6_BBR_MULTI_CC=cubic \
+            TCP_SHIFT_P6_BBR_MULTI_FLOWS=4 \
+            TCP_SHIFT_P6_BBR_MULTI_RTT_MS=40 \
+            TCP_SHIFT_P6_BBR_MULTI_RATE_MBIT=10 \
+            TCP_SHIFT_P6_BBR_MULTI_PAYLOAD_BYTES=4194304 \
+            TCP_SHIFT_P6_BBR_MULTI_QUEUE_PKTS=280 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKERS_PER_FLOW=8 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_FIRST_PACKET=128 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_GAP_PACKETS=256 \
+            TCP_SHIFT_P6_BBR_MULTI_FAULT_MARKER_PREFIX=TSMF \
+            TCP_SHIFT_P6_BBR_MULTI_TUN_NAME=tsp6mfc1 \
+            TCP_SHIFT_P6_BBR_MULTI_IFB_NAME=p6mfcif1 \
+            TCP_SHIFT_P6_BBR_MULTI_PUBLIC_PORT=18461 \
+            TCP_SHIFT_P6_BBR_MULTI_BACKEND_PORT=19461 \
+            TCP_SHIFT_P6_BBR_MULTI_OUT="$out" \
+            sh scripts/p6-bbr-multiflow.sh
+
+      - name: Compare CUBIC multi-flow fast convergence
+        run: |
+          root="$PWD/.build/p6-cubic-fast-convergence-multiflow"
+          sudo chown -R "$USER:$USER" "$root"
+          python3 scripts/p6-cubic-multiflow-fast-convergence-ab-evaluate.py \
+            "$root/default/summary.txt" \
+            "$root/no-fast/summary.txt" \
+            | tee "$root/comparison.txt"
+
+      - name: Publish CUBIC multi-flow fast-convergence evidence
+        if: always()
+        run: |
+          root=.build/p6-cubic-fast-convergence-multiflow
+          {
+            echo "## CUBIC fast-convergence multi-flow A/B"
+            echo
+            echo "4 flows, RTT=40ms, rate=10Mbit/s, payload=4MiB/flow, 8 deterministic losses/flow"
+            for file in \
+              "$root/default/summary.txt" \
+              "$root/no-fast/summary.txt" \
+              "$root/comparison.txt"; do
+              if [ -f "$file" ]; then
+                echo
+                echo '~~~text'
+                cat "$file"
+                echo '~~~'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload CUBIC multi-flow fast-convergence diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p6-cubic-fast-convergence-multiflow
+          path: .build/p6-cubic-fast-convergence-multiflow
           if-no-files-found: warn
           include-hidden-files: true
 
