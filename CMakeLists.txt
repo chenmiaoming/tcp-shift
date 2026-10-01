@@ -251,6 +251,29 @@ target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_trace_qualification PUBLIC
     tcp_shift_prr
 )
 
+add_library(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification STATIC
+    src/lwip/cc_adapter.c
+    src/lwip/cc_selector.c
+    src/lwip/cc_bbr_internal.c
+)
+target_include_directories(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification PRIVATE
+    TCP_SHIFT_P6_CUBIC_RECOVERY_TRACE_QUALIFICATION=1
+    TCP_SHIFT_P6_CUBIC_SINGLE_FLOW_NO_FAST_CONVERGENCE_QUALIFICATION=1
+)
+target_link_libraries(tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification PUBLIC
+    tcp_shift_cc
+    tcp_shift_lwip
+    tcp_shift_pacer
+    tcp_shift_rack_tlp
+    tcp_shift_prr
+)
+
 add_library(tcp_shift_lwip_cc_bbr_qualification STATIC
     src/lwip/cc_bbr_accept.c
 )
@@ -332,6 +355,27 @@ target_link_libraries(tcp_shift_bridge_cubic_trace PUBLIC
     tcp_shift_runtime
     tcp_shift_lwip
     tcp_shift_lwip_cc_adapter_cubic_trace_qualification
+    tcp_shift_lwip_tcp_memory
+)
+
+add_library(tcp_shift_bridge_cubic_single_flow STATIC
+    src/bridge/bridge.c
+)
+target_include_directories(tcp_shift_bridge_cubic_single_flow PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp_shift_bridge_cubic_single_flow PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_compile_definitions(tcp_shift_bridge_cubic_single_flow PRIVATE
+    tcp_accept=tcp_shift_lwip_cc_accept_selected
+    tcp_write=tcp_shift_lwip_tcp_memory_write
+    tcp_sent=tcp_shift_lwip_tcp_memory_sent
+)
+target_link_libraries(tcp_shift_bridge_cubic_single_flow PUBLIC
+    tcp_shift_runtime
+    tcp_shift_lwip
+    tcp_shift_lwip_cc_adapter_cubic_single_flow_qualification
     tcp_shift_lwip_tcp_memory
 )
 
@@ -456,6 +500,25 @@ target_link_libraries(tcp-shift-p6-cubic-recovery-trace PRIVATE
     tcp_shift_bridge_cubic_trace
 )
 target_link_options(tcp-shift-p6-cubic-recovery-trace PRIVATE
+    -Wl,--gc-sections
+)
+
+add_executable(tcp-shift-p6-cubic-single-flow
+    src/p2_main.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-p6-cubic-single-flow PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-p6-cubic-single-flow PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+    -ffunction-sections -fdata-sections
+)
+target_link_libraries(tcp-shift-p6-cubic-single-flow PRIVATE
+    tcp_shift_host
+    tcp_shift_bridge_cubic_single_flow
+)
+target_link_options(tcp-shift-p6-cubic-single-flow PRIVATE
     -Wl,--gc-sections
 )
 
