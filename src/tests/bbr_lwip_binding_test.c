@@ -100,7 +100,9 @@ int main(void)
     unsigned char segment;
 
     CHECK(tcp_shift_cc_find_ops("bbr") == NULL);
-    CHECK(tcp_shift_lwip_cc_configure_controller("bbr") < 0);
+    CHECK(tcp_shift_lwip_cc_configure_controller("bbr") == 0);
+    CHECK(strcmp(tcp_shift_lwip_cc_configured_controller_name(), "bbr") == 0);
+    CHECK(tcp_shift_lwip_cc_configure_controller("reno") == 0);
 
     memset(&adapter, 0, sizeof(adapter));
     memset(&stats, 0, sizeof(stats));
@@ -216,7 +218,7 @@ int main(void)
     CHECK(tcp_shift_lwip_cc_clear_pacer() == 0);
     tcp_abort(pcb);
 
-    printf("bbr_lwip_binding=ok public_registry=disabled sidecar=pcb-ext-2 "
+    printf("bbr_lwip_binding=ok pure_registry=disabled selector=enabled sidecar=pcb-ext-2 "
            "ack_delivery_sample=ok pacing=nonzero scheduler_exec=ok "
            "sndbuf_hint=3xcwnd passive_open_hint=deferred recovery=controller-owned "
            "rto_post_loss_inflight=0 pacing_after_rto=preserved "
