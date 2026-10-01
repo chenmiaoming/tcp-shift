@@ -24,6 +24,8 @@ do
 done
 
 "$CC" -std=gnu11 -Wall -Wextra -Wpedantic -Werror \
+    -DTCP_SHIFT_EXPERIMENTAL_SACK_EVIDENCE=1 \
+    -DTCP_SHIFT_EXPERIMENTAL_RACK_TLP=1 \
     -I"$ROOT/src" \
     -I"$ROOT/.deps/lwip/src/include" \
     -I"$ROOT/.deps/lwip/contrib/ports/unix/port/include" \
