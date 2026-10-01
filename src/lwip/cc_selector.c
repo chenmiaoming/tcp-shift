@@ -855,6 +855,17 @@ static int tcp_shift_cc_selector_reinit(struct tcp_shift_lwip_cc_adapter *adapte
         return -1;
     }
 
+#if defined(TCP_SHIFT_P6_CUBIC_SINGLE_FLOW_NO_FAST_CONVERGENCE_QUALIFICATION)
+    /* RFC 9438 section 4.7 says fast convergence SHOULD be disabled when
+     * there is only one CUBIC flow and no other traffic. Keep production
+     * defaults untouched; this qualification-only build isolates that policy
+     * on the deterministic single-flow reference path. */
+    if (ops == &tcp_shift_cubic_ops) {
+        tcp_shift_cubic_model_set_fast_convergence(
+            &adapter->controller_state.cubic, 0U);
+    }
+#endif
+
     if (tcp_shift_cc_selector_is_loss_based_ops(ops) != 0 &&
         tcp_shift_cc_selector_publish_initial_pacing(
             adapter, ops, &transport, &policy) != 0) {
