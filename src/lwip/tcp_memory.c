@@ -230,8 +230,8 @@ int tcp_shift_tcp_memory_config_default(
     if (max_candidate < TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES) {
         max_candidate = TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES;
     }
-    if (max_candidate > UINT32_MAX) {
-        max_candidate = UINT32_MAX;
+    if (max_candidate > TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_BYTES) {
+        max_candidate = TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_BYTES;
     }
     if (max_candidate < initial) {
         max_candidate = initial;
