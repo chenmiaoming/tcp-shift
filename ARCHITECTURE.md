@@ -118,6 +118,8 @@ Backend -> public uses a small stack scratch buffer plus `MSG_PEEK`. Host bytes 
 
 Backend sockets request 16-KiB send/receive buffers; Linux currently reports 32 KiB each on the runner. Half-close is directional. Once backend EOF is known, level-triggered `EPOLLRDHUP` is not left armed without useful work, preventing readiness spin.
 
+Public-side sender memory is runtime-managed. The automatic `tcp_wmem` policy retains a conservative 4 MiB default maximum on large hosts, but this is not a build ceiling: an explicit runtime `TCP_SHIFT_TCP_WMEM=min,initial,max` override may select a larger maximum. lwIP's compile-time `TCP_SND_BUF` remains only a reference/configuration constant, while the per-PCB `snd_buf` is replaced and grown by tcp-shift's memory manager. The pinned lwIP `u16_t snd_queuelen` remains a structural pbuf-count bound and is configured to its largest safe value; it is not used as a byte-policy ceiling.
+
 Flow failure is isolated. Backend refusal/reset or public reset tears down only that flow. `bridge_stop()` explicitly aborts active flows and clears pending pbuf residency before process exit.
 
 ## Congestion-control policy boundary
