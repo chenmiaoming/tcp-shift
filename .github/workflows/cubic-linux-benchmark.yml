@@ -11,6 +11,8 @@ on:
       - 'scripts/p3-backend-to-public-residency.sh'
       - 'scripts/p3-backend-to-public-stability.sh'
       - 'src/lwipopts.h'
+      - 'src/lwip/tcp_memory.c'
+      - 'src/lwip/tcp_memory.h'
       - 'src/config_contract.c'
       - 'src/cc/cubic.c'
       - 'src/cc/cubic.h'
@@ -275,6 +277,7 @@ jobs:
           build="$PWD/.build-sndbuf-${{ matrix.sndbuf_kib }}"
           out="$PWD/.build/sender-buffer-qualification/${{ matrix.sndbuf_kib }}kib/clean-high-bdp"
           sudo env \
+            TCP_SHIFT_TCP_WMEM="4K,32K,${{ matrix.sndbuf_bytes }}" \
             TCP_SHIFT_CC_BENCH_BINARY="$build/tcp-shift-p2" \
             TCP_SHIFT_CC_BENCH_CASE="sndbuf-${{ matrix.sndbuf_kib }}-clean-high-bdp" \
             TCP_SHIFT_CC_BENCH_RTT_MS=100 \
@@ -291,6 +294,7 @@ jobs:
           build="$PWD/.build-sndbuf-${{ matrix.sndbuf_kib }}"
           out="$PWD/.build/sender-buffer-qualification/${{ matrix.sndbuf_kib }}kib/openvz-stress"
           sudo env \
+            TCP_SHIFT_TCP_WMEM="4K,32K,${{ matrix.sndbuf_bytes }}" \
             TCP_SHIFT_CC_BENCH_BINARY="$build/tcp-shift-p2" \
             TCP_SHIFT_CC_BENCH_CASE="sndbuf-${{ matrix.sndbuf_kib }}-openvz-stress" \
             TCP_SHIFT_CC_BENCH_RTT_MS=270 \
@@ -369,6 +373,7 @@ jobs:
       - name: Measure 1 MiB active and drained process residency
         run: |
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_P3_BINARY="$PWD/.build-sndbuf-1024-memory/tcp-shift-p2" \
             TCP_SHIFT_P3_B2P_FLOWS=8 \
             TCP_SHIFT_P3_B2P_PAYLOAD_BYTES=2097152 \
@@ -377,6 +382,7 @@ jobs:
       - name: Qualify repeated 1 MiB allocation stability
         run: |
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_P3_BINARY="$PWD/.build-sndbuf-1024-memory/tcp-shift-p2" \
             TCP_SHIFT_P3_STABILITY_FLOWS=8 \
             TCP_SHIFT_P3_STABILITY_PAYLOAD_BYTES=2097152 \
