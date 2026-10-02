@@ -13,6 +13,8 @@ on:
       - 'src/config_contract.c'
       - 'src/cc/**'
       - 'src/lwip/cc_adapter.c'
+      - 'src/lwip/tcp_memory.c'
+      - 'src/lwip/tcp_memory.h'
       - 'src/lwip/cc_selector.c'
       - 'src/lwip/cc_pacing_qualification.c'
       - 'src/p2_main.c'
@@ -97,6 +99,7 @@ jobs:
         run: |
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-unpaced"
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
             TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}-unpaced" \
             TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
@@ -111,6 +114,7 @@ jobs:
         run: |
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-unpaced"
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p2" \
             TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}-unpaced" \
             TCP_SHIFT_CC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \
@@ -125,6 +129,7 @@ jobs:
         run: |
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-paced"
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_PACING_QUALIFICATION=linux \
             TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
             TCP_SHIFT_CUBIC_BENCH_CASE="parity-${{ matrix.case }}-paced" \
@@ -140,6 +145,7 @@ jobs:
         run: |
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-paced"
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_PACING_QUALIFICATION=linux \
             TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
             TCP_SHIFT_CC_BENCH_CASE="parity-${{ matrix.case }}-paced" \
@@ -156,6 +162,7 @@ jobs:
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/linux-cubic-paced-cap"
           cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_PACING_QUALIFICATION=linux-cap \
             TCP_SHIFT_PACING_QUALIFICATION_MAX_BYTES_PER_SEC="$cap_bytes_per_sec" \
             TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
@@ -173,6 +180,7 @@ jobs:
           out="$PWD/.build/cc-linux-parity/${{ matrix.case }}/iwip-cubic-reno-paced-cap"
           cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_PACING_QUALIFICATION=linux-cap \
             TCP_SHIFT_PACING_QUALIFICATION_MAX_BYTES_PER_SEC="$cap_bytes_per_sec" \
             TCP_SHIFT_CC_BENCH_BINARY="$PWD/.build-cc-parity/tcp-shift-p5c-paced" \
