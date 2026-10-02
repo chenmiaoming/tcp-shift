@@ -225,22 +225,6 @@ int tcp_shift_tcp_memory_config_default(
     minimum = TCP_SHIFT_TCP_WMEM_DEFAULT_MIN_BYTES;
     initial = TCP_SHIFT_TCP_WMEM_DEFAULT_INITIAL_BYTES;
 
-    max_candidate = effective_memory_bytes /
-                    TCP_SHIFT_TCP_WMEM_AUTOTUNE_DIVISOR;
-    if (max_candidate < TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES) {
-        max_candidate = TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES;
-    }
-    if (max_candidate > TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_BYTES) {
-        max_candidate = TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_BYTES;
-    }
-    if (max_candidate < initial) {
-        max_candidate = initial;
-    }
-
-    config->wmem.min_bytes = minimum;
-    config->wmem.initial_bytes = initial;
-    config->wmem.max_bytes = (uint32_t)max_candidate;
-
     pressure = effective_memory_bytes / TCP_SHIFT_TCP_MEM_PRESSURE_DIVISOR;
     floor = tcp_shift_u64_mul_sat(TCP_SHIFT_TCP_MEM_MIN_PAGES,
                                   page_size_bytes);
@@ -250,6 +234,25 @@ int tcp_shift_tcp_memory_config_default(
     config->mem.low_bytes = pressure - (pressure / 4U);
     config->mem.pressure_bytes = pressure;
     config->mem.high_bytes = pressure + (pressure / 2U);
+
+    /*
+     * tcp_wmem.max is a permissive per-flow capacity bound, not a target and
+     * not preallocated memory. Let the existing 2*cwnd/controller hint drive
+     * actual growth and let global tcp_mem pressure/high-water policy enforce
+     * aggregate residency. Keeping the automatic per-flow max at the global
+     * high-water budget avoids an arbitrary byte ceiling on high-BDP paths.
+     */
+    max_candidate = config->mem.high_bytes;
+    if (max_candidate > UINT32_MAX) {
+        max_candidate = UINT32_MAX;
+    }
+    if (max_candidate < initial) {
+        max_candidate = initial;
+    }
+
+    config->wmem.min_bytes = minimum;
+    config->wmem.initial_bytes = initial;
+    config->wmem.max_bytes = (uint32_t)max_candidate;
     return 0;
 }
 

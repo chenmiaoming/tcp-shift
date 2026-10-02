@@ -38,13 +38,16 @@ int main(void)
     struct tcp_shift_tcp_memory_config large_defaults;
     struct tcp_shift_tcp_memory_config small;
     struct tcp_shift_tcp_memory_manager manager;
+    struct tcp_shift_tcp_memory_manager high_bdp_manager;
     struct tcp_shift_tcp_memory_manager override_manager;
     struct tcp_shift_tcp_memory_flow flow;
+    struct tcp_shift_tcp_memory_flow high_bdp_flow;
     struct tcp_shift_tcp_memory_flow bbr_flow;
     struct tcp_shift_tcp_memory_flow override_flow;
     struct tcp_shift_tcp_wmem_policy parsed_wmem;
     struct tcp_shift_tcp_mem_policy parsed_mem;
     struct tcp_pcb pcb;
+    struct tcp_pcb high_bdp_pcb;
     struct tcp_pcb bbr_pcb;
     struct tcp_pcb override_pcb;
 
@@ -52,17 +55,38 @@ int main(void)
             &defaults, MIB(512), 4096U) < 0 ||
         expect(defaults.wmem.min_bytes == KIB(4), "default wmem min") < 0 ||
         expect(defaults.wmem.initial_bytes == KIB(32), "default wmem initial") < 0 ||
-        expect(defaults.wmem.max_bytes == (uint32_t)MIB(4), "default wmem max") < 0 ||
+        expect(defaults.wmem.max_bytes == (uint32_t)MIB(48),
+               "default wmem max follows tcp_mem high") < 0 ||
+        expect(defaults.wmem.max_bytes >= UINT32_C(50000000),
+               "512 MiB profile permits 2x BDP for 1 Gbit/s at 200 ms") < 0 ||
         expect(defaults.mem.low_bytes == MIB(24), "default tcp_mem low") < 0 ||
         expect(defaults.mem.pressure_bytes == MIB(32), "default tcp_mem pressure") < 0 ||
         expect(defaults.mem.high_bytes == MIB(48), "default tcp_mem high") < 0) {
         return 1;
     }
 
+    memset(&high_bdp_pcb, 0, sizeof(high_bdp_pcb));
+    high_bdp_pcb.cwnd = (tcpwnd_size_t)UINT32_C(25000000);
+    if (tcp_shift_tcp_memory_manager_init(&high_bdp_manager, &defaults) < 0 ||
+        tcp_shift_tcp_memory_flow_init(&high_bdp_manager, &high_bdp_flow,
+                                       &high_bdp_pcb) < 0 ||
+        tcp_shift_tcp_memory_flow_maybe_grow(
+            &high_bdp_flow, &high_bdp_pcb,
+            high_bdp_flow.sndbuf_expand_num,
+            high_bdp_flow.sndbuf_expand_den) != 1 ||
+        expect(high_bdp_flow.capacity_bytes == UINT32_C(50000000),
+               "1 Gbit/s 200 ms flow grows to 2x BDP") < 0) {
+        return 1;
+    }
+    tcp_shift_tcp_memory_flow_release(&high_bdp_flow);
+
     if (tcp_shift_tcp_memory_config_default(
             &large_defaults, MIB(8192), 4096U) < 0 ||
-        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(4),
-               "automatic wmem max remains 4 MiB") < 0) {
+        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(768),
+               "automatic wmem max scales with global high water") < 0 ||
+        expect(large_defaults.wmem.max_bytes ==
+                   (uint32_t)large_defaults.mem.high_bytes,
+               "automatic wmem max equals representable tcp_mem high") < 0) {
         return 1;
     }
 
@@ -187,8 +211,9 @@ int main(void)
         return 1;
     }
 
-    printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
+    printf("tcp_memory_contract=ok wmem=4096,32768,50331648 "
            "tcp_mem=25165824,33554432,50331648 "
+           "auto_wmem_tracks_tcp_mem_high=ok high_bdp_1g_200ms=ok "
            "runtime_max_no_build_ceiling=ok runtime_growth_16m=ok "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
            "accounting=queued_payload\n");
