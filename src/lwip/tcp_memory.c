@@ -204,8 +204,7 @@ static int tcp_shift_parse_triplet(const char *text, uint64_t values[3])
 int tcp_shift_tcp_memory_config_default(
     struct tcp_shift_tcp_memory_config *config,
     uint64_t effective_memory_bytes,
-    uint64_t page_size_bytes,
-    uint32_t compile_ceiling_bytes)
+    uint64_t page_size_bytes)
 {
     uint64_t max_candidate;
     uint64_t pressure;
@@ -213,8 +212,7 @@ int tcp_shift_tcp_memory_config_default(
     uint32_t initial;
     uint32_t minimum;
 
-    if (config == NULL || effective_memory_bytes == 0U ||
-        compile_ceiling_bytes == 0U) {
+    if (config == NULL || effective_memory_bytes == 0U) {
         return -1;
     }
     if (page_size_bytes == 0U) {
@@ -223,27 +221,17 @@ int tcp_shift_tcp_memory_config_default(
 
     memset(config, 0, sizeof(*config));
     config->effective_memory_bytes = effective_memory_bytes;
-    config->compile_ceiling_bytes = compile_ceiling_bytes;
 
     minimum = TCP_SHIFT_TCP_WMEM_DEFAULT_MIN_BYTES;
-    if (minimum > compile_ceiling_bytes) {
-        minimum = compile_ceiling_bytes;
-    }
     initial = TCP_SHIFT_TCP_WMEM_DEFAULT_INITIAL_BYTES;
-    if (initial > compile_ceiling_bytes) {
-        initial = compile_ceiling_bytes;
-    }
-    if (minimum > initial) {
-        minimum = initial;
-    }
 
     max_candidate = effective_memory_bytes /
                     TCP_SHIFT_TCP_WMEM_AUTOTUNE_DIVISOR;
     if (max_candidate < TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES) {
         max_candidate = TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES;
     }
-    if (max_candidate > compile_ceiling_bytes) {
-        max_candidate = compile_ceiling_bytes;
+    if (max_candidate > UINT32_MAX) {
+        max_candidate = UINT32_MAX;
     }
     if (max_candidate < initial) {
         max_candidate = initial;
@@ -267,16 +255,13 @@ int tcp_shift_tcp_memory_config_default(
 
 int tcp_shift_tcp_memory_parse_wmem(
     const char *text,
-    uint32_t compile_ceiling_bytes,
     struct tcp_shift_tcp_wmem_policy *policy)
 {
     uint64_t values[3];
 
-    if (policy == NULL || compile_ceiling_bytes == 0U ||
-        tcp_shift_parse_triplet(text, values) < 0 ||
+    if (policy == NULL || tcp_shift_parse_triplet(text, values) < 0 ||
         values[0] == 0U || values[0] > values[1] ||
-        values[1] > values[2] || values[2] > compile_ceiling_bytes ||
-        values[2] > UINT32_MAX) {
+        values[1] > values[2] || values[2] > UINT32_MAX) {
         return -1;
     }
     policy->min_bytes = (uint32_t)values[0];
@@ -310,7 +295,6 @@ int tcp_shift_tcp_memory_manager_init(
         config->wmem.min_bytes == 0U ||
         config->wmem.min_bytes > config->wmem.initial_bytes ||
         config->wmem.initial_bytes > config->wmem.max_bytes ||
-        config->wmem.max_bytes > config->compile_ceiling_bytes ||
         config->mem.low_bytes > config->mem.pressure_bytes ||
         config->mem.pressure_bytes > config->mem.high_bytes ||
         config->mem.high_bytes == 0U) {
@@ -540,15 +524,13 @@ static int tcp_shift_process_tcp_memory_init(void)
     page_size = sysconf(_SC_PAGESIZE);
     if (tcp_shift_tcp_memory_config_default(
             &config, effective,
-            page_size > 0 ? (uint64_t)page_size : 4096U,
-            (uint32_t)TCP_SND_BUF) < 0) {
+            page_size > 0 ? (uint64_t)page_size : 4096U) < 0) {
         goto invalid;
     }
 
     text = getenv("TCP_SHIFT_TCP_WMEM");
     if (text != NULL && *text != '\0') {
-        if (tcp_shift_tcp_memory_parse_wmem(
-                text, config.compile_ceiling_bytes, &wmem) < 0) {
+        if (tcp_shift_tcp_memory_parse_wmem(text, &wmem) < 0) {
             goto invalid;
         }
         config.wmem = wmem;
