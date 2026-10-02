@@ -38,13 +38,16 @@ int main(void)
     struct tcp_shift_tcp_memory_config large_defaults;
     struct tcp_shift_tcp_memory_config small;
     struct tcp_shift_tcp_memory_manager manager;
+    struct tcp_shift_tcp_memory_manager high_bdp_manager;
     struct tcp_shift_tcp_memory_manager override_manager;
     struct tcp_shift_tcp_memory_flow flow;
+    struct tcp_shift_tcp_memory_flow high_bdp_flow;
     struct tcp_shift_tcp_memory_flow bbr_flow;
     struct tcp_shift_tcp_memory_flow override_flow;
     struct tcp_shift_tcp_wmem_policy parsed_wmem;
     struct tcp_shift_tcp_mem_policy parsed_mem;
     struct tcp_pcb pcb;
+    struct tcp_pcb high_bdp_pcb;
     struct tcp_pcb bbr_pcb;
     struct tcp_pcb override_pcb;
 
@@ -61,6 +64,21 @@ int main(void)
         expect(defaults.mem.high_bytes == MIB(48), "default tcp_mem high") < 0) {
         return 1;
     }
+
+    memset(&high_bdp_pcb, 0, sizeof(high_bdp_pcb));
+    high_bdp_pcb.cwnd = (tcpwnd_size_t)UINT32_C(25000000);
+    if (tcp_shift_tcp_memory_manager_init(&high_bdp_manager, &defaults) < 0 ||
+        tcp_shift_tcp_memory_flow_init(&high_bdp_manager, &high_bdp_flow,
+                                       &high_bdp_pcb) < 0 ||
+        tcp_shift_tcp_memory_flow_maybe_grow(
+            &high_bdp_flow, &high_bdp_pcb,
+            high_bdp_flow.sndbuf_expand_num,
+            high_bdp_flow.sndbuf_expand_den) != 1 ||
+        expect(high_bdp_flow.capacity_bytes == UINT32_C(50000000),
+               "1 Gbit/s 200 ms flow grows to 2x BDP") < 0) {
+        return 1;
+    }
+    tcp_shift_tcp_memory_flow_release(&high_bdp_flow);
 
     if (tcp_shift_tcp_memory_config_default(
             &large_defaults, MIB(8192), 4096U) < 0 ||
