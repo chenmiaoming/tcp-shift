@@ -84,8 +84,7 @@ jobs:
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build-cc-envelope \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
+            -DCMAKE_BUILD_TYPE=Release
           cmake --build .build-cc-envelope \
             --target tcp-shift-p5c-paced \
             --parallel
