@@ -52,7 +52,10 @@ int main(void)
             &defaults, MIB(512), 4096U) < 0 ||
         expect(defaults.wmem.min_bytes == KIB(4), "default wmem min") < 0 ||
         expect(defaults.wmem.initial_bytes == KIB(32), "default wmem initial") < 0 ||
-        expect(defaults.wmem.max_bytes == (uint32_t)MIB(4), "default wmem max") < 0 ||
+        expect(defaults.wmem.max_bytes == (uint32_t)MIB(48),
+               "default wmem max follows tcp_mem high") < 0 ||
+        expect(defaults.wmem.max_bytes >= UINT32_C(50000000),
+               "512 MiB profile permits 2x BDP for 1 Gbit/s at 200 ms") < 0 ||
         expect(defaults.mem.low_bytes == MIB(24), "default tcp_mem low") < 0 ||
         expect(defaults.mem.pressure_bytes == MIB(32), "default tcp_mem pressure") < 0 ||
         expect(defaults.mem.high_bytes == MIB(48), "default tcp_mem high") < 0) {
@@ -61,8 +64,11 @@ int main(void)
 
     if (tcp_shift_tcp_memory_config_default(
             &large_defaults, MIB(8192), 4096U) < 0 ||
-        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(4),
-               "automatic wmem max remains 4 MiB") < 0) {
+        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(768),
+               "automatic wmem max scales with global high water") < 0 ||
+        expect(large_defaults.wmem.max_bytes ==
+                   (uint32_t)large_defaults.mem.high_bytes,
+               "automatic wmem max equals representable tcp_mem high") < 0) {
         return 1;
     }
 
@@ -187,8 +193,9 @@ int main(void)
         return 1;
     }
 
-    printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
+    printf("tcp_memory_contract=ok wmem=4096,32768,50331648 "
            "tcp_mem=25165824,33554432,50331648 "
+           "auto_wmem_tracks_tcp_mem_high=ok high_bdp_1g_200ms=ok "
            "runtime_max_no_build_ceiling=ok runtime_growth_16m=ok "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
            "accounting=queued_payload\n");
