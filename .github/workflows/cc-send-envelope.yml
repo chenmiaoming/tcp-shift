@@ -15,6 +15,8 @@ on:
       - 'src/cc/transport_pacing.h'
       - 'src/lwip/cc_adapter.c'
       - 'src/lwip/cc_pacing_qualification.c'
+      - 'src/lwip/tcp_memory.c'
+      - 'src/lwip/tcp_memory.h'
       - 'src/p2_main.c'
       - 'scripts/fetch-lwip.sh'
       - 'patches/lwip-p4-cc-hooks.patch'
@@ -92,6 +94,7 @@ jobs:
         run: |
           out="$PWD/.build/cc-send-envelope/${{ matrix.case }}/linux"
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_SEND_ENVELOPE_BUILD="$PWD/.build-cc-envelope" \
             TCP_SHIFT_SEND_ENVELOPE_CASE="${{ matrix.case }}" \
             TCP_SHIFT_SEND_ENVELOPE_MODE=linux \
@@ -107,6 +110,7 @@ jobs:
           out="$PWD/.build/cc-send-envelope/${{ matrix.case }}/linux-cap"
           cap_bytes_per_sec=$(( ${{ matrix.rate_mbit }} * 112500 ))
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_SEND_ENVELOPE_BUILD="$PWD/.build-cc-envelope" \
             TCP_SHIFT_SEND_ENVELOPE_CASE="${{ matrix.case }}" \
             TCP_SHIFT_SEND_ENVELOPE_MODE=linux-cap \
