@@ -65,16 +65,11 @@
  * receive scale at zero: tcp-shift negotiates window scaling but continues to
  * advertise the existing small receive window.
  *
- * TCP_SND_BUF is no longer the per-flow production allocation. It is a
- * compile-time capability ceiling used by upstream queue-length checks. The
- * transport memory layer lowers each new production flow to its runtime
- * tcp_wmem initial value (32 KiB by default) and grows it on demand up to the
- * configured runtime maximum. MEM_LIBC_MALLOC/MEMP_MEM_MALLOC mean this ceiling
- * does not preallocate that many bytes for every PCB.
- *
- * TCP_SHIFT_TCP_SND_BUF_BYTES is retained as a build-profile compatibility
- * alias: existing qualification jobs that define it now select the compile
- * ceiling, not a fixed per-flow runtime send buffer.
+ * TCP_SND_BUF is no longer the per-flow production allocation. It remains an
+ * upstream compile-time reference value, while the transport memory layer
+ * lowers each new production flow to its runtime tcp_wmem initial value
+ * (32 KiB by default) and grows it on demand according to runtime policy.
+ * MEM_LIBC_MALLOC/MEMP_MEM_MALLOC keep allocation demand-driven.
  */
 #define LWIP_WND_SCALE 1
 #define TCP_RCV_SCALE 0
