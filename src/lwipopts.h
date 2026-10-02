@@ -77,22 +77,13 @@
 #define TCP_WND (32 * 1024)
 
 /*
- * TCP_SND_BUF is retained only as an lwIP compile-time reference value. It is
- * not tcp-shift's per-flow sender-memory ceiling: the transport memory manager
- * replaces pcb->snd_buf with the runtime tcp_wmem initial value and grows it
- * according to runtime policy.
- *
- * TCP_SHIFT_TCP_SND_BUF_BYTES remains as a qualification-build compatibility
- * knob for tests that need a specific lwIP reference value. Changing it must
- * not cap runtime tcp_wmem.max.
+ * TCP_SND_BUF is retained only as a fixed lwIP compile-time reference value.
+ * It is not tcp-shift's per-flow sender-memory ceiling: the transport memory
+ * manager replaces pcb->snd_buf with the runtime tcp_wmem initial value and
+ * grows it according to runtime policy. Sender-memory profiles are selected
+ * only at runtime; there is no tcp-shift build-time sender-buffer knob.
  */
-#ifndef TCP_SHIFT_TCP_SND_BUF_BYTES
-#define TCP_SHIFT_TCP_SND_BUF_BYTES (4 * 1024 * 1024)
-#endif
-#if TCP_SHIFT_TCP_SND_BUF_BYTES < (2 * TCP_MSS)
-#error "TCP_SHIFT_TCP_SND_BUF_BYTES is too small for the TCP profile"
-#endif
-#define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_BYTES
+#define TCP_SND_BUF (4 * 1024 * 1024)
 
 /*
  * Runtime tcp_wmem may grow beyond TCP_SND_BUF, so the lwIP queue-count guard
