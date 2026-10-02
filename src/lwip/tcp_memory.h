@@ -15,6 +15,7 @@ extern "C" {
 #define TCP_SHIFT_TCP_WMEM_DEFAULT_MIN_BYTES 4096U
 #define TCP_SHIFT_TCP_WMEM_DEFAULT_INITIAL_BYTES (32U * 1024U)
 #define TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_FLOOR_BYTES (256U * 1024U)
+#define TCP_SHIFT_TCP_WMEM_DEFAULT_MAX_BYTES (4U * 1024U * 1024U)
 #define TCP_SHIFT_TCP_WMEM_AUTOTUNE_DIVISOR 128U
 #define TCP_SHIFT_TCP_MEM_PRESSURE_DIVISOR 16U
 #define TCP_SHIFT_TCP_MEM_MIN_PAGES 128U
@@ -37,7 +38,6 @@ struct tcp_shift_tcp_memory_config {
     struct tcp_shift_tcp_wmem_policy wmem;
     struct tcp_shift_tcp_mem_policy mem;
     uint64_t effective_memory_bytes;
-    uint32_t compile_ceiling_bytes;
 };
 
 struct tcp_shift_tcp_memory_stats {
@@ -77,12 +77,10 @@ uint64_t tcp_shift_tcp_memory_effective_bytes(void);
 int tcp_shift_tcp_memory_config_default(
     struct tcp_shift_tcp_memory_config *config,
     uint64_t effective_memory_bytes,
-    uint64_t page_size_bytes,
-    uint32_t compile_ceiling_bytes);
+    uint64_t page_size_bytes);
 
 int tcp_shift_tcp_memory_parse_wmem(
     const char *text,
-    uint32_t compile_ceiling_bytes,
     struct tcp_shift_tcp_wmem_policy *policy);
 
 int tcp_shift_tcp_memory_parse_mem(

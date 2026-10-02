@@ -35,17 +35,21 @@ static int expect(int condition, const char *message)
 int main(void)
 {
     struct tcp_shift_tcp_memory_config defaults;
+    struct tcp_shift_tcp_memory_config large_defaults;
     struct tcp_shift_tcp_memory_config small;
     struct tcp_shift_tcp_memory_manager manager;
+    struct tcp_shift_tcp_memory_manager override_manager;
     struct tcp_shift_tcp_memory_flow flow;
     struct tcp_shift_tcp_memory_flow bbr_flow;
+    struct tcp_shift_tcp_memory_flow override_flow;
     struct tcp_shift_tcp_wmem_policy parsed_wmem;
     struct tcp_shift_tcp_mem_policy parsed_mem;
     struct tcp_pcb pcb;
     struct tcp_pcb bbr_pcb;
+    struct tcp_pcb override_pcb;
 
     if (tcp_shift_tcp_memory_config_default(
-            &defaults, MIB(512), 4096U, (uint32_t)MIB(4)) < 0 ||
+            &defaults, MIB(512), 4096U) < 0 ||
         expect(defaults.wmem.min_bytes == KIB(4), "default wmem min") < 0 ||
         expect(defaults.wmem.initial_bytes == KIB(32), "default wmem initial") < 0 ||
         expect(defaults.wmem.max_bytes == (uint32_t)MIB(4), "default wmem max") < 0 ||
@@ -55,18 +59,39 @@ int main(void)
         return 1;
     }
 
-    if (tcp_shift_tcp_memory_parse_wmem("8K,64K,2M", (uint32_t)MIB(4),
-                                        &parsed_wmem) < 0 ||
+    if (tcp_shift_tcp_memory_config_default(
+            &large_defaults, MIB(8192), 4096U) < 0 ||
+        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(4),
+               "automatic wmem max remains 4 MiB") < 0) {
+        return 1;
+    }
+
+    if (tcp_shift_tcp_memory_parse_wmem("8K,64K,64M", &parsed_wmem) < 0 ||
         expect(parsed_wmem.min_bytes == KIB(8), "parsed wmem min") < 0 ||
         expect(parsed_wmem.initial_bytes == KIB(64), "parsed wmem initial") < 0 ||
-        expect(parsed_wmem.max_bytes == (uint32_t)MIB(2), "parsed wmem max") < 0 ||
-        tcp_shift_tcp_memory_parse_wmem("64K,8K,2M", (uint32_t)MIB(4),
-                                        &parsed_wmem) == 0 ||
-        tcp_shift_tcp_memory_parse_wmem("8K,64K,8M", (uint32_t)MIB(4),
-                                        &parsed_wmem) == 0) {
+        expect(parsed_wmem.max_bytes == (uint32_t)MIB(64), "parsed wmem max") < 0 ||
+        tcp_shift_tcp_memory_parse_wmem("64K,8K,2M", &parsed_wmem) == 0 ||
+        tcp_shift_tcp_memory_parse_wmem("8K,64K,4G", &parsed_wmem) == 0) {
         fprintf(stderr, "tcp memory contract failed: wmem parser\n");
         return 1;
     }
+
+    large_defaults.wmem = parsed_wmem;
+    memset(&override_pcb, 0, sizeof(override_pcb));
+    override_pcb.cwnd = (tcpwnd_size_t)MIB(8);
+    if (tcp_shift_tcp_memory_manager_init(&override_manager,
+                                          &large_defaults) < 0 ||
+        tcp_shift_tcp_memory_flow_init(&override_manager, &override_flow,
+                                       &override_pcb) < 0 ||
+        tcp_shift_tcp_memory_flow_maybe_grow(
+            &override_flow, &override_pcb,
+            override_flow.sndbuf_expand_num,
+            override_flow.sndbuf_expand_den) != 1 ||
+        expect(override_flow.capacity_bytes == (uint32_t)MIB(16),
+               "runtime growth beyond former 4 MiB build ceiling") < 0) {
+        return 1;
+    }
+    tcp_shift_tcp_memory_flow_release(&override_flow);
 
     if (tcp_shift_tcp_memory_parse_mem("1M,2M,3M", &parsed_mem) < 0 ||
         expect(parsed_mem.low_bytes == MIB(1), "parsed tcp_mem low") < 0 ||
@@ -85,7 +110,6 @@ int main(void)
     small.mem.pressure_bytes = KIB(8);
     small.mem.high_bytes = KIB(12);
     small.effective_memory_bytes = MIB(64);
-    small.compile_ceiling_bytes = KIB(256);
 
     memset(&pcb, 0, sizeof(pcb));
     pcb.cwnd = KIB(64);
@@ -165,6 +189,7 @@ int main(void)
 
     printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
            "tcp_mem=25165824,33554432,50331648 "
+           "runtime_max_no_build_ceiling=ok runtime_growth_16m=ok "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
            "accounting=queued_payload\n");
     printf("tcp_memory_layout=ok sack_out=%u pcb_bytes=%zu seg_bytes=%zu\n",

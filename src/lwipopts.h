@@ -65,39 +65,34 @@
  * receive scale at zero: tcp-shift negotiates window scaling but continues to
  * advertise the existing small receive window.
  *
- * TCP_SND_BUF is no longer the per-flow production allocation. It is a
- * compile-time capability ceiling used by upstream queue-length checks. The
- * transport memory layer lowers each new production flow to its runtime
- * tcp_wmem initial value (32 KiB by default) and grows it on demand up to the
- * configured runtime maximum. MEM_LIBC_MALLOC/MEMP_MEM_MALLOC mean this ceiling
- * does not preallocate that many bytes for every PCB.
- *
- * TCP_SHIFT_TCP_SND_BUF_BYTES is retained as a build-profile compatibility
- * alias: existing qualification jobs that define it now select the compile
- * ceiling, not a fixed per-flow runtime send buffer.
+ * TCP_SND_BUF is no longer the per-flow production allocation. It remains an
+ * upstream compile-time reference value, while the transport memory layer
+ * lowers each new production flow to its runtime tcp_wmem initial value
+ * (32 KiB by default) and grows it on demand according to runtime policy.
+ * MEM_LIBC_MALLOC/MEMP_MEM_MALLOC keep allocation demand-driven.
  */
 #define LWIP_WND_SCALE 1
 #define TCP_RCV_SCALE 0
 #define TCP_MSS 1460
 #define TCP_WND (32 * 1024)
-#ifndef TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
-#ifdef TCP_SHIFT_TCP_SND_BUF_BYTES
-#define TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES TCP_SHIFT_TCP_SND_BUF_BYTES
-#else
-#define TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES (4 * 1024 * 1024)
-#endif
-#endif
-#ifndef TCP_SHIFT_TCP_SND_BUF_BYTES
-#define TCP_SHIFT_TCP_SND_BUF_BYTES TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
-#endif
-#if TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES < (2 * TCP_MSS)
-#error "TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES is too small for the TCP profile"
-#endif
-#if TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES > (16 * 1024 * 1024)
-#error "TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES exceeds the reviewed capability ceiling"
-#endif
-#define TCP_SND_BUF TCP_SHIFT_TCP_SND_BUF_CEILING_BYTES
-#define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + (TCP_MSS - 1)) / TCP_MSS)
+
+/*
+ * TCP_SND_BUF is retained only as a fixed lwIP compile-time reference value.
+ * It is not tcp-shift's per-flow sender-memory ceiling: the transport memory
+ * manager replaces pcb->snd_buf with the runtime tcp_wmem initial value and
+ * grows it according to runtime policy. Sender-memory profiles are selected
+ * only at runtime; there is no tcp-shift build-time sender-buffer knob.
+ */
+#define TCP_SND_BUF (4 * 1024 * 1024)
+
+/*
+ * Runtime tcp_wmem may grow beyond TCP_SND_BUF, so the lwIP queue-count guard
+ * must not be derived from that compile-time reference. Pinned lwIP stores
+ * snd_queuelen in u16_t and reserves the top three values for overflow safety;
+ * use the largest structurally valid queue count. This is a pbuf-count safety
+ * bound, not a configured byte ceiling.
+ */
+#define TCP_SND_QUEUELEN (0xFFFFU - 3U)
 
 /*
  * Upstream's default TCP_SNDLOWAT follows max(TCP_SND_BUF/2, 2*MSS+1), but
@@ -115,11 +110,9 @@
     ((TCP_SHIFT_TCP_SNDLOWAT_BASE < TCP_SHIFT_TCP_SNDLOWAT_U16_MAX) ? \
      TCP_SHIFT_TCP_SNDLOWAT_BASE : TCP_SHIFT_TCP_SNDLOWAT_U16_MAX)
 
-/* Keep upstream max(TCP_SND_QUEUELEN/2, 5) semantics as a constant expression. */
-#define TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF (TCP_SND_QUEUELEN / 2U)
-#define TCP_SNDQUEUELOWAT \
-    ((TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF > 5U) ? \
-     TCP_SHIFT_TCP_SNDQUEUELOWAT_HALF : 5U)
+/* Sequential/socket APIs are disabled, but keep lwIP's queue-low-water
+ * invariant valid for compile-time sanity checks. */
+#define TCP_SNDQUEUELOWAT (TCP_SND_QUEUELEN / 2U)
 
 #define TCP_QUEUE_OOSEQ 1
 

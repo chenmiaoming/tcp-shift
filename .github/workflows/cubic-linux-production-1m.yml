@@ -8,6 +8,8 @@ on:
       - '.github/workflows/cubic-linux-production-1m.yml'
       - 'scripts/cubic-linux-benchmark.sh'
       - 'src/lwipopts.h'
+      - 'src/lwip/tcp_memory.c'
+      - 'src/lwip/tcp_memory.h'
       - 'src/config_contract.c'
       - 'src/cc/transport_pacing.c'
       - 'src/cc/transport_pacing.h'
@@ -89,11 +91,11 @@ jobs:
             --target tcp-shift-config-contract tcp-shift-p2 \
             --parallel
           .build-production-1m/tcp-shift-config-contract | tee .build-production-1m/config-contract.txt
-          grep -F 'tcp_snd_buf=1048576' .build-production-1m/config-contract.txt
 
       - name: Compare production tcp-shift CUBIC with Linux tcp_cubic
         run: |
           sudo env \
+            TCP_SHIFT_TCP_WMEM=4K,32K,1M \
             TCP_SHIFT_CUBIC_BENCH_BINARY="$PWD/.build-production-1m/tcp-shift-p2" \
             TCP_SHIFT_CUBIC_BENCH_CASE="production-1m-${{ matrix.case }}" \
             TCP_SHIFT_CUBIC_BENCH_RTT_MS="${{ matrix.rtt_ms }}" \

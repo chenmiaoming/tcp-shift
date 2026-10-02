@@ -88,3 +88,33 @@ bridge owns one listener. The array-of-tables spelling is retained so a future
 multi-listener increment can extend the schema without inventing a different
 mapping model. A second `[[forward]]` currently fails closed rather than being
 ignored.
+
+
+## Transport memory overrides
+
+Transport sender memory is runtime policy and is not capped by the lwIP
+compile-time `TCP_SND_BUF` reference value.
+
+Without an override, `tcp_wmem` starts at `4K,32K` and selects an automatic
+maximum from effective memory, with a 256 KiB floor and a 4 MiB default-policy
+maximum. The 4 MiB value is only the automatic default; it is not a hard
+configuration ceiling.
+
+Operators can override the runtime triplets with environment variables:
+
+```bash
+sudo env \
+  TCP_SHIFT_TCP_WMEM=4K,32K,64M \
+  TCP_SHIFT_TCP_MEM=24M,32M,48M \
+  tcp-shift --config /etc/tcp-shift/tcp-shift.toml
+```
+
+`TCP_SHIFT_TCP_WMEM` is `min,initial,max` and requires
+`0 < min <= initial <= max`. Explicit values may exceed 4 MiB; the byte fields
+are represented by the 32-bit lwIP sender-window type. `TCP_SHIFT_TCP_MEM` is
+`low,pressure,high` and requires `low <= pressure <= high`.
+`TCP_SHIFT_TCP_MEM=auto` retains the effective-memory-derived global policy.
+
+Pinned lwIP still has a 16-bit `snd_queuelen` pbuf counter. tcp-shift configures
+that counter to its largest structurally safe value; it is a pbuf-count safety
+bound rather than a compile-time byte ceiling on `tcp_wmem.max`.
