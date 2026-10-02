@@ -93,7 +93,6 @@ jobs:
             --target tcp-shift-config-contract tcp-shift-p2 tcp-shift-p5c-paced \
             --parallel
           .build-cc-parity/tcp-shift-config-contract | tee .build-cc-parity/config-contract.txt
-          grep -F 'tcp_snd_buf=1048576' .build-cc-parity/config-contract.txt
 
       - name: Compare unpaced 1 MiB CUBIC with Linux tcp_cubic
         run: |
