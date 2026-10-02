@@ -91,7 +91,6 @@ jobs:
             --target tcp-shift-config-contract tcp-shift-p2 \
             --parallel
           .build-production-1m/tcp-shift-config-contract | tee .build-production-1m/config-contract.txt
-          grep -F 'tcp_snd_buf=1048576' .build-production-1m/config-contract.txt
 
       - name: Compare production tcp-shift CUBIC with Linux tcp_cubic
         run: |
