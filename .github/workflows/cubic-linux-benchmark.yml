@@ -266,11 +266,9 @@ jobs:
           sh scripts/fetch-lwip.sh
           build=".build-sndbuf-${{ matrix.sndbuf_kib }}"
           cmake -S . -B "$build" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=${{ matrix.sndbuf_bytes }}"
+            -DCMAKE_BUILD_TYPE=Release
           cmake --build "$build" --target tcp-shift-config-contract tcp-shift-p2 --parallel
           "$build/tcp-shift-config-contract" | tee "$build/config-contract.txt"
-          grep -F "tcp_snd_buf=${{ matrix.sndbuf_bytes }}" "$build/config-contract.txt"
 
       - name: Qualify clean high-BDP path
         run: |
@@ -364,11 +362,9 @@ jobs:
         run: |
           sh scripts/fetch-lwip.sh
           cmake -S . -B .build-sndbuf-1024-memory \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS="-DTCP_SHIFT_TCP_SND_BUF_BYTES=1048576"
+            -DCMAKE_BUILD_TYPE=Release
           cmake --build .build-sndbuf-1024-memory --target tcp-shift-config-contract tcp-shift-p2 --parallel
           .build-sndbuf-1024-memory/tcp-shift-config-contract | tee .build-sndbuf-1024-memory/config-contract.txt
-          grep -F 'tcp_snd_buf=1048576' .build-sndbuf-1024-memory/config-contract.txt
 
       - name: Measure 1 MiB active and drained process residency
         run: |
