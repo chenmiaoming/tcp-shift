@@ -35,6 +35,7 @@ static int expect(int condition, const char *message)
 int main(void)
 {
     struct tcp_shift_tcp_memory_config defaults;
+    struct tcp_shift_tcp_memory_config large_defaults;
     struct tcp_shift_tcp_memory_config small;
     struct tcp_shift_tcp_memory_manager manager;
     struct tcp_shift_tcp_memory_flow flow;
@@ -45,7 +46,7 @@ int main(void)
     struct tcp_pcb bbr_pcb;
 
     if (tcp_shift_tcp_memory_config_default(
-            &defaults, MIB(512), 4096U, (uint32_t)MIB(4)) < 0 ||
+            &defaults, MIB(512), 4096U) < 0 ||
         expect(defaults.wmem.min_bytes == KIB(4), "default wmem min") < 0 ||
         expect(defaults.wmem.initial_bytes == KIB(32), "default wmem initial") < 0 ||
         expect(defaults.wmem.max_bytes == (uint32_t)MIB(4), "default wmem max") < 0 ||
@@ -55,15 +56,19 @@ int main(void)
         return 1;
     }
 
-    if (tcp_shift_tcp_memory_parse_wmem("8K,64K,2M", (uint32_t)MIB(4),
-                                        &parsed_wmem) < 0 ||
+    if (tcp_shift_tcp_memory_config_default(
+            &large_defaults, MIB(8192), 4096U) < 0 ||
+        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(64),
+               "default wmem max must not be build-capped") < 0) {
+        return 1;
+    }
+
+    if (tcp_shift_tcp_memory_parse_wmem("8K,64K,64M", &parsed_wmem) < 0 ||
         expect(parsed_wmem.min_bytes == KIB(8), "parsed wmem min") < 0 ||
         expect(parsed_wmem.initial_bytes == KIB(64), "parsed wmem initial") < 0 ||
-        expect(parsed_wmem.max_bytes == (uint32_t)MIB(2), "parsed wmem max") < 0 ||
-        tcp_shift_tcp_memory_parse_wmem("64K,8K,2M", (uint32_t)MIB(4),
-                                        &parsed_wmem) == 0 ||
-        tcp_shift_tcp_memory_parse_wmem("8K,64K,8M", (uint32_t)MIB(4),
-                                        &parsed_wmem) == 0) {
+        expect(parsed_wmem.max_bytes == (uint32_t)MIB(64), "parsed wmem max") < 0 ||
+        tcp_shift_tcp_memory_parse_wmem("64K,8K,2M", &parsed_wmem) == 0 ||
+        tcp_shift_tcp_memory_parse_wmem("8K,64K,4G", &parsed_wmem) == 0) {
         fprintf(stderr, "tcp memory contract failed: wmem parser\n");
         return 1;
     }
@@ -85,7 +90,6 @@ int main(void)
     small.mem.pressure_bytes = KIB(8);
     small.mem.high_bytes = KIB(12);
     small.effective_memory_bytes = MIB(64);
-    small.compile_ceiling_bytes = KIB(256);
 
     memset(&pcb, 0, sizeof(pcb));
     pcb.cwnd = KIB(64);
@@ -165,6 +169,7 @@ int main(void)
 
     printf("tcp_memory_contract=ok wmem=4096,32768,4194304 "
            "tcp_mem=25165824,33554432,50331648 "
+           "runtime_max_no_build_ceiling=ok "
            "pressure=ok high=ok autotune=2xcwnd controller_hint=3xcwnd "
            "accounting=queued_payload\n");
     printf("tcp_memory_layout=ok sack_out=%u pcb_bytes=%zu seg_bytes=%zu\n",
