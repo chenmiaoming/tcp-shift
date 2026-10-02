@@ -58,8 +58,8 @@ int main(void)
 
     if (tcp_shift_tcp_memory_config_default(
             &large_defaults, MIB(8192), 4096U) < 0 ||
-        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(64),
-               "default wmem max must not be build-capped") < 0) {
+        expect(large_defaults.wmem.max_bytes == (uint32_t)MIB(4),
+               "automatic wmem max remains 4 MiB") < 0) {
         return 1;
     }
 
