@@ -95,10 +95,18 @@ ignored.
 Transport sender memory is runtime policy and is not capped by the lwIP
 compile-time `TCP_SND_BUF` reference value.
 
-Without an override, `tcp_wmem` starts at `4K,32K` and selects an automatic
-maximum from effective memory, with a 256 KiB floor and a 4 MiB default-policy
-maximum. The 4 MiB value is only the automatic default; it is not a hard
-configuration ceiling.
+Without an override, `tcp_wmem` starts at `4K,32K`. Its automatic
+maximum is the representable `tcp_mem.high` value rather than a fixed byte
+ceiling. Actual per-flow growth is demand-driven from the congestion-control
+window: the generic transport policy targets `2*cwnd`, while compact BBR
+publishes its existing `3*cwnd` sender-buffer expansion hint. Aggregate queued
+payload remains bounded by the global `tcp_mem` pressure/high-water policy.
+
+This matters on high-BDP paths. A 1 Gbit/s path at 200 ms RTT has a 25 MB BDP;
+a 2x-BDP sender allowance is about 50 MB (47.7 MiB). The automatic 512 MiB-host
+profile has `tcp_mem.high = tcp_wmem.max = 48 MiB`, so it no longer fails
+simply because of an unrelated 4 MiB sender cap. Smaller memory-constrained
+hosts still remain subject to their global `tcp_mem` budget.
 
 Operators can override the runtime triplets with environment variables:
 
