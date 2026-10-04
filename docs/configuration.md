@@ -9,7 +9,7 @@ sudo tcp-shift --config /etc/tcp-shift/tcp-shift.toml --check
 
 Configuration is loaded once at startup. There is no implicit file lookup and no
 hot reload. `--check` validates the versioned service configuration without
-creating a TUN interface, changing nftables state, or starting the transport
+creating a TUN interface, changing firewall state, or starting the transport
 runtime.
 
 The parser deliberately accepts a small, strict TOML-shaped version-1 schema
@@ -79,9 +79,9 @@ the already-qualified sibling `tcp-shift-p2` or `tcp-shift-p2-ipv6`
 runtime after validation.
 
 The selected p2 runtime performs forwarding preflight before mutation, opens the
-TUN path, starts the lwIP listener/bridge, installs an exclusive product-owned
-nftables DNAT rule for the configured public address/port, and removes that rule
-during shutdown. The public and backend TCP legs remain distinct.
+TUN path, starts the lwIP listener/bridge, installs the selected product-owned
+firewall DNAT rule for the configured public address/port, and removes that
+owned state during shutdown. The public and backend TCP legs remain distinct.
 
 Version 1 intentionally supports one `[[forward]]` table because the current
 bridge owns one listener. The array-of-tables spelling is retained so a future
@@ -103,7 +103,8 @@ Valid values are `auto`, `nftables`, `iptables`, and `none`.
 
 `auto` prefers the native nf_tables control path. tcp-shift loads
 `libnftables` directly and submits the product-owned table/chain/rule
-transaction without executing the `nft` command. If the nf_tables userspace
+transaction through the library API. There is no external `nft` CLI control
+path in tcp-shift or its qualification harness. If the nf_tables userspace
 control library or kernel facility is unavailable, `auto` falls back to the
 true legacy xtables backend. A permission error, resource collision, or rule
 installation error on an available nftables backend fails closed instead of
