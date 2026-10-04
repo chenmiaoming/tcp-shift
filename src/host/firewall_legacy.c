@@ -272,12 +272,12 @@ int tcp_shift_firewall_legacy_install(struct tcp_shift_firewall *firewall)
                    (unsigned)firewall->public_port);
 
     create_chain[0] = (char *)tool;
-    create_chain[6] = firewall->resource_name;
+    create_chain[5] = firewall->resource_name;
     add_dnat[0] = (char *)tool;
-    add_dnat[6] = firewall->resource_name;
+    add_dnat[5] = firewall->resource_name;
     add_jump[0] = (char *)tool;
-    add_jump[9] = firewall->public_address;
-    add_jump[16] = firewall->resource_name;
+    add_jump[8] = firewall->public_address;
+    add_jump[14] = firewall->resource_name;
 
     if (tcp_shift_legacy_run(tool, create_chain) < 0) {
         return -1;
