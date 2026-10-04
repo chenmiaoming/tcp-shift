@@ -49,7 +49,7 @@ jobs:
             iptables \
             iputils-ping \
             libcap2-bin \
-            nftables \
+            libnftables1 \
             python3 \
             tcpdump
 
@@ -65,7 +65,6 @@ jobs:
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
-          sudo nft list ruleset > /dev/null
           sudo iptables -w -S FORWARD > /dev/null
           sudo ip6tables -w -S FORWARD > /dev/null
           tcpdump --version
@@ -80,6 +79,7 @@ jobs:
             tcp-shift-p1-ipv6-ext-header-probe \
             tcp-shift-p1-backpressure-contract \
             tcp-shift-p1-rx-contract \
+            tcp-shift-nft-test-control \
             --parallel
 
       - name: Qualify upstream lwIP window-scaling negotiation
@@ -111,7 +111,9 @@ jobs:
       - name: Exercise product-owned IPv4 nft ingress lifecycle
         run: |
           sudo setcap -r .build/tcp-shift-p1
-          sudo env TCP_SHIFT_P1_BINARY="$PWD/.build/tcp-shift-p1" \
+          sudo env \
+            TCP_SHIFT_P1_BINARY="$PWD/.build/tcp-shift-p1" \
+            TCP_SHIFT_NFT_CONTROL_BINARY="$PWD/.build/tcp-shift-nft-test-control" \
             sh scripts/p1-nft-lifecycle.sh
 
       - name: Exercise direct IPv6-only TUN path
@@ -124,6 +126,7 @@ jobs:
           sudo env \
             TCP_SHIFT_P1_IPV6_BINARY="$PWD/.build/tcp-shift-p1-ipv6" \
             TCP_SHIFT_P1_IPV6_EXT_PROBE="$PWD/.build/tcp-shift-p1-ipv6-ext-header-probe" \
+            TCP_SHIFT_NFT_CONTROL_BINARY="$PWD/.build/tcp-shift-nft-test-control" \
             sh scripts/p1-ipv6-nft-lifecycle.sh
 
       - name: Exercise routed IPv6 Packet Too Big and PMTU
