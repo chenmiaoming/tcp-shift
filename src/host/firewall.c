@@ -228,7 +228,18 @@ int tcp_shift_firewall_install(
     }
 
     saved_errno = errno;
-    memset(firewall, 0, sizeof(*firewall));
+    if (firewall->installed == 0 &&
+        firewall->legacy_chain_created == 0 &&
+        firewall->legacy_jump_installed == 0) {
+        memset(firewall, 0, sizeof(*firewall));
+    } else {
+        /*
+         * A non-transactional legacy install may have failed while rollback
+         * also failed. Preserve ownership so the caller's common teardown path
+         * can retry instead of forgetting product-created firewall state.
+         */
+        firewall->installed = 1;
+    }
     errno = saved_errno;
     return -1;
 }
