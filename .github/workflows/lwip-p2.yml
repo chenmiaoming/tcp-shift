@@ -64,7 +64,7 @@ jobs:
             iproute2 \
             iptables \
             libcap2-bin \
-            nftables \
+            libnftables1 \
             python3
 
       - name: Validate bridge harness
@@ -92,6 +92,7 @@ jobs:
             tcp-shift \
             tcp-shift-p2 \
             tcp-shift-p2-ipv6 \
+            tcp-shift-nft-test-control \
             --parallel
 
       - name: Grant TUN administration capability for IPv4 bridge
@@ -105,6 +106,7 @@ jobs:
           sudo env \
             TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
             TCP_SHIFT_SERVICE_FIREWALL_BACKEND=nftables \
+            TCP_SHIFT_NFT_CONTROL_BINARY="$PWD/.build/tcp-shift-nft-test-control" \
             sh scripts/service-config-smoke.sh
 
       - name: Exercise config-driven legacy iptables ingress
