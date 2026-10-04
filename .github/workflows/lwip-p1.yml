@@ -9,6 +9,7 @@ on:
       - 'CMakeLists.txt'
       - 'src/**'
       - 'scripts/fetch-lwip.sh'
+      - 'scripts/validate-no-nft-cli.sh'
       - 'scripts/p1-ipv4-smoke.sh'
       - 'scripts/p1-ipv4-checksum.py'
       - 'scripts/p1-nft-lifecycle.sh'
@@ -62,6 +63,7 @@ jobs:
           sh -n scripts/p1-ipv6-nft-lifecycle.sh
           sh -n scripts/p1-ipv6-pmtu.sh
           sh -n scripts/window-scaling-contract.sh
+          sh scripts/validate-no-nft-cli.sh
           python3 -m py_compile scripts/p1-ipv4-checksum.py
           sudo modprobe tun || true
           test -c /dev/net/tun
