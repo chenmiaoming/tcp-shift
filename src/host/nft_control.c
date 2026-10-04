@@ -137,6 +137,7 @@ int tcp_shift_nft_control_probe(void)
     struct nft_ctx *ctx = NULL;
     const char *message;
     int saved_errno;
+    int permission_error;
     int prepared;
     int result;
 
@@ -149,6 +150,8 @@ int tcp_shift_nft_control_probe(void)
     result = api.run_cmd_from_buffer(ctx, "list tables");
     saved_errno = errno;
     message = api.ctx_get_error_buffer(ctx);
+    permission_error =
+        tcp_shift_nft_permission_error(saved_errno, message);
 
     api.ctx_free(ctx);
     tcp_shift_nft_api_close(&api);
@@ -156,7 +159,7 @@ int tcp_shift_nft_control_probe(void)
     if (result == 0) {
         return 1;
     }
-    if (tcp_shift_nft_permission_error(saved_errno, message) != 0) {
+    if (permission_error != 0) {
         errno = saved_errno != 0 ? saved_errno : EPERM;
         return -1;
     }
