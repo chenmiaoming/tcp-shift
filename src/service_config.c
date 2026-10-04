@@ -15,6 +15,7 @@
 struct tcp_shift_service_parse_state {
     unsigned have_version : 1;
     unsigned have_cc : 1;
+    unsigned have_firewall_backend : 1;
     unsigned have_tun_name : 1;
     unsigned have_tun_host : 1;
     unsigned have_tun_guest : 1;
@@ -227,6 +228,14 @@ static int valid_cc(const char *name)
     return 1;
 }
 
+static int valid_firewall_backend(const char *name)
+{
+    return strcmp(name, "auto") == 0 ||
+           strcmp(name, "nftables") == 0 ||
+           strcmp(name, "iptables") == 0 ||
+           strcmp(name, "none") == 0;
+}
+
 static int valid_tun_name(const char *name)
 {
     size_t i;
@@ -352,6 +361,14 @@ static int finalize_config(struct tcp_shift_service_config *config,
     if (state->have_cc == 0U) {
         return config_error(error, error_size,
                             "missing required configuration key 'cc'");
+    }
+    if (state->have_firewall_backend == 0U) {
+        strcpy(config->firewall_backend, "auto");
+    }
+    if (!valid_firewall_backend(config->firewall_backend)) {
+        return config_error(error, error_size,
+                            "firewall_backend must be one of "
+                            "auto|nftables|iptables|none");
     }
     if (state->have_forward == 0U ||
         state->have_listen == 0U ||
@@ -580,6 +597,19 @@ int tcp_shift_service_config_load(const char *path,
             }
             strcpy(config->cc, parsed);
             state.have_cc = 1U;
+        } else if (strcmp(key, "firewall_backend") == 0) {
+            if (state.have_firewall_backend != 0U ||
+                parse_string(value, parsed, sizeof(parsed)) != 0 ||
+                strlen(parsed) >= sizeof(config->firewall_backend) ||
+                !valid_firewall_backend(parsed)) {
+                config_error(error, error_size,
+                             "invalid or duplicate firewall_backend "
+                             "at line %u",
+                             line_number);
+                goto out;
+            }
+            strcpy(config->firewall_backend, parsed);
+            state.have_firewall_backend = 1U;
         } else if (strcmp(key, "tun_name") == 0) {
             if (state.have_tun_name != 0U ||
                 parse_string(value, parsed, sizeof(parsed)) != 0 ||
