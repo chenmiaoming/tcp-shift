@@ -100,9 +100,19 @@ jobs:
           getcap .build/tcp-shift-p2 | tee .build/p2-capability.txt
           grep -F 'cap_net_admin=ep' .build/p2-capability.txt
 
-      - name: Exercise config-driven public ingress end to end
+      - name: Exercise config-driven native nftables ingress
         run: |
-          sudo env TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
+          sudo env \
+            TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
+            TCP_SHIFT_SERVICE_FIREWALL_BACKEND=nftables \
+            sh scripts/service-config-smoke.sh
+
+      - name: Exercise config-driven legacy iptables ingress
+        run: |
+          test -x /usr/sbin/iptables-legacy
+          sudo env \
+            TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
+            TCP_SHIFT_SERVICE_FIREWALL_BACKEND=iptables \
             sh scripts/service-config-smoke.sh
 
       - name: Exercise IPv4 public bridge and natural teardown
@@ -144,7 +154,7 @@ jobs:
           name: tcp-shift-p2-bridge-diagnostics
           path: |
             .build/p2-capability.txt
-            .build/service-config-ci
+            .build/service-config-ci-*
             .build/p2-bridge-ci
             .build/p2-backpressure-ci
             .build/p2-halfclose-ci
