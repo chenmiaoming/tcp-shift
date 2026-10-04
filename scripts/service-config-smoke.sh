@@ -106,6 +106,32 @@ remove_firewall_emergency()
     esac
 }
 
+create_firewall_collision()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft add table ip "$PRODUCT_TABLE"
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -N "$PRODUCT_TABLE"
+            ;;
+    esac
+}
+
+remove_firewall_collision()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft delete table ip "$PRODUCT_TABLE"
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -F "$PRODUCT_TABLE" \
+                >/dev/null 2>&1 || true
+            "$IPTABLES_LEGACY" -w -t nat -X "$PRODUCT_TABLE"
+            ;;
+    esac
+}
+
 stop_runtime()
 {
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
@@ -188,6 +214,33 @@ fi
 
 OLD_FORWARD=$(sysctl -n net.ipv4.ip_forward)
 sysctl -q -w net.ipv4.ip_forward=1
+
+# A pre-existing product-name resource belongs to somebody else. Startup must
+# fail closed, unwind the TUN, and leave that foreign resource intact.
+create_firewall_collision
+: > "$OUT/collision.stdout"
+: > "$OUT/collision.stderr"
+set +e
+"$BINARY" --config "$OUT/tcp-shift.toml" \
+    > "$OUT/collision.stdout" 2> "$OUT/collision.stderr"
+collision_rc=$?
+set -e
+[ "$collision_rc" -ne 0 ] || {
+    echo "runtime unexpectedly adopted a foreign firewall resource" >&2
+    exit 1
+}
+grep -F 'install firewall ingress' "$OUT/collision.stderr" >/dev/null
+firewall_live || {
+    echo "foreign firewall resource was deleted on collision" >&2
+    exit 1
+}
+if ip link show "$TUN_NAME" >/dev/null 2>&1; then
+    echo "TUN leaked after firewall ownership collision" >&2
+    exit 1
+fi
+remove_firewall_collision
+printf 'firewall_collision_preserved=ok backend=%s\n' "$FIREWALL_BACKEND" \
+    | tee "$OUT/collision-summary.txt"
 
 ip netns add "$NS_NAME"
 ip link add "$WAN_HOST_IF" type veth peer name "$WAN_NS_IF"
@@ -357,6 +410,6 @@ if firewall_live; then
     exit 1
 fi
 
-printf 'config_check_no_mutation=ok firewall=%s public_dnat=ok payload_bytes=%u echo=ok cleanup=ok\n' \
+printf 'config_check_no_mutation=ok firewall=%s collision_preserved=ok public_dnat=ok payload_bytes=%u echo=ok cleanup=ok\n' \
     "$FIREWALL_BACKEND" "$PAYLOAD_BYTES" | tee "$OUT/summary.txt"
 echo "Config-driven service ingress smoke passed"
