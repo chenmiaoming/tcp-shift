@@ -2,9 +2,10 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "host/ifconfig.h"
-#include "host/nft_ingress.h"
+#include "host/firewall.h"
 #include "host/tun.h"
 #include "lwip/init.h"
 #include "lwip/ip4_addr.h"
@@ -14,7 +15,7 @@
 
 #define TCP_SHIFT_P1_DEFAULT_PORT 18080U
 #define TCP_SHIFT_P1_MTU 1500U
-#define TCP_SHIFT_P1_NFT_TABLE "tcp_shift_p1"
+#define TCP_SHIFT_P1_FIREWALL_RESOURCE "tcp_shift_p1"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -65,7 +66,9 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_probe_listener listener;
-    struct tcp_shift_nft_ingress ingress;
+    struct tcp_shift_firewall ingress;
+    struct tcp_shift_firewall_spec firewall_spec;
+    enum tcp_shift_firewall_backend firewall_backend;
     ip4_addr_t address;
     ip4_addr_t netmask;
     ip4_addr_t gateway;
@@ -80,9 +83,7 @@ int main(int argc, char **argv)
     tun.fd = -1;
     loop.epoll_fd = -1;
     listener.pcb = NULL;
-    ingress.table_name[0] = '\0';
-    ingress.ip_version = 0U;
-    ingress.installed = 0;
+    memset(&ingress, 0, sizeof(ingress));
 
     if (argc != 5 && argc != 6 && argc != 7) {
         usage(argv[0]);
@@ -100,9 +101,18 @@ int main(int argc, char **argv)
         }
         public_ipv4 = argv[6];
     }
+    if (tcp_shift_firewall_backend_parse(
+            getenv("TCP_SHIFT_FIREWALL_BACKEND"), &firewall_backend) < 0) {
+        fprintf(stderr,
+                "tcp-shift-p1: invalid TCP_SHIFT_FIREWALL_BACKEND "
+                "(expected auto|nftables|iptables|none)\n");
+        return EXIT_FAILURE;
+    }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
-        signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR) {
+        signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR ||
+        signal(SIGHUP, tcp_shift_handle_signal) == SIG_ERR ||
+        signal(SIGQUIT, tcp_shift_handle_signal) == SIG_ERR) {
         perror("signal");
         return EXIT_FAILURE;
     }
@@ -146,20 +156,27 @@ int main(int argc, char **argv)
                     "configure net.ipv4.ip_forward=1 before public ingress\n");
             goto out_loop;
         }
-        if (tcp_shift_nft_ingress_install_ipv4(&ingress,
-                                               TCP_SHIFT_P1_NFT_TABLE,
-                                               public_ipv4, listen_port,
-                                               argv[2], listen_port) < 0) {
-            perror("install nft ingress");
+        firewall_spec.ip_version = 4U;
+        firewall_spec.resource_name = TCP_SHIFT_P1_FIREWALL_RESOURCE;
+        firewall_spec.public_address = public_ipv4;
+        firewall_spec.public_port = listen_port;
+        firewall_spec.target_address = argv[2];
+        firewall_spec.target_port = listen_port;
+        if (tcp_shift_firewall_install(
+                &ingress, firewall_backend, &firewall_spec) < 0) {
+            perror("install firewall ingress");
             goto out_loop;
         }
     }
 
     if (public_ipv4 != NULL) {
         printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
-               "mtu=%u tcp-port=%u public-ipv4=%s nft-table=%s\n",
+               "mtu=%u tcp-port=%u public-ipv4=%s firewall=%s "
+               "firewall-resource=%s\n",
                tun.ifname, argv[4], argv[2], (unsigned)l3.netif.mtu,
-               (unsigned)listen_port, public_ipv4, ingress.table_name);
+               (unsigned)listen_port, public_ipv4,
+               tcp_shift_firewall_backend_name(ingress.backend),
+               ingress.resource_name);
     } else {
         printf("tcp-shift-p1: ready tun=%s host-ipv4=%s lwip-ipv4=%s "
                "mtu=%u tcp-port=%u\n",
@@ -201,8 +218,8 @@ int main(int argc, char **argv)
             (unsigned long long)loop.tun_writable_wakeups);
 
 out_loop:
-    if (ingress.installed != 0 && tcp_shift_nft_ingress_remove(&ingress) < 0) {
-        perror("remove nft ingress");
+    if (ingress.installed != 0 && tcp_shift_firewall_remove(&ingress) < 0) {
+        perror("remove firewall ingress");
         status = EXIT_FAILURE;
     }
     if (loop_started != 0) {
