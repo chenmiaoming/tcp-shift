@@ -143,7 +143,8 @@ run_expect_failure()
     : > "$stdout_file"
     : > "$stderr_file"
     set +e
-    "$BINARY" "$TUN_NAME" "$LWIP_IP" "$HOST_CIDR" "$TCP_PORT" \
+    TCP_SHIFT_FIREWALL_BACKEND=nftables \
+        "$BINARY" "$TUN_NAME" "$LWIP_IP" "$HOST_CIDR" "$TCP_PORT" \
         "$WAN_HOST_IP" > "$stdout_file" 2> "$stderr_file"
     rc=$?
     set -e
@@ -164,7 +165,7 @@ wait_runtime_ready()
         if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
            ip -6 addr show dev "$TUN_NAME" | grep -F "$HOST_CIDR" >/dev/null 2>&1 &&
            nft list table ip6 "$PRODUCT_TABLE" >/dev/null 2>&1 &&
-           grep -F "public-ipv6=$WAN_HOST_IP nft-table=$PRODUCT_TABLE" \
+           grep -F "public-ipv6=$WAN_HOST_IP firewall=nftables firewall-resource=$PRODUCT_TABLE" \
                "$OUT/runtime.stdout" >/dev/null 2>&1; then
             ready=1
             break
@@ -214,7 +215,7 @@ create table ip6 $PRODUCT_TABLE
 add chain ip6 $PRODUCT_TABLE occupied
 EOF
 run_expect_failure "$OUT/collision.stdout" "$OUT/collision.stderr"
-grep -F 'install IPv6 nft ingress' "$OUT/collision.stderr" >/dev/null
+grep -F 'install IPv6 firewall ingress' "$OUT/collision.stderr" >/dev/null
 nft list table ip6 "$PRODUCT_TABLE" > "$OUT/collision-table.txt"
 grep -F 'chain occupied' "$OUT/collision-table.txt" >/dev/null
 if ip link show "$TUN_NAME" >/dev/null 2>&1; then
@@ -237,7 +238,8 @@ ip -n "$NS_NAME" -6 addr add "$WAN_CLIENT_CIDR" dev "$WAN_NS_IF" nodad
 
 : > "$OUT/runtime.stdout"
 : > "$OUT/runtime.stderr"
-"$BINARY" "$TUN_NAME" "$LWIP_IP" "$HOST_CIDR" "$TCP_PORT" \
+TCP_SHIFT_FIREWALL_BACKEND=nftables \
+    "$BINARY" "$TUN_NAME" "$LWIP_IP" "$HOST_CIDR" "$TCP_PORT" \
     "$WAN_HOST_IP" > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 PID=$!
 wait_runtime_ready
