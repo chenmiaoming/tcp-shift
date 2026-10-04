@@ -6,7 +6,7 @@
 
 #include "bridge/bridge.h"
 #include "host/ifconfig.h"
-#include "host/nft_ingress.h"
+#include "host/firewall.h"
 #include "host/tun.h"
 #include "lwip/cc_adapter.h"
 #include "lwip/init.h"
@@ -15,7 +15,7 @@
 #include "runtime/lwip_loop.h"
 
 #define TCP_SHIFT_P2_MTU 1500U
-#define TCP_SHIFT_P2_IPV6_NFT_TABLE "tcp_shift_p2"
+#define TCP_SHIFT_P2_FIREWALL_RESOURCE "tcp_shift_p2"
 
 static volatile sig_atomic_t tcp_shift_stop;
 
@@ -179,7 +179,9 @@ int main(int argc, char **argv)
     struct tcp_shift_l3_tun l3;
     struct tcp_shift_lwip_loop loop;
     struct tcp_shift_bridge bridge;
-    struct tcp_shift_nft_ingress ingress;
+    struct tcp_shift_firewall ingress;
+    struct tcp_shift_firewall_spec firewall_spec;
+    enum tcp_shift_firewall_backend firewall_backend;
     const struct tcp_shift_lwip_cc_stats *cc_stats;
     const char *cc_name;
     const char *public_ipv6 = NULL;
@@ -198,9 +200,7 @@ int main(int argc, char **argv)
     loop.epoll_fd = -1;
     bridge.listener = NULL;
     bridge.flows = NULL;
-    ingress.table_name[0] = '\0';
-    ingress.ip_version = 0U;
-    ingress.installed = 0;
+    memset(&ingress, 0, sizeof(ingress));
 
     if (argc != 6 && argc != 7 && argc != 8) {
         usage(argv[0]);
@@ -216,6 +216,13 @@ int main(int argc, char **argv)
             return EXIT_FAILURE;
         }
         public_ipv6 = argv[7];
+    }
+    if (tcp_shift_firewall_backend_parse(
+            getenv("TCP_SHIFT_FIREWALL_BACKEND"), &firewall_backend) < 0) {
+        fprintf(stderr,
+                "tcp-shift-p2-ipv6: invalid TCP_SHIFT_FIREWALL_BACKEND "
+                "(expected auto|nftables|iptables|none)\n");
+        return EXIT_FAILURE;
     }
 
     cc_name = argc >= 7 ? argv[6] : "reno";
@@ -253,7 +260,9 @@ int main(int argc, char **argv)
     }
 
     if (signal(SIGINT, tcp_shift_handle_signal) == SIG_ERR ||
-        signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR) {
+        signal(SIGTERM, tcp_shift_handle_signal) == SIG_ERR ||
+        signal(SIGHUP, tcp_shift_handle_signal) == SIG_ERR ||
+        signal(SIGQUIT, tcp_shift_handle_signal) == SIG_ERR) {
         perror("signal");
         return EXIT_FAILURE;
     }
@@ -302,10 +311,15 @@ int main(int argc, char **argv)
     bridge_started = 1;
 
     if (public_ipv6 != NULL) {
-        if (tcp_shift_nft_ingress_install_ipv6(
-                &ingress, TCP_SHIFT_P2_IPV6_NFT_TABLE,
-                public_ipv6, public_port, argv[2], public_port) < 0) {
-            perror("install IPv6 nft ingress");
+        firewall_spec.ip_version = 6U;
+        firewall_spec.resource_name = TCP_SHIFT_P2_FIREWALL_RESOURCE;
+        firewall_spec.public_address = public_ipv6;
+        firewall_spec.public_port = public_port;
+        firewall_spec.target_address = argv[2];
+        firewall_spec.target_port = public_port;
+        if (tcp_shift_firewall_install(
+                &ingress, firewall_backend, &firewall_spec) < 0) {
+            perror("install IPv6 firewall ingress");
             goto out;
         }
     }
@@ -313,10 +327,12 @@ int main(int argc, char **argv)
     if (public_ipv6 != NULL) {
         printf("tcp-shift-p2-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
                "mtu=%u public-port=%u public-ipv6=%s "
-               "backend=127.0.0.1:%u cc=%s nft-table=%s\n",
+               "backend=127.0.0.1:%u cc=%s firewall=%s "
+               "firewall-resource=%s\n",
                tun.ifname, argv[3], argv[2], (unsigned)l3.netif.mtu,
                (unsigned)public_port, public_ipv6, (unsigned)backend_port,
-               cc_name, ingress.table_name);
+               cc_name, tcp_shift_firewall_backend_name(ingress.backend),
+               ingress.resource_name);
     } else {
         printf("tcp-shift-p2-ipv6: ready tun=%s host-ipv6=%s lwip-ipv6=%s "
                "mtu=%u public-port=%u backend=127.0.0.1:%u cc=%s\n",
@@ -402,8 +418,8 @@ int main(int argc, char **argv)
 
 out:
     if (ingress.installed != 0 &&
-        tcp_shift_nft_ingress_remove(&ingress) < 0) {
-        perror("remove IPv6 nft ingress");
+        tcp_shift_firewall_remove(&ingress) < 0) {
+        perror("remove IPv6 firewall ingress");
         status = EXIT_FAILURE;
     }
     if (bridge_started != 0) {
