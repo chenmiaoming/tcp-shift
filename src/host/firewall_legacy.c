@@ -206,19 +206,46 @@ static int tcp_shift_legacy_delete_chain(struct tcp_shift_firewall *firewall,
     return tcp_shift_legacy_run(tool, argv);
 }
 
-static void tcp_shift_legacy_rollback(struct tcp_shift_firewall *firewall,
-                                      const char *tool)
+static int tcp_shift_legacy_rollback(struct tcp_shift_firewall *firewall,
+                                     const char *tool)
 {
+    int result = 0;
+    int saved_errno = 0;
+
     if (firewall->legacy_jump_installed != 0) {
-        (void)tcp_shift_legacy_delete_jump(firewall, tool);
-        firewall->legacy_jump_installed = 0;
+        if (tcp_shift_legacy_delete_jump(firewall, tool) == 0) {
+            firewall->legacy_jump_installed = 0;
+        } else {
+            saved_errno = errno;
+            result = -1;
+        }
     }
-    if (firewall->legacy_chain_created != 0) {
-        (void)tcp_shift_legacy_flush_chain(firewall, tool);
-        (void)tcp_shift_legacy_delete_chain(firewall, tool);
-        firewall->legacy_chain_created = 0;
+
+    if (firewall->legacy_chain_created != 0 &&
+        firewall->legacy_jump_installed == 0) {
+        if (tcp_shift_legacy_flush_chain(firewall, tool) < 0) {
+            if (saved_errno == 0) {
+                saved_errno = errno;
+            }
+            result = -1;
+        } else if (tcp_shift_legacy_delete_chain(firewall, tool) == 0) {
+            firewall->legacy_chain_created = 0;
+        } else {
+            if (saved_errno == 0) {
+                saved_errno = errno;
+            }
+            result = -1;
+        }
     }
-    firewall->installed = 0;
+
+    firewall->installed =
+        firewall->legacy_jump_installed != 0 ||
+        firewall->legacy_chain_created != 0;
+
+    if (result < 0) {
+        errno = saved_errno != 0 ? saved_errno : EPROTO;
+    }
+    return result;
 }
 
 int tcp_shift_firewall_legacy_install(struct tcp_shift_firewall *firewall)
@@ -286,14 +313,14 @@ int tcp_shift_firewall_legacy_install(struct tcp_shift_firewall *firewall)
 
     if (tcp_shift_legacy_run(tool, add_dnat) < 0) {
         saved_errno = errno;
-        tcp_shift_legacy_rollback(firewall, tool);
+        (void)tcp_shift_legacy_rollback(firewall, tool);
         errno = saved_errno;
         return -1;
     }
 
     if (tcp_shift_legacy_run(tool, add_jump) < 0) {
         saved_errno = errno;
-        tcp_shift_legacy_rollback(firewall, tool);
+        (void)tcp_shift_legacy_rollback(firewall, tool);
         errno = saved_errno;
         return -1;
     }
@@ -305,7 +332,6 @@ int tcp_shift_firewall_legacy_install(struct tcp_shift_firewall *firewall)
 int tcp_shift_firewall_legacy_remove(struct tcp_shift_firewall *firewall)
 {
     const char *tool;
-    int chain_result;
 
     if (firewall == NULL ||
         firewall->backend != TCP_SHIFT_FIREWALL_IPTABLES ||
@@ -317,23 +343,5 @@ int tcp_shift_firewall_legacy_remove(struct tcp_shift_firewall *firewall)
     if (tool == NULL) {
         return -1;
     }
-
-    if (firewall->legacy_jump_installed != 0) {
-        (void)tcp_shift_legacy_delete_jump(firewall, tool);
-        firewall->legacy_jump_installed = 0;
-    }
-    if (firewall->legacy_chain_created == 0) {
-        firewall->installed = 0;
-        return 0;
-    }
-
-    (void)tcp_shift_legacy_flush_chain(firewall, tool);
-    chain_result = tcp_shift_legacy_delete_chain(firewall, tool);
-    if (chain_result < 0) {
-        return -1;
-    }
-
-    firewall->legacy_chain_created = 0;
-    firewall->installed = 0;
-    return 0;
+    return tcp_shift_legacy_rollback(firewall, tool);
 }
