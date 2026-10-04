@@ -233,7 +233,7 @@ int tcp_shift_firewall_legacy_install(struct tcp_shift_firewall *firewall)
     };
     char *add_dnat[] = {
         NULL, "-w", "-t", "nat", "-A", NULL,
-        "-j", "DNAT", "--to-destination", destination, NULL
+        "-p", "tcp", "-j", "DNAT", "--to-destination", destination, NULL
     };
     char *add_jump[] = {
         NULL, "-w", "-t", "nat", "-I", "PREROUTING", "1",
