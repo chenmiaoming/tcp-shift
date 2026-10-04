@@ -50,6 +50,7 @@ int main(void)
               &config, error, sizeof(error)) == 0);
     CHECK(config.ip_version == 4);
     CHECK(strcmp(config.cc, "bbr") == 0);
+    CHECK(strcmp(config.firewall_backend, "auto") == 0);
     CHECK(strcmp(config.public_address, "203.0.113.10") == 0);
     CHECK(config.public_port == 443U);
     CHECK(config.backend_port == 8443U);
@@ -60,6 +61,7 @@ int main(void)
     CHECK(load_text(
               "version=1\n"
               "cc=\"cubic\"\n"
+              "firewall_backend=\"iptables\"\n"
               "tun_name=\"ts6\"\n"
               "tun_host_address=\"fd00:1::1/126\"\n"
               "tun_guest_address=\"fd00:1::2\"\n"
@@ -68,8 +70,30 @@ int main(void)
               "backend=\"127.0.0.1:443\"\n",
               &config, error, sizeof(error)) == 0);
     CHECK(config.ip_version == 6);
+    CHECK(strcmp(config.firewall_backend, "iptables") == 0);
     CHECK(strcmp(config.tun_host_cidr, "fd00:1::1/126") == 0);
     CHECK(strcmp(config.tun_guest_address, "fd00:1::2") == 0);
+
+    CHECK(load_text(
+              "version=1\n"
+              "cc=\"reno\"\n"
+              "firewall_backend=\"bogus\"\n"
+              "[[forward]]\n"
+              "listen=\"203.0.113.1:80\"\n"
+              "backend=\"127.0.0.1:80\"\n",
+              &config, error, sizeof(error)) != 0);
+    CHECK(strstr(error, "firewall_backend") != NULL);
+
+    CHECK(load_text(
+              "version=1\n"
+              "cc=\"reno\"\n"
+              "firewall_backend=\"none\"\n"
+              "firewall_backend=\"auto\"\n"
+              "[[forward]]\n"
+              "listen=\"203.0.113.1:80\"\n"
+              "backend=\"127.0.0.1:80\"\n",
+              &config, error, sizeof(error)) != 0);
+    CHECK(strstr(error, "duplicate firewall_backend") != NULL);
 
     CHECK(load_text(
               "version=1\n"
@@ -102,6 +126,6 @@ int main(void)
               &config, error, sizeof(error)) != 0);
     CHECK(strstr(error, "127.0.0.1") != NULL);
 
-    puts("service_config=ok ipv4=ok ipv6=ok strict=ok");
+    puts("service_config=ok ipv4=ok ipv6=ok firewall=ok strict=ok");
     return 0;
 }
