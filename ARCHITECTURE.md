@@ -58,9 +58,11 @@ The production path is routed L3 TUN, not TAP/Ethernet. The outer Linux stack co
 
 The product-owned public ingress resource is narrow DNAT/conntrack state. IPv4 uses an exact public destination/port match. IPv6 uses exact destination plus extension-header-safe TCP classification. tcp-shift does not enable broad host forwarding, SNAT/masquerade, or unrelated firewall policy.
 
+Firewall control is backend-neutral above the host adapter. `auto` prefers an nf_tables backend implemented through dynamically loaded `libnftables`, so production does not require the `nft` executable. If nf_tables is genuinely unavailable, the compatibility backend targets true legacy xtables through `iptables-legacy` / `ip6tables-legacy`; `iptables-nft` is not misclassified as a legacy backend. An explicit `none` mode lets an external firewall manager own DNAT. Backend selection is singular: an available nftables backend that returns a permission, collision, or rule error fails closed rather than installing parallel legacy state.
+
 `net.ipv4.ip_forward` and `net.ipv6.conf.all.forwarding` are read-only prerequisites. Setup fails before mutation when the selected family's forwarding prerequisite is disabled.
 
-TUN interfaces are nonpersistent. nftables ownership is exclusive: a pre-existing product table is a collision, never an adopted resource. Cleanup deletes only state recorded as owned by the current process.
+TUN interfaces are nonpersistent. nftables ownership is exclusive: a pre-existing product table is a collision, never an adopted resource. The legacy backend similarly owns one dedicated chain and one exact PREROUTING jump and rolls back partial installation. Normal exit and graceful INT/TERM/HUP/QUIT teardown remove only firewall state recorded as owned by the process before closing the TUN. Uncatchable termination such as SIGKILL cannot execute userspace cleanup, so a stale resource remains a fail-closed collision rather than being silently adopted.
 
 ## Single-owner event-driven runtime
 

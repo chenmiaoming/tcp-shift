@@ -155,10 +155,13 @@ add_library(tcp_shift_host STATIC
     src/host/tun.c
     src/host/ifconfig.c
     src/host/ifconfig_ipv6.c
-    src/host/nft_ingress.c
+    src/host/firewall.c
+    src/host/firewall_nft.c
+    src/host/firewall_legacy.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(tcp_shift_host PUBLIC ${CMAKE_DL_LIBS})
 
 add_library(tcp_shift_l3 STATIC
     src/lwip/l3_tun.c

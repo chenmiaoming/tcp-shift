@@ -1,6 +1,10 @@
 version = 1
 cc = "bbr"
 
+# auto prefers native nf_tables and falls back to legacy iptables only when
+# nf_tables is unavailable. Other values: "nftables", "iptables", "none".
+firewall_backend = "auto"
+
 # Optional. If omitted, the kernel chooses an available TUN name.
 # tun_name = "ts0"
 

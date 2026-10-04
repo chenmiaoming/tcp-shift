@@ -66,7 +66,7 @@ grep -F 'config_contract=ok window_scaling=1 tcp_rcv_scale=0 tcpwnd_size_bytes=4
     fail "window-scaling config contract did not report the qualified 32-bit profile"
 
 "$SERVICE_CONFIG_CONTRACT" | tee "$BUILD/p0-service-config-contract.txt"
-grep -F 'service_config=ok ipv4=ok ipv6=ok strict=ok' \
+grep -F 'service_config=ok ipv4=ok ipv6=ok firewall=ok strict=ok' \
     "$BUILD/p0-service-config-contract.txt" >/dev/null || \
     fail "service config parser contract failed"
 

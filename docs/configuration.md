@@ -90,6 +90,38 @@ mapping model. A second `[[forward]]` currently fails closed rather than being
 ignored.
 
 
+## Firewall backend
+
+Public ingress is configured through a backend-neutral firewall layer. The
+service configuration accepts:
+
+```toml
+firewall_backend = "auto"
+```
+
+Valid values are `auto`, `nftables`, `iptables`, and `none`.
+
+`auto` prefers the native nf_tables control path. tcp-shift loads
+`libnftables` directly and submits the product-owned table/chain/rule
+transaction without executing the `nft` command. If the nf_tables userspace
+control library or kernel facility is unavailable, `auto` falls back to the
+true legacy xtables backend. A permission error, resource collision, or rule
+installation error on an available nftables backend fails closed instead of
+silently installing a second legacy ruleset.
+
+The legacy backend deliberately rejects `iptables-nft` as a fallback. It uses
+`iptables-legacy` / `ip6tables-legacy` (or a plain iptables binary only when
+its version reports a legacy backend) and owns a dedicated chain plus one exact
+PREROUTING jump. `none` leaves DNAT entirely to an external firewall manager.
+
+tcp-shift records only firewall objects it successfully created. Partial legacy
+installation is rolled back immediately. On normal shutdown and on graceful
+`SIGINT`, `SIGTERM`, `SIGHUP`, or `SIGQUIT`, the runtime removes the
+owned nftables table or the exact legacy jump/chain before tearing down the TUN.
+Foreign firewall state is never adopted or flushed. As with any userspace
+cleanup, `SIGKILL`, kernel panic, or power loss cannot run the teardown path;
+a stale owned-name collision therefore remains fail-closed on the next start.
+
 ## Transport memory overrides
 
 Transport sender memory is runtime policy and is not capped by the lwIP

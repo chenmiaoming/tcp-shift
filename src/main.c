@@ -86,6 +86,11 @@ static int exec_service(const struct tcp_shift_service_config *config)
         args[9] = NULL;
     }
 
+    if (setenv("TCP_SHIFT_FIREWALL_BACKEND",
+               config->firewall_backend, 1) < 0) {
+        return -1;
+    }
+
     if (resolve_sibling(binary, child_path, sizeof(child_path)) == 0) {
         execv(child_path, args);
         saved_errno = errno;
@@ -155,9 +160,10 @@ int main(int argc, char **argv)
 
     if (check_only != 0) {
         printf("tcp-shift: configuration ok version=%u family=ipv%d cc=%s "
-               "listen=%s:%u backend=127.0.0.1:%u\n",
+               "firewall=%s listen=%s:%u backend=127.0.0.1:%u\n",
                config.version, config.ip_version, config.cc,
-               config.public_address, (unsigned)config.public_port,
+               config.firewall_backend, config.public_address,
+               (unsigned)config.public_port,
                (unsigned)config.backend_port);
         return 0;
     }

@@ -27,7 +27,7 @@ FORWARD_RULES=0
 mkdir -p "$OUT"
 
 [ "$(id -u)" -eq 0 ] || {
-    echo "p1-nft-lifecycle.sh must run as root so tcp-shift can exec nft" >&2
+    echo "p1-nft-lifecycle.sh must run as root to manage nftables" >&2
     exit 1
 }
 [ -x "$BINARY" ] || {
@@ -126,7 +126,8 @@ run_expect_failure()
     : > "$stdout_file"
     : > "$stderr_file"
     set +e
-    "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
+    TCP_SHIFT_FIREWALL_BACKEND=nftables \
+        "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
         "$TCP_PORT" "$WAN_HOST_IP" > "$stdout_file" 2> "$stderr_file"
     rc=$?
     set -e
@@ -147,7 +148,7 @@ wait_runtime_ready()
         if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
            ip -4 addr show dev "$TUN_NAME" | grep -F "$HOST_CIDR" >/dev/null 2>&1 &&
            nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1 &&
-           grep -F "public-ipv4=$WAN_HOST_IP nft-table=$PRODUCT_TABLE" \
+           grep -F "public-ipv4=$WAN_HOST_IP firewall=nftables firewall-resource=$PRODUCT_TABLE" \
                "$OUT/runtime.stdout" >/dev/null 2>&1; then
             ready=1
             break
@@ -200,7 +201,7 @@ create table ip $PRODUCT_TABLE
 add chain ip $PRODUCT_TABLE occupied
 EOF
 run_expect_failure "$OUT/collision.stdout" "$OUT/collision.stderr"
-grep -F 'install nft ingress' "$OUT/collision.stderr" >/dev/null
+grep -F 'install firewall ingress' "$OUT/collision.stderr" >/dev/null
 nft list table ip "$PRODUCT_TABLE" > "$OUT/collision-table.txt"
 grep -F 'chain occupied' "$OUT/collision-table.txt" >/dev/null
 if ip link show "$TUN_NAME" >/dev/null 2>&1; then
@@ -225,7 +226,8 @@ ip -n "$NS_NAME" route add default via "$WAN_HOST_IP"
 
 : > "$OUT/runtime.stdout"
 : > "$OUT/runtime.stderr"
-"$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
+TCP_SHIFT_FIREWALL_BACKEND=nftables \
+    "$BINARY" "$TUN_NAME" "$LWIP_IP" "$NETMASK" "$HOST_IP" \
     "$TCP_PORT" "$WAN_HOST_IP" > "$OUT/runtime.stdout" 2> "$OUT/runtime.stderr" &
 PID=$!
 wait_runtime_ready

@@ -3,7 +3,8 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
-OUT="$BUILD/service-config-ci"
+FIREWALL_BACKEND=${TCP_SHIFT_SERVICE_FIREWALL_BACKEND:-nftables}
+OUT="$BUILD/service-config-ci-$FIREWALL_BACKEND"
 BINARY=${TCP_SHIFT_SERVICE_BINARY:-"$BUILD/tcp-shift"}
 TUN_NAME=${TCP_SHIFT_SERVICE_TUN_NAME:-tssvcci0}
 LWIP_IP=${TCP_SHIFT_SERVICE_LWIP_IP:-10.234.0.2}
@@ -19,6 +20,7 @@ WAN_CLIENT_IP=${TCP_SHIFT_SERVICE_WAN_CLIENT_IP:-198.51.102.2}
 WAN_CLIENT_CIDR=${TCP_SHIFT_SERVICE_WAN_CLIENT_CIDR:-198.51.102.2/24}
 PRODUCT_TABLE=tcp_shift_p2
 PAYLOAD_BYTES=${TCP_SHIFT_SERVICE_PAYLOAD_BYTES:-65536}
+IPTABLES_LEGACY=`command -v iptables-legacy 2>/dev/null || true`
 PID=
 BACKEND_PID=
 OLD_FORWARD=
@@ -42,9 +44,92 @@ mkdir -p "$OUT"
     echo "missing sibling tcp-shift-p2 runtime" >&2
     exit 1
 }
-command -v nft >/dev/null 2>&1 || {
-    echo "nft is unavailable" >&2
-    exit 1
+case "$FIREWALL_BACKEND" in
+    nftables)
+        command -v nft >/dev/null 2>&1 || {
+            echo "nft is unavailable for test introspection" >&2
+            exit 1
+        }
+        ;;
+    iptables)
+        [ -n "$IPTABLES_LEGACY" ] || {
+            echo "iptables-legacy is unavailable" >&2
+            exit 1
+        }
+        ;;
+    *)
+        echo "service-config-smoke requires nftables or iptables backend" >&2
+        exit 1
+        ;;
+esac
+
+firewall_live()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -S "$PRODUCT_TABLE" >/dev/null 2>&1
+            ;;
+    esac
+}
+
+dump_firewall()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft list table ip "$PRODUCT_TABLE"
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -S PREROUTING
+            "$IPTABLES_LEGACY" -w -t nat -S "$PRODUCT_TABLE"
+            ;;
+    esac
+}
+
+remove_firewall_emergency()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft delete table ip "$PRODUCT_TABLE" >/dev/null 2>&1 || true
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -D PREROUTING \
+                -d "$WAN_HOST_IP" -p tcp --dport "$PUBLIC_PORT" \
+                -j "$PRODUCT_TABLE" >/dev/null 2>&1 || true
+            "$IPTABLES_LEGACY" -w -t nat -F "$PRODUCT_TABLE" \
+                >/dev/null 2>&1 || true
+            "$IPTABLES_LEGACY" -w -t nat -X "$PRODUCT_TABLE" \
+                >/dev/null 2>&1 || true
+            ;;
+    esac
+}
+
+create_firewall_collision()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft add table ip "$PRODUCT_TABLE"
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -N "$PRODUCT_TABLE"
+            ;;
+    esac
+}
+
+remove_firewall_collision()
+{
+    case "$FIREWALL_BACKEND" in
+        nftables)
+            nft delete table ip "$PRODUCT_TABLE"
+            ;;
+        iptables)
+            "$IPTABLES_LEGACY" -w -t nat -F "$PRODUCT_TABLE" \
+                >/dev/null 2>&1 || true
+            "$IPTABLES_LEGACY" -w -t nat -X "$PRODUCT_TABLE"
+            ;;
+    esac
 }
 
 stop_runtime()
@@ -84,8 +169,8 @@ cleanup()
     stop_runtime
     stop_backend
     remove_forward_rules
-    if nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1; then
-        nft delete table ip "$PRODUCT_TABLE" >/dev/null 2>&1 || true
+    if firewall_live; then
+        remove_firewall_emergency
     fi
     if ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
         ip netns del "$NS_NAME" >/dev/null 2>&1 || true
@@ -106,6 +191,7 @@ trap cleanup EXIT HUP INT TERM
 cat > "$OUT/tcp-shift.toml" <<EOF
 version = 1
 cc = "reno"
+firewall_backend = "$FIREWALL_BACKEND"
 tun_name = "$TUN_NAME"
 tun_host_address = "$HOST_CIDR"
 tun_guest_address = "$LWIP_IP"
@@ -116,18 +202,45 @@ backend = "127.0.0.1:$BACKEND_PORT"
 EOF
 
 "$BINARY" --config "$OUT/tcp-shift.toml" --check > "$OUT/check.stdout"
-grep -F "configuration ok version=1 family=ipv4 cc=reno" "$OUT/check.stdout" >/dev/null
+grep -F "configuration ok version=1 family=ipv4 cc=reno firewall=$FIREWALL_BACKEND" "$OUT/check.stdout" >/dev/null
 if ip link show "$TUN_NAME" >/dev/null 2>&1; then
     echo "--check unexpectedly created the TUN" >&2
     exit 1
 fi
-if nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1; then
-    echo "--check unexpectedly created nft state" >&2
+if firewall_live; then
+    echo "--check unexpectedly created firewall state" >&2
     exit 1
 fi
 
 OLD_FORWARD=$(sysctl -n net.ipv4.ip_forward)
 sysctl -q -w net.ipv4.ip_forward=1
+
+# A pre-existing product-name resource belongs to somebody else. Startup must
+# fail closed, unwind the TUN, and leave that foreign resource intact.
+create_firewall_collision
+: > "$OUT/collision.stdout"
+: > "$OUT/collision.stderr"
+set +e
+"$BINARY" --config "$OUT/tcp-shift.toml" \
+    > "$OUT/collision.stdout" 2> "$OUT/collision.stderr"
+collision_rc=$?
+set -e
+[ "$collision_rc" -ne 0 ] || {
+    echo "runtime unexpectedly adopted a foreign firewall resource" >&2
+    exit 1
+}
+grep -F 'install firewall ingress' "$OUT/collision.stderr" >/dev/null
+firewall_live || {
+    echo "foreign firewall resource was deleted on collision" >&2
+    exit 1
+}
+if ip link show "$TUN_NAME" >/dev/null 2>&1; then
+    echo "TUN leaked after firewall ownership collision" >&2
+    exit 1
+fi
+remove_firewall_collision
+printf 'firewall_collision_preserved=ok backend=%s\n' "$FIREWALL_BACKEND" \
+    | tee "$OUT/collision-summary.txt"
 
 ip netns add "$NS_NAME"
 ip link add "$WAN_HOST_IF" type veth peer name "$WAN_NS_IF"
@@ -195,8 +308,9 @@ i=0
 ready=0
 while [ "$i" -lt 100 ]; do
     if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
-       nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1 &&
-       grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1; then
+       firewall_live &&
+       grep -F "tcp-shift-p2: ready tun=$TUN_NAME" "$OUT/runtime.stdout" >/dev/null 2>&1 &&
+       grep -F "firewall=$FIREWALL_BACKEND firewall-resource=$PRODUCT_TABLE" "$OUT/runtime.stdout" >/dev/null 2>&1; then
         ready=1
         break
     fi
@@ -214,9 +328,21 @@ done
     exit 1
 }
 
-nft list table ip "$PRODUCT_TABLE" > "$OUT/product-table-live.txt"
-grep -F "ip daddr $WAN_HOST_IP tcp dport $PUBLIC_PORT" "$OUT/product-table-live.txt" >/dev/null
-grep -F "dnat to $LWIP_IP:$PUBLIC_PORT" "$OUT/product-table-live.txt" >/dev/null
+dump_firewall > "$OUT/product-firewall-live.txt"
+case "$FIREWALL_BACKEND" in
+    nftables)
+        grep -F "ip daddr $WAN_HOST_IP tcp dport $PUBLIC_PORT" \
+            "$OUT/product-firewall-live.txt" >/dev/null
+        grep -F "dnat to $LWIP_IP:$PUBLIC_PORT" \
+            "$OUT/product-firewall-live.txt" >/dev/null
+        ;;
+    iptables)
+        grep -F -- "-j $PRODUCT_TABLE" "$OUT/product-firewall-live.txt" >/dev/null
+        grep -F -- "--dport $PUBLIC_PORT" "$OUT/product-firewall-live.txt" >/dev/null
+        grep -F -- "-j DNAT --to-destination $LWIP_IP:$PUBLIC_PORT" \
+            "$OUT/product-firewall-live.txt" >/dev/null
+        ;;
+esac
 
 iptables -w -I FORWARD 1 -i "$WAN_HOST_IF" -o "$TUN_NAME" \
     -p tcp -d "$LWIP_IP" --dport "$PUBLIC_PORT" -j ACCEPT
@@ -269,7 +395,7 @@ cat "$OUT/runtime.stderr" >&2
 grep -F "config-client-bytes=$PAYLOAD_BYTES " "$OUT/client.stdout" >/dev/null
 grep -F "backend-bytes=$PAYLOAD_BYTES " "$OUT/backend.stdout" >/dev/null
 grep -F "public-ipv4=$WAN_HOST_IP" "$OUT/runtime.stdout" >/dev/null
-grep -F "cc=reno nft-table=$PRODUCT_TABLE" "$OUT/runtime.stdout" >/dev/null
+grep -F "cc=reno firewall=$FIREWALL_BACKEND firewall-resource=$PRODUCT_TABLE" "$OUT/runtime.stdout" >/dev/null
 grep -F "bridge_accepts=1 bridge_backend_connects=1" "$OUT/runtime.stderr" >/dev/null
 grep -F "bridge_public_to_backend_bytes=$PAYLOAD_BYTES" "$OUT/runtime.stderr" >/dev/null
 grep -F "bridge_backend_to_public_bytes=$PAYLOAD_BYTES" "$OUT/runtime.stderr" >/dev/null
@@ -278,11 +404,12 @@ if ip link show "$TUN_NAME" >/dev/null 2>&1; then
     echo "config-driven TUN leaked after shutdown" >&2
     exit 1
 fi
-if nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1; then
-    echo "config-driven nft table leaked after shutdown" >&2
+if firewall_live; then
+    echo "config-driven firewall state leaked after shutdown" >&2
+    dump_firewall >&2 || true
     exit 1
 fi
 
-printf 'config_check_no_mutation=ok public_dnat=ok payload_bytes=%u echo=ok cleanup=ok\n' \
-    "$PAYLOAD_BYTES" | tee "$OUT/summary.txt"
+printf 'config_check_no_mutation=ok firewall=%s collision_preserved=ok public_dnat=ok payload_bytes=%u echo=ok cleanup=ok\n' \
+    "$FIREWALL_BACKEND" "$PAYLOAD_BYTES" | tee "$OUT/summary.txt"
 echo "Config-driven service ingress smoke passed"

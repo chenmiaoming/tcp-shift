@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define TCP_SHIFT_SERVICE_CC_MAX 16U
+#define TCP_SHIFT_SERVICE_FIREWALL_BACKEND_MAX 16U
 #define TCP_SHIFT_SERVICE_TUN_NAME_MAX 16U
 #define TCP_SHIFT_SERVICE_ADDRESS_MAX 64U
 
@@ -12,6 +13,7 @@ struct tcp_shift_service_config {
     unsigned version;
     int ip_version;
     char cc[TCP_SHIFT_SERVICE_CC_MAX];
+    char firewall_backend[TCP_SHIFT_SERVICE_FIREWALL_BACKEND_MAX];
     char tun_name[TCP_SHIFT_SERVICE_TUN_NAME_MAX];
     char tun_host_address[TCP_SHIFT_SERVICE_ADDRESS_MAX];
     char tun_host_cidr[TCP_SHIFT_SERVICE_ADDRESS_MAX];
