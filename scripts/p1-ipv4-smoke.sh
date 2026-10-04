@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 OUT="$BUILD/p1-ci"
 BINARY=${TCP_SHIFT_P1_BINARY:-"$BUILD/tcp-shift-p1"}
+NFT_CONTROL=${TCP_SHIFT_NFT_CONTROL_BINARY:-"$BUILD/tcp-shift-nft-test-control"}
 TUN_NAME=${TCP_SHIFT_P1_TUN_NAME:-tsp1ci0}
 LWIP_IP=${TCP_SHIFT_P1_LWIP_IP:-10.231.0.2}
 HOST_IP=${TCP_SHIFT_P1_HOST_IP:-10.231.0.1}
@@ -27,12 +28,30 @@ FORWARD_RULES=0
 
 mkdir -p "$OUT"
 
+nft_table_exists()
+{
+    table=$1
+    printf 'list table ip %s\n' "$table" | sudo "$NFT_CONTROL" >/dev/null 2>&1
+}
+
+nft_delete_table()
+{
+    table=$1
+    printf 'delete table ip %s\n' "$table" | sudo "$NFT_CONTROL"
+}
+
+nft_list_table()
+{
+    table=$1
+    printf 'list table ip %s\n' "$table" | sudo "$NFT_CONTROL"
+}
+
 capture_state()
 {
     ip -d addr show > "$OUT/ip-addr.txt" 2>&1 || true
     ip route show table all > "$OUT/ip-route.txt" 2>&1 || true
     ip -s link show > "$OUT/ip-link.txt" 2>&1 || true
-    sudo nft list ruleset > "$OUT/nft-ruleset.txt" 2>&1 || true
+    printf 'list ruleset\n' | sudo "$NFT_CONTROL" > "$OUT/nft-ruleset.txt" 2>&1 || true
     sudo iptables-save > "$OUT/iptables-save.txt" 2>&1 || true
     sudo conntrack -L -p tcp > "$OUT/conntrack-tcp.txt" 2>&1 || true
     if sudo ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
@@ -58,8 +77,8 @@ cleanup_network()
 {
     set +e
     remove_forward_rules
-    if sudo nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
-        sudo nft delete table ip "$NFT_TABLE" >/dev/null 2>&1 || true
+    if nft_table_exists "$NFT_TABLE"; then
+        nft_delete_table "$NFT_TABLE" >/dev/null 2>&1 || true
     fi
     if sudo ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
         sudo ip netns del "$NS_NAME" >/dev/null 2>&1 || true
@@ -147,6 +166,10 @@ extract_counter()
 
 [ -x "$BINARY" ] || {
     echo "missing P1 binary: $BINARY" >&2
+    exit 1
+}
+[ -x "$NFT_CONTROL" ] || {
+    echo "missing libnftables test control helper: $NFT_CONTROL" >&2
     exit 1
 }
 [ -c /dev/net/tun ] || {
@@ -262,7 +285,7 @@ sudo ip -n "$NS_NAME" addr add "$WAN_CLIENT_CIDR" dev "$WAN_NS_IF"
 sudo ip -n "$NS_NAME" link set "$WAN_NS_IF" up
 sudo ip -n "$NS_NAME" route add default via "$WAN_HOST_IP"
 
-sudo nft -f - <<EOF
+sudo "$NFT_CONTROL" <<EOF
 table ip $NFT_TABLE {
     chain prerouting {
         type nat hook prerouting priority -100; policy accept;
@@ -280,7 +303,7 @@ sudo iptables -w -I FORWARD 1 -i "$TUN_NAME" -o "$WAN_HOST_IF" \
     -p tcp -s "$LWIP_IP" --sport "$TCP_PORT" -j ACCEPT
 FORWARD_RULES=1
 
-sudo nft list table ip "$NFT_TABLE" > "$OUT/nft-dnat.txt"
+nft_list_table "$NFT_TABLE" > "$OUT/nft-dnat.txt"
 sudo iptables -w -S FORWARD > "$OUT/iptables-forward.txt"
 
 if ! sudo ip netns exec "$NS_NAME" python3 - "$WAN_HOST_IP" "$TCP_PORT" \
@@ -337,7 +360,7 @@ if ip link show "$WAN_HOST_IF" >/dev/null 2>&1; then
     echo "test veth survived cleanup" >&2
     exit 1
 fi
-if sudo nft list table ip "$NFT_TABLE" >/dev/null 2>&1; then
+if nft_table_exists "$NFT_TABLE"; then
     echo "test nftables table survived cleanup" >&2
     exit 1
 fi
