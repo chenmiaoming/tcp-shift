@@ -158,10 +158,22 @@ add_library(tcp_shift_host STATIC
     src/host/firewall.c
     src/host/firewall_nft.c
     src/host/firewall_legacy.c
+    src/host/nft_control.c
 )
 target_include_directories(tcp_shift_host PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_compile_options(tcp_shift_host PRIVATE -Wall -Wextra -Wpedantic -Werror)
 target_link_libraries(tcp_shift_host PUBLIC ${CMAKE_DL_LIBS})
+
+add_executable(tcp-shift-nft-test-control
+    src/tests/nft_control_tool.c
+)
+target_include_directories(tcp-shift-nft-test-control PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_options(tcp-shift-nft-test-control PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-nft-test-control PRIVATE tcp_shift_host)
 
 add_library(tcp_shift_l3 STATIC
     src/lwip/l3_tun.c

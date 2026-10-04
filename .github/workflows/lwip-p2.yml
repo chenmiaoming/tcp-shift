@@ -22,6 +22,7 @@ on:
       - 'src/p2_ipv6_main.c'
       - 'patches/lwip-p4-cc-hooks.patch'
       - 'scripts/fetch-lwip.sh'
+      - 'scripts/validate-no-nft-cli.sh'
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p2-ipv6-bridge-smoke.sh'
       - 'scripts/p2-backpressure-smoke.sh'
@@ -64,7 +65,7 @@ jobs:
             iproute2 \
             iptables \
             libcap2-bin \
-            nftables \
+            libnftables1 \
             python3
 
       - name: Validate bridge harness
@@ -81,6 +82,7 @@ jobs:
           sh -n scripts/p2-reuse-rss-smoke.sh
           sh -n scripts/service-config-smoke.sh
           sh -n scripts/validate-p4-adapter-p2-evidence.sh
+          sh scripts/validate-no-nft-cli.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
@@ -92,6 +94,7 @@ jobs:
             tcp-shift \
             tcp-shift-p2 \
             tcp-shift-p2-ipv6 \
+            tcp-shift-nft-test-control \
             --parallel
 
       - name: Grant TUN administration capability for IPv4 bridge
@@ -105,6 +108,7 @@ jobs:
           sudo env \
             TCP_SHIFT_SERVICE_BINARY="$PWD/.build/tcp-shift" \
             TCP_SHIFT_SERVICE_FIREWALL_BACKEND=nftables \
+            TCP_SHIFT_NFT_CONTROL_BINARY="$PWD/.build/tcp-shift-nft-test-control" \
             sh scripts/service-config-smoke.sh
 
       - name: Exercise config-driven legacy iptables ingress

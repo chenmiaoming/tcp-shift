@@ -16,7 +16,7 @@ P1 contains:
 
 - `src/host/tun.*`: nonpersistent nonblocking exclusive `IFF_TUN | IFF_NO_PI` acquisition/cleanup;
 - `src/host/ifconfig.*` and `ifconfig_ipv6.*`: static host L3 address, MTU, and link-up ownership;
-- `src/host/nft_ingress.*`: family-aware exact-match product-owned nftables DNAT lifecycle;
+- `src/host/firewall*.c` plus `nft_control.*`: backend-neutral firewall ownership with a native libnftables nf_tables path and legacy xtables compatibility;
 - `src/lwip/l3_tun.*`: IPv4/IPv6 lwIP netif, RX dispatch, complete-packet TX, bounded TUN retry queue, and IPv6 PMTU destination-cache integration;
 - `src/runtime/lwip_loop.*`: epoll plus lwIP timeout integration with no fixed polling tick;
 - `src/lwip/probe_listener.*`: temporary raw-API TCP listener for handshake qualification;
@@ -24,11 +24,11 @@ P1 contains:
 
 TX backpressure is capped at 64 packets / 96 KiB. The 65th full-MTU packet is rejected with `ERR_MEM`; FIFO ordering and reference cleanup have deterministic tests. Oversize RX is a nonfatal drop.
 
-The nonpersistent TUN fd is the rollback boundary for interface/address/MTU/connected-route state. Public ingress uses one exclusive nftables table in family `ip` or `ip6`. Installation validates the complete batch with `nft -c -f -`, then atomically creates the table, NAT chain, and exact address/TCP-port DNAT rule. A pre-existing table is rejected rather than adopted. Cleanup deletes only the table recorded as owned by this process before TUN teardown.
+The nonpersistent TUN fd is the rollback boundary for interface/address/MTU/connected-route state. The nf_tables backend uses one exclusive table in family `ip` or `ip6`. Installation validates and applies the complete batch through libnftables, then creates the table, NAT chain, and exact address/TCP-port DNAT rule. A pre-existing table is rejected rather than adopted. Cleanup deletes only the table recorded as owned by this process before TUN teardown.
 
 `net.ipv4.ip_forward`, `net.ipv6.conf.all.forwarding`, and broad host FORWARD policy are operator-managed prerequisites. The product reads/diagnoses forwarding but never enables it. GitHub runner-specific forwarding exceptions remain test-harness resources.
 
-The temporary public-ingress P1 process currently runs as root so its short-lived `nft` child has the required privilege. `nft` is exec'd only during setup/cleanup; libnftables is not linked into the long-lived runtime. A future privileged helper can absorb this host module without changing lwIP or CC boundaries.
+The public-ingress P1 qualification runs with the privilege required to program netfilter. Both production and qualification use the same dynamically loaded libnftables control path; there is no external `nft` child process. A future privileged helper can absorb this host module without changing lwIP or CC boundaries.
 
 ## IPv4 evidence
 
@@ -75,7 +75,7 @@ The two unused diagnostics produced by pinned `nd6.c` under this intentionally n
 
 The same L3 netif provides `output_ip6`; RX selects `ip4_input` or `ip6_input` from the packet version nibble. IPv6 host/lwIP addresses are static. Physical NDP remains the host kernel's responsibility; the TUN boundary carries complete L3 packets and does not perform Ethernet neighbor resolution.
 
-Public IPv6 ingress uses an exact product-owned `ip6` DNAT rule into an internal static IPv6 TUN address. The gate sends an actual Hop-by-Hop extension-header TCP SYN through the rule to prove L4 matching is extension-header-safe rather than inferring that property from nft's printed rule form.
+Public IPv6 ingress uses an exact product-owned `ip6` DNAT rule into an internal static IPv6 TUN address. The gate sends an actual Hop-by-Hop extension-header TCP SYN through the rule to prove L4 matching is extension-header-safe rather than inferring that property from a serialized rule form.
 
 ### Pure-L3 PMTU integration
 
@@ -96,7 +96,7 @@ ipv6_forwarding_disabled_preflight=ok
 ipv6_exclusive_collision_rejection=ok
 ipv6_extension_header_dnat=ok
 product IPv6 DNAT connected [2001:db8:101::1]:18083
-tcp-shift-p1-ipv6: ready tun=tsp1v6nft0 host-ipv6=fd00:198:18::1/126 lwip-ipv6=fd00:198:18::2 mtu=1500 tcp-port=18083 public-ipv6=2001:db8:101::1 nft-table=tcp_shift_p1
+tcp-shift-p1-ipv6: ready tun=tsp1v6nft0 host-ipv6=fd00:198:18::1/126 lwip-ipv6=fd00:198:18::2 mtu=1500 tcp-port=18083 public-ipv6=2001:db8:101::1 firewall=nftables firewall-resource=tcp_shift_p1
 ipv6_signal_cleanup=ok unrelated_ruleset_unchanged=ok
 P1b product-owned IPv6 nft ingress lifecycle passed
 ```

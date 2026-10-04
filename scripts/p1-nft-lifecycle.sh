@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/.build"
 OUT="$BUILD/p1-nft-ci"
 BINARY=${TCP_SHIFT_P1_BINARY:-"$BUILD/tcp-shift-p1"}
+NFT_CONTROL=${TCP_SHIFT_NFT_CONTROL_BINARY:-"$BUILD/tcp-shift-nft-test-control"}
 TUN_NAME=${TCP_SHIFT_P1_NFT_TUN_NAME:-tsp1nft0}
 LWIP_IP=${TCP_SHIFT_P1_NFT_LWIP_IP:-10.232.0.2}
 HOST_IP=${TCP_SHIFT_P1_NFT_HOST_IP:-10.232.0.1}
@@ -26,6 +27,24 @@ FORWARD_RULES=0
 
 mkdir -p "$OUT"
 
+nft_table_exists()
+{
+    table=$1
+    printf 'list table ip %s\n' "$table" | "$NFT_CONTROL" >/dev/null 2>&1
+}
+
+nft_delete_table()
+{
+    table=$1
+    printf 'delete table ip %s\n' "$table" | "$NFT_CONTROL"
+}
+
+nft_list_table()
+{
+    table=$1
+    printf 'list table ip %s\n' "$table" | "$NFT_CONTROL"
+}
+
 [ "$(id -u)" -eq 0 ] || {
     echo "p1-nft-lifecycle.sh must run as root to manage nftables" >&2
     exit 1
@@ -38,8 +57,8 @@ mkdir -p "$OUT"
     echo "/dev/net/tun is unavailable" >&2
     exit 1
 }
-command -v nft >/dev/null 2>&1 || {
-    echo "nft is unavailable" >&2
+[ -x "$NFT_CONTROL" ] || {
+    echo "missing libnftables test control helper: $NFT_CONTROL" >&2
     exit 1
 }
 
@@ -47,7 +66,7 @@ capture_state()
 {
     ip -d addr show > "$OUT/ip-addr.txt" 2>&1 || true
     ip route show table all > "$OUT/ip-route.txt" 2>&1 || true
-    nft list ruleset > "$OUT/nft-ruleset.txt" 2>&1 || true
+    printf 'list ruleset\n' | "$NFT_CONTROL" > "$OUT/nft-ruleset.txt" 2>&1 || true
     iptables-save > "$OUT/iptables-save.txt" 2>&1 || true
     conntrack -L -p tcp > "$OUT/conntrack-tcp.txt" 2>&1 || true
     if ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
@@ -84,11 +103,11 @@ cleanup()
     stop_runtime
     capture_state
     remove_forward_rules
-    if nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1; then
-        nft delete table ip "$PRODUCT_TABLE" >/dev/null 2>&1 || true
+    if nft_table_exists "$PRODUCT_TABLE"; then
+        nft_delete_table "$PRODUCT_TABLE" >/dev/null 2>&1 || true
     fi
-    if nft list table ip "$UNRELATED_TABLE" >/dev/null 2>&1; then
-        nft delete table ip "$UNRELATED_TABLE" >/dev/null 2>&1 || true
+    if nft_table_exists "$UNRELATED_TABLE"; then
+        nft_delete_table "$UNRELATED_TABLE" >/dev/null 2>&1 || true
     fi
     if ip netns list | grep -F "$NS_NAME" >/dev/null 2>&1; then
         ip netns del "$NS_NAME" >/dev/null 2>&1 || true
@@ -112,7 +131,7 @@ assert_no_product_resources()
         echo "product TUN leaked after failed/terminated runtime" >&2
         exit 1
     fi
-    if nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1; then
+    if nft_table_exists "$PRODUCT_TABLE"; then
         echo "product nft table leaked after failed/terminated runtime" >&2
         exit 1
     fi
@@ -147,7 +166,7 @@ wait_runtime_ready()
     while [ "$i" -lt 100 ]; do
         if ip link show "$TUN_NAME" >/dev/null 2>&1 &&
            ip -4 addr show dev "$TUN_NAME" | grep -F "$HOST_CIDR" >/dev/null 2>&1 &&
-           nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1 &&
+           nft_table_exists "$PRODUCT_TABLE" &&
            grep -F "public-ipv4=$WAN_HOST_IP firewall=nftables firewall-resource=$PRODUCT_TABLE" \
                "$OUT/runtime.stdout" >/dev/null 2>&1; then
             ready=1
@@ -186,29 +205,29 @@ sysctl -q -w net.ipv4.ip_forward=1
 
 # Keep an unrelated nft resource alive for the whole qualification. Its exact
 # serialized form must be identical after collision, live traffic, and cleanup.
-nft -f - <<EOF
+"$NFT_CONTROL" <<EOF
 create table ip $UNRELATED_TABLE
 add chain ip $UNRELATED_TABLE marker
 EOF
-nft list table ip "$UNRELATED_TABLE" > "$OUT/unrelated-before.txt"
+nft_list_table "$UNRELATED_TABLE" > "$OUT/unrelated-before.txt"
 UNRELATED_BEFORE=$(sha256sum "$OUT/unrelated-before.txt" | awk '{print $1}')
 
 # Simulate a stale/other owner using the exact product resource name. Exclusive
 # create plus the read-only nft check must reject the startup; tcp-shift must not
 # adopt or delete this table.
-nft -f - <<EOF
+"$NFT_CONTROL" <<EOF
 create table ip $PRODUCT_TABLE
 add chain ip $PRODUCT_TABLE occupied
 EOF
 run_expect_failure "$OUT/collision.stdout" "$OUT/collision.stderr"
 grep -F 'install firewall ingress' "$OUT/collision.stderr" >/dev/null
-nft list table ip "$PRODUCT_TABLE" > "$OUT/collision-table.txt"
+nft_list_table "$PRODUCT_TABLE" > "$OUT/collision-table.txt"
 grep -F 'chain occupied' "$OUT/collision-table.txt" >/dev/null
 if ip link show "$TUN_NAME" >/dev/null 2>&1; then
     echo "TUN leaked after nft resource collision" >&2
     exit 1
 fi
-nft delete table ip "$PRODUCT_TABLE"
+nft_delete_table "$PRODUCT_TABLE"
 printf 'exclusive_collision_rejection=ok\n' | tee "$OUT/collision-summary.txt"
 
 # CI-only external topology. The product owns DNAT; the harness owns only the
@@ -232,7 +251,7 @@ TCP_SHIFT_FIREWALL_BACKEND=nftables \
 PID=$!
 wait_runtime_ready
 
-nft list table ip "$PRODUCT_TABLE" > "$OUT/product-table-live.txt"
+nft_list_table "$PRODUCT_TABLE" > "$OUT/product-table-live.txt"
 grep -F "ip daddr $WAN_HOST_IP tcp dport $TCP_PORT" \
     "$OUT/product-table-live.txt" >/dev/null
 grep -F "dnat to $LWIP_IP:$TCP_PORT" "$OUT/product-table-live.txt" >/dev/null
@@ -276,7 +295,7 @@ cat "$OUT/runtime.stdout"
 cat "$OUT/runtime.stderr" >&2
 assert_no_product_resources
 
-nft list table ip "$UNRELATED_TABLE" > "$OUT/unrelated-after.txt"
+nft_list_table "$UNRELATED_TABLE" > "$OUT/unrelated-after.txt"
 UNRELATED_AFTER=$(sha256sum "$OUT/unrelated-after.txt" | awk '{print $1}')
 [ "$UNRELATED_BEFORE" = "$UNRELATED_AFTER" ] || {
     echo "unrelated nftables state changed" >&2

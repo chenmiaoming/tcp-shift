@@ -6,6 +6,7 @@ BUILD="$ROOT/.build"
 FIREWALL_BACKEND=${TCP_SHIFT_SERVICE_FIREWALL_BACKEND:-nftables}
 OUT="$BUILD/service-config-ci-$FIREWALL_BACKEND"
 BINARY=${TCP_SHIFT_SERVICE_BINARY:-"$BUILD/tcp-shift"}
+NFT_CONTROL=${TCP_SHIFT_NFT_CONTROL_BINARY:-"$BUILD/tcp-shift-nft-test-control"}
 TUN_NAME=${TCP_SHIFT_SERVICE_TUN_NAME:-tssvcci0}
 LWIP_IP=${TCP_SHIFT_SERVICE_LWIP_IP:-10.234.0.2}
 HOST_CIDR=${TCP_SHIFT_SERVICE_HOST_CIDR:-10.234.0.1/30}
@@ -46,8 +47,8 @@ mkdir -p "$OUT"
 }
 case "$FIREWALL_BACKEND" in
     nftables)
-        command -v nft >/dev/null 2>&1 || {
-            echo "nft is unavailable for test introspection" >&2
+        [ -x "$NFT_CONTROL" ] || {
+            echo "missing libnftables test control helper: $NFT_CONTROL" >&2
             exit 1
         }
         ;;
@@ -67,7 +68,8 @@ firewall_live()
 {
     case "$FIREWALL_BACKEND" in
         nftables)
-            nft list table ip "$PRODUCT_TABLE" >/dev/null 2>&1
+            printf 'list table ip %s\n' "$PRODUCT_TABLE" |
+                "$NFT_CONTROL" >/dev/null 2>&1
             ;;
         iptables)
             "$IPTABLES_LEGACY" -w -t nat -S "$PRODUCT_TABLE" >/dev/null 2>&1
@@ -79,7 +81,7 @@ dump_firewall()
 {
     case "$FIREWALL_BACKEND" in
         nftables)
-            nft list table ip "$PRODUCT_TABLE"
+            printf 'list table ip %s\n' "$PRODUCT_TABLE" | "$NFT_CONTROL"
             ;;
         iptables)
             "$IPTABLES_LEGACY" -w -t nat -S PREROUTING
@@ -92,7 +94,8 @@ remove_firewall_emergency()
 {
     case "$FIREWALL_BACKEND" in
         nftables)
-            nft delete table ip "$PRODUCT_TABLE" >/dev/null 2>&1 || true
+            printf 'delete table ip %s\n' "$PRODUCT_TABLE" |
+                "$NFT_CONTROL" >/dev/null 2>&1 || true
             ;;
         iptables)
             "$IPTABLES_LEGACY" -w -t nat -D PREROUTING \
@@ -110,7 +113,7 @@ create_firewall_collision()
 {
     case "$FIREWALL_BACKEND" in
         nftables)
-            nft add table ip "$PRODUCT_TABLE"
+            printf 'add table ip %s\n' "$PRODUCT_TABLE" | "$NFT_CONTROL"
             ;;
         iptables)
             "$IPTABLES_LEGACY" -w -t nat -N "$PRODUCT_TABLE"
@@ -122,7 +125,7 @@ remove_firewall_collision()
 {
     case "$FIREWALL_BACKEND" in
         nftables)
-            nft delete table ip "$PRODUCT_TABLE"
+            printf 'delete table ip %s\n' "$PRODUCT_TABLE" | "$NFT_CONTROL"
             ;;
         iptables)
             "$IPTABLES_LEGACY" -w -t nat -F "$PRODUCT_TABLE" \
