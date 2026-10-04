@@ -22,6 +22,7 @@ on:
       - 'src/p2_ipv6_main.c'
       - 'patches/lwip-p4-cc-hooks.patch'
       - 'scripts/fetch-lwip.sh'
+      - 'scripts/validate-no-nft-cli.sh'
       - 'scripts/p2-bridge-smoke.sh'
       - 'scripts/p2-ipv6-bridge-smoke.sh'
       - 'scripts/p2-backpressure-smoke.sh'
@@ -81,6 +82,7 @@ jobs:
           sh -n scripts/p2-reuse-rss-smoke.sh
           sh -n scripts/service-config-smoke.sh
           sh -n scripts/validate-p4-adapter-p2-evidence.sh
+          sh scripts/validate-no-nft-cli.sh
           sudo modprobe tun || true
           test -c /dev/net/tun
 
