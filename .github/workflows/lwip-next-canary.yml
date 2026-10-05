@@ -27,15 +27,12 @@ jobs:
             time
 
       - name: Validate local test harness
-        run: sh -n scripts/validate-p0.sh
-
-      - name: Fetch current lwIP master
         run: |
-          mkdir -p .deps .build
-          git clone --depth=1 https://github.com/lwip-tcpip/lwip.git .deps/lwip
-          commit=$(git -C .deps/lwip rev-parse HEAD)
-          printf 'LWIP_REPOSITORY=https://github.com/lwip-tcpip/lwip.git\nLWIP_ACTUAL_COMMIT=%s\n' "$commit" > .build/upstream.env
-          cat .build/upstream.env
+          sh -n scripts/validate-p0.sh
+          sh -n scripts/fetch-lwip-next.sh
+
+      - name: Fetch current lwIP master and apply project patch chain
+        run: sh scripts/fetch-lwip-next.sh
 
       - name: Build against current upstream
         run: |
@@ -52,6 +49,9 @@ jobs:
           name: lwip-next-canary
           path: |
             .build/upstream.env
+            .build/lwip-next-patches.env
+            .build/lwip-next-critical.sha256
+            .build/lwip-next-project-patches.diff
             .build/compile_commands.json
             .build/p0-report.json
             .build/p0-smoke.txt
