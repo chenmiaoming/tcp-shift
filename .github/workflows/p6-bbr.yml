@@ -22,6 +22,8 @@ on:
       - 'scripts/bbr3-model-contract.sh'
       - 'scripts/bbr3-probe-contract.sh'
       - 'scripts/bbr3-congestion-contract.sh'
+      - 'scripts/bbr3-controller-contract.sh'
+      - 'src/tests/bbr3_controller_test.c'
       - 'src/tests/bbr3_congestion_test.c'
       - 'src/tests/bbr3_probe_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
@@ -79,6 +81,7 @@ jobs:
           sh -n scripts/bbr3-model-contract.sh
           sh -n scripts/bbr3-probe-contract.sh
           sh -n scripts/bbr3-congestion-contract.sh
+          sh -n scripts/bbr3-controller-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -95,6 +98,9 @@ jobs:
 
       - name: Qualify independent BBRv3 loss and ECN bounds
         run: sh scripts/bbr3-congestion-contract.sh
+
+      - name: Qualify isolated BBRv3 controller and ProbeRTT
+        run: sh scripts/bbr3-controller-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -121,6 +127,7 @@ jobs:
             .build/bbr3-model
             .build/bbr3-probe
             .build/bbr3-congestion
+            .build/bbr3-controller
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract
