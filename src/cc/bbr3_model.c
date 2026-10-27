@@ -1,7 +1,6 @@
 #include "cc/bbr3_model.h"
 
 #include <stddef.h>
-#include <string.h>
 
 static uint64_t max_u64(uint64_t left, uint64_t right)
 {
@@ -34,7 +33,26 @@ void tcp_shift_bbr3_model_init(struct tcp_shift_bbr3_model *model)
     if (model == NULL) {
         return;
     }
-    memset(model, 0, sizeof(*model));
+    model->max_bw_bytes_per_sec = 0U;
+    model->max_bw_filter[0] = 0U;
+    model->max_bw_filter[1] = 0U;
+    model->min_rtt_ns = 0U;
+    model->min_rtt_stamp_ns = 0U;
+    model->probe_rtt_min_delay_ns = 0U;
+    model->probe_rtt_min_stamp_ns = 0U;
+    model->last_update_ns = 0U;
+    model->next_round_delivered = 0U;
+    model->full_bw_bytes_per_sec = 0U;
+    model->round_count = 0U;
+    model->cycle_count = 0U;
+    model->full_bw_count = 0U;
+    model->has_bw = 0U;
+    model->has_min_rtt = 0U;
+    model->has_probe_rtt_min = 0U;
+    model->has_update_time = 0U;
+    model->round_start = 0U;
+    model->full_bw_reached = 0U;
+    model->probe_rtt_expired = 0U;
     model->phase = TCP_SHIFT_BBR3_STARTUP;
 }
 
