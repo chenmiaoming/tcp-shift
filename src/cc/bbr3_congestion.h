@@ -55,7 +55,8 @@ struct tcp_shift_bbr3_congestion_ack {
     /* A single ACK observation: bytes, not packet counts. */
     uint64_t delivery_rate_bytes_per_sec;
     uint64_t max_bw_bytes_per_sec; /* qualified long-window estimator */
-    uint64_t newly_delivered_bytes;
+    uint64_t newly_delivered_bytes; /* this ACK: CE EWMA denominator */
+    uint64_t rate_sample_delivered_bytes; /* RS.delivered over sampled flight */
     uint64_t newly_lost_bytes;
     uint64_t newly_ce_bytes;
     uint64_t tx_inflight_bytes; /* transmit-time, NOT current outstanding */
