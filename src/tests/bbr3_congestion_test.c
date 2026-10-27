@@ -85,6 +85,11 @@ static int check_loss_round_and_undo(void)
     CHECK(s.bw_shortterm_bytes_per_sec == UINT64_MAX);
     CHECK(s.inflight_shortterm_bytes == UINT64_MAX);
     CHECK(s.inflight_longterm_bytes == UINT64_MAX);
+    CHECK(s.loss_in_round == 0U);
+    CHECK(s.ecn_round_delivered_bytes == 0U);
+    CHECK(s.ecn_round_ce_bytes == 0U);
+    CHECK(s.bw_latest_bytes_per_sec == 0U);
+    CHECK(s.inflight_latest_bytes == 0U);
     CHECK(tcp_shift_bbr3_congestion_undo_spurious(&s) < 0);
 
     tcp_shift_bbr3_congestion_begin_probe(&s);
