@@ -29,6 +29,7 @@ if awk '
     $0 == "#include \"cc/bbr3_model.h\"" { next }
     $0 == "#include \"cc/bbr3_probe.h\"" { next }
     $0 == "#include \"cc/bbr3_congestion.h\"" { next }
+    $0 == "#include \"cc/bbr3_controller.h\"" { next }
     $0 == "#include \"cc/bbr_probe.h\"" { next }
     $0 == "#include \"cc/bbr_recovery.h\"" { next }
     $0 == "#include \"cc/bbr_controller.h\"" { next }
