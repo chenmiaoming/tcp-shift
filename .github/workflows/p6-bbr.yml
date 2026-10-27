@@ -18,6 +18,8 @@ on:
       - 'src/lwip/tcp_memory.h'
       - 'src/lwipopts.h'
       - 'src/tests/bbr_model_test.c'
+      - 'src/tests/bbr3_model_test.c'
+      - 'scripts/bbr3-model-contract.sh'
       - 'src/tests/bbr_startup_policy_test.c'
       - 'src/tests/bbr_drain_policy_test.c'
       - 'src/tests/bbr_probe_policy_test.c'
@@ -70,6 +72,7 @@ jobs:
       - name: Validate P6 harnesses
         run: |
           sh -n scripts/p6-bbr-model-contract.sh
+          sh -n scripts/bbr3-model-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -77,6 +80,9 @@ jobs:
 
       - name: Qualify BBR model estimation
         run: sh scripts/p6-bbr-model-contract.sh
+
+      - name: Qualify isolated BBRv3 model foundations
+        run: sh scripts/bbr3-model-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -100,6 +106,7 @@ jobs:
           name: tcp-shift-p6-bbr-model
           path: |
             .build/p6-bbr-model-contract
+            .build/bbr3-model
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract
