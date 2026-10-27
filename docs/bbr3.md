@@ -70,6 +70,36 @@ selector, or activate a listener. The full 2.11/5.3.3 behavior additionally
 requires the real SACK/RACK loss/ECN integration, long-term inflight slope,
 ACK aggregation and congestion model described below.
 
+## Third increment: congestion model (not yet bound to lwIP)
+
+`src/cc/bbr3_congestion.h` and `.c` provide an independent
+pure-C loss/ECN congestion model. Inputs are explicitly **public-leg**
+transport observations, not the loopback `iperf3` TCP_INFO retransmit field.
+The future lwIP adapter must supply validated SACK/RACK loss evidence,
+transmit-time inflight, authenticated packet-timed delivery boundaries,
+and CE bytes **only after ECN negotiation and transport eligibility**.
+
+- Short-term `bw_shortterm` / `inflight_shortterm` loss adaptation occurs
+  at most once per completed loss round, and never while probing bandwidth.
+  The update preserves the highest delivery demonstrated in that round.
+- Explicit independent `inflight_longterm` upper-bound tracking rejects
+  unqualified, repeated, or app-limited shrinkage; safe ProbeBW_UP feedback
+  may raise an established bound conservatively with an increasing slope.
+- The CE input is gated by explicit ECN eligibility; a per-round alpha
+  estimator can adjust short-term inflight limits. This **does not** turn
+  on BBRv3 ECN on public TCP connections.
+- Recovery snapshot/undo, unbounded sentinel handling, stage-specific
+  short-term rate limits and cwnd caps are unit-tested with 64-bit bytes.
+- `scripts/bbr3-congestion-contract.sh` runs as a freestanding strict-C
+  contract beside the existing P4/P6 quality gates.
+
+The actual `bbr3` selector and runtime remain unavailable. The remaining
+work includes connecting validated evidence to the adapter, aligning
+congestion timing with the ProbeBW ACK-phase machine, full ProbeRTT and
+ACK aggregation, and differential testing against a pinned Linux BBRv3
+revision. In particular this module does not inspect kernel `TCP_INFO` or
+infer public-path retransmission counts from an application socket.
+
 ## Required before exposing `bbr3`
 
 1. Complete BBRv3 ProbeBW integration: bind per-flow observations to the
