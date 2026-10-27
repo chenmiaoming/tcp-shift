@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-BUILD="$ROOT/.build/p7-bbr3-model"
+BUILD="$ROOT/.build/bbr3-model"
 mkdir -p "$BUILD"
 
 ${CC:-cc} -std=c11 -Wall -Wextra -Wpedantic -Werror \
