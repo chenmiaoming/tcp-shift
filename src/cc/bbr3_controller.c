@@ -18,9 +18,18 @@ static uint32_t cap32(uint64_t v)
 {
     return v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
 }
+/* Exact, saturating floor(bw * RTT / 1e9): decomposing both operands
+ * avoids the false BDP underestimation caused by overflowing bw*RTT before
+ * dividing, even on 64-bit high-bandwidth, high-delay paths. */
 static uint64_t bdp(uint64_t bw, uint64_t rtt)
 {
-    return mul64(bw, rtt) / TCP_SHIFT_BBR3_NS_PER_SECOND;
+    uint64_t seconds = rtt / TCP_SHIFT_BBR3_NS_PER_SECOND;
+    uint64_t nanos = rtt % TCP_SHIFT_BBR3_NS_PER_SECOND;
+    uint64_t whole = mul64(bw, seconds);
+    uint64_t partial = mul64(bw / TCP_SHIFT_BBR3_NS_PER_SECOND, nanos);
+    uint64_t cross = (bw % TCP_SHIFT_BBR3_NS_PER_SECOND) * nanos;
+    return add64(add64(whole, partial),
+                 cross / TCP_SHIFT_BBR3_NS_PER_SECOND);
 }
 
 int tcp_shift_bbr3_controller_init(struct tcp_shift_bbr3_controller *s,
@@ -33,7 +42,8 @@ int tcp_shift_bbr3_controller_init(struct tcp_shift_bbr3_controller *s,
     uint64_t initial_rate;
 
     if (s == NULL || mss_bytes == 0U || flow_seed == 0U ||
-        now_ns == 0U || (uint64_t)initial_cwnd_bytes < 4U * mss_bytes) {
+        now_ns == 0U || mss_bytes > UINT32_MAX / 4U ||
+        (uint64_t)initial_cwnd_bytes < (uint64_t)4U * mss_bytes) {
         return -1;
     }
     tcp_shift_bbr3_model_init(&s->model);
@@ -268,8 +278,8 @@ static void update_policy(struct tcp_shift_bbr3_controller *s,
     s->cwnd_bytes = cap32(cwnd);
 
     quantum = s->pacing_rate_bytes_per_sec / 1000U;
-    quantum = max64(quantum, (uint64_t)s->mss_bytes * 2U);
     quantum = min64(quantum, 65536U);
+    quantum = max64(quantum, (uint64_t)s->mss_bytes * 2U);
     p->pacing_rate_bytes_per_sec = s->pacing_rate_bytes_per_sec;
     p->max_inflight_bytes = inflight;
     p->extra_acked_bytes = s->extra_acked_bytes;
