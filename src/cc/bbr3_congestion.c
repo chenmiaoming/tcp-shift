@@ -171,8 +171,7 @@ static void finish_loss_round(struct tcp_shift_bbr3_congestion *s,
         if (s->loss_in_round != 0U) {
             if (s->bw_shortterm_bytes_per_sec == TCP_SHIFT_BBR3_UNBOUNDED) {
                 s->bw_shortterm_bytes_per_sec =
-                    max_u64(ack->delivery_rate_bytes_per_sec,
-                            s->bw_latest_bytes_per_sec);
+                    ack->max_bw_bytes_per_sec;
             }
             if (s->inflight_shortterm_bytes == TCP_SHIFT_BBR3_UNBOUNDED) {
                 s->inflight_shortterm_bytes = ack->cwnd_bytes;
