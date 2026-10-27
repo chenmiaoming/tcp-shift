@@ -124,6 +124,7 @@ int tcp_shift_bbr3_probe_enter(struct tcp_shift_bbr3_probe *probe,
     probe->previous_probe_too_high = 0U;
     probe->previous_probe_precautionary = 0U;
     probe->probe_bw_sample = 0U;
+    probe->pending_probe_feedback = 0U;
     enter_down(probe, model, now_ns, delivered_total_bytes);
     return 0;
 }
@@ -239,11 +240,13 @@ int tcp_shift_bbr3_probe_on_ack(struct tcp_shift_bbr3_probe *probe,
         new_round && probe->ack_phase ==
                          TCP_SHIFT_BBR3_ACKS_PROBE_STOPPING) {
         probe->ack_phase = TCP_SHIFT_BBR3_ACKS_INIT;
-        if ((ack->rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED) == 0U &&
+        if (probe->pending_probe_feedback != 0U &&
+            (ack->rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_APP_LIMITED) == 0U &&
             (ack->rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_VALID) != 0U &&
             tcp_shift_bbr3_model_advance_bw_cycle(model) != 0) {
             return -1;
         }
+        probe->pending_probe_feedback = 0U;
         if (probe->previous_probe_precautionary != 0U &&
             probe->previous_probe_too_high == 0U) {
             enter_refill(probe, model,
@@ -274,6 +277,7 @@ int tcp_shift_bbr3_probe_on_ack(struct tcp_shift_bbr3_probe *probe,
         }
         if (ack->qualified_loss_too_high != 0U) {
             probe->previous_probe_too_high = 1U;
+            probe->pending_probe_feedback = 1U;
             enter_down(probe, model, ack->now_ns,
                        ack->rate->delivered_total_bytes);
         } else if (probe->previous_probe_too_high != 0U &&
@@ -281,6 +285,7 @@ int tcp_shift_bbr3_probe_on_ack(struct tcp_shift_bbr3_probe *probe,
                    ack->inflight_bytes >= ack->inflight_longterm_bytes) {
             probe->previous_probe_precautionary = 1U;
             probe->previous_probe_too_high = 0U;
+            probe->pending_probe_feedback = 1U;
             enter_down(probe, model, ack->now_ns,
                        ack->rate->delivered_total_bytes);
         } else if (ack->cwnd_limited != 0U &&
