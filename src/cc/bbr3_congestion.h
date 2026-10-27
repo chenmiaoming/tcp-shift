@@ -54,6 +54,7 @@ struct tcp_shift_bbr3_congestion {
 struct tcp_shift_bbr3_congestion_ack {
     /* A single ACK observation: bytes, not packet counts. */
     uint64_t delivery_rate_bytes_per_sec;
+    uint64_t max_bw_bytes_per_sec; /* qualified long-window estimator */
     uint64_t newly_delivered_bytes;
     uint64_t newly_lost_bytes;
     uint64_t newly_ce_bytes;
