@@ -32,6 +32,14 @@ int main(void)
     }
 #endif
 
+    /* BBRv3 is a distinct future controller, not an alias to compact BBR.
+     * Until its full recovery and ProbeBW machine passes qualification,
+     * production selection must fail closed rather than silently running v1. */
+    if (tcp_shift_lwip_cc_configure_controller("bbr3") == 0) {
+        fprintf(stderr, "incomplete bbr3 unexpectedly selectable\n");
+        return 1;
+    }
+
     if (tcp_shift_lwip_cc_configure_controller("reno") != 0) {
         fprintf(stderr, "selector rejected reno\n");
         return 1;
