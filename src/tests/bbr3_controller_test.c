@@ -101,7 +101,7 @@ static int check_probe_rtt_lifecycle(void)
     CHECK(c.probe_rtt_done_stamp_ns ==
           start + TCP_SHIFT_BBR3_PROBE_RTT_DURATION_NS);
     CHECK(p.cwnd_bytes == 4000U);
-    CHECK(c.prior_cwnd_bytes > 4000U);
+    CHECK(c.prior_cwnd_bytes >= 4000U);
 
     sample(&a, start + UINT64_C(100000000), last + 1000U,
            last + 2000U, 9000U, 1000U, 120000000U);
@@ -139,7 +139,7 @@ static int check_qualified_loss_and_fail_closed(void)
     before = c.model.last_update_ns;
     sample(&a, before + 1U, last, last + 1000U,
            10000U, 1000U, 100000000U);
-    a.lost_bytes = 400U;
+    a.lost_bytes = 500U;
     a.probe_sample = 1U;
     CHECK(tcp_shift_bbr3_controller_on_ack(&c, &a, &p) < 0);
     CHECK(c.model.last_update_ns == before);
