@@ -1,6 +1,6 @@
 # BBRv3 implementation track
 
-Status: **model foundation only; not selectable for production**.
+Status: **independent model and ProbeBW scheduling in progress; not selectable for production**.
 
 ## User-visible controller names
 
@@ -44,12 +44,37 @@ advance function is intentionally explicit: the eventual ProbeBW state
 machine decides when one complete ProbeBW cycle finishes. The model does not
 advance cycles on every ACK or unilaterally schedule ProbeRTT.
 
+## Second increment: ProbeBW scheduler (separate from production)
+
+`src/cc/bbr3_probe.h` and `.c` implement a transport-independent
+scheduler for the DOWN/CRUISE/REFILL/UP phases, checked with
+`scripts/bbr3-probe-contract.sh`. It uses:
+
+- Randomized **2–3 second** ProbeBW wait or **Reno-coexistence packet-round**
+  bound (at most 63 rounds), with a per-flow seed supplied by the eventual
+  adapter; deterministic in tests.
+- DOWN → CRUISE only after both estimated BDP and long-term inflight
+  headroom constraints hold; time-to-probe has precedence in DOWN.
+- Exactly one new packet-timed round in REFILL before UP; UP leaves after
+  qualified excess loss or a persistent 25% growth plateau. Application-limited
+  samples cannot falsely end the UP plateau check.
+- ACK-phase states to guard max-bandwidth filter aging: an initial DOWN from
+  Startup must not expire a ProbeBW cycle, and filter advancement after UP
+  requires complete, non-application-limited ACK feedback.
+- Explicit qualified congestion input, *not* invented loss from iperf3's
+  loopback socket. The actual loss/ECN detector and long-term bound adaptation
+  still require another independently qualified step.
+
+This pure-C scheduler does **not** own an lwIP PCB, modify the current BBR
+selector, or activate a listener. The full 2.11/5.3.3 behavior additionally
+requires the real SACK/RACK loss/ECN integration, long-term inflight slope,
+ACK aggregation and congestion model described below.
+
 ## Required before exposing `bbr3`
 
-1. Implement the complete BBRv3 ProbeBW state machine, including
-   phase transitions, ACK-phase feedback, per-cycle time and long-term
-   inflight probing. Keep transport-independent state separate from the
-   shared epoll/pacer and lwIP adapter.
+1. Complete BBRv3 ProbeBW integration: bind per-flow observations to the
+   pure-C scheduler, implement cautious exponential inflight_longterm slope,
+   upper/lower bounds, pacing/cwnd coupling, and reference differential tests.
 2. Implement loss/ECN congestion signals, inflight_longterm/shortterm,
    bw_shortterm, recovery-aware cwnd, ACK aggregation and ProbeRTT
    scheduling. Extend transport observations only when they have a
@@ -63,5 +88,5 @@ advance cycles on every ACK or unilaterally schedule ProbeRTT.
 5. Only then make `cc = "bbr3"` valid at runtime in default builds.
    `cc = "bbr"` must remain binary/behaviorally unchanged.
 
-The first increment is safe to merge ahead of these tasks precisely because
-it has **no effect on live traffic or controller selection**.
+Both increments remain safe to merge ahead of these tasks precisely because
+neither has any effect on live traffic or controller selection.

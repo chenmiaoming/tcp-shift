@@ -128,6 +128,8 @@ static int check_gain_and_headroom(void)
     CHECK(tcp_shift_bbr3_scale(1000U, gain) == 1000U);
     gain = tcp_shift_bbr3_pacing_gain(TCP_SHIFT_BBR3_PROBE_BW_UP);
     CHECK(tcp_shift_bbr3_scale(1000U, gain) == 1250U);
+    gain = tcp_shift_bbr3_cwnd_gain(TCP_SHIFT_BBR3_PROBE_BW_UP);
+    CHECK(tcp_shift_bbr3_scale(1000U, gain) == 2250U);
     gain = tcp_shift_bbr3_cwnd_gain(TCP_SHIFT_BBR3_PROBE_RTT);
     CHECK(tcp_shift_bbr3_scale(1000U, gain) == 500U);
     CHECK(tcp_shift_bbr3_inflight_with_headroom(UINT64_MAX, 1460U) ==

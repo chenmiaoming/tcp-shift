@@ -20,6 +20,8 @@ on:
       - 'src/tests/bbr_model_test.c'
       - 'src/tests/bbr3_model_test.c'
       - 'scripts/bbr3-model-contract.sh'
+      - 'scripts/bbr3-probe-contract.sh'
+      - 'src/tests/bbr3_probe_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
       - 'src/tests/bbr_drain_policy_test.c'
       - 'src/tests/bbr_probe_policy_test.c'
@@ -73,6 +75,7 @@ jobs:
         run: |
           sh -n scripts/p6-bbr-model-contract.sh
           sh -n scripts/bbr3-model-contract.sh
+          sh -n scripts/bbr3-probe-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -83,6 +86,9 @@ jobs:
 
       - name: Qualify isolated BBRv3 model foundations
         run: sh scripts/bbr3-model-contract.sh
+
+      - name: Qualify independent BBRv3 ProbeBW scheduling
+        run: sh scripts/bbr3-probe-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -107,6 +113,7 @@ jobs:
           path: |
             .build/p6-bbr-model-contract
             .build/bbr3-model
+            .build/bbr3-probe
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract

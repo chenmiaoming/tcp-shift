@@ -231,7 +231,10 @@ struct tcp_shift_bbr3_gain tcp_shift_bbr3_cwnd_gain(
 {
     struct tcp_shift_bbr3_gain gain = {2U, 1U};
 
-    if (phase == TCP_SHIFT_BBR3_PROBE_RTT) {
+    if (phase == TCP_SHIFT_BBR3_PROBE_BW_UP) {
+        gain.numerator = 9U;
+        gain.denominator = 4U;
+    } else if (phase == TCP_SHIFT_BBR3_PROBE_RTT) {
         gain.numerator = 1U;
         gain.denominator = 2U;
     } else if (phase > TCP_SHIFT_BBR3_PROBE_RTT) {
