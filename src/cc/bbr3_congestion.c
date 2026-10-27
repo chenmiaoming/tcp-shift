@@ -217,7 +217,7 @@ static void finish_loss_round(struct tcp_shift_bbr3_congestion *s,
     s->bw_latest_bytes_per_sec = ack->rate_valid != 0U
                                      ? ack->delivery_rate_bytes_per_sec
                                      : 0U;
-    s->inflight_latest_bytes = ack->newly_delivered_bytes;
+    s->inflight_latest_bytes = ack->rate_sample_delivered_bytes;
 }
 
 /* The newly ACKed data in ProbeBW_UP conservatively raises an existing
@@ -280,7 +280,7 @@ int tcp_shift_bbr3_congestion_on_ack(
                     ack->delivery_rate_bytes_per_sec);
     }
     s->inflight_latest_bytes =
-        max_u64(s->inflight_latest_bytes, ack->newly_delivered_bytes);
+        max_u64(s->inflight_latest_bytes, ack->rate_sample_delivered_bytes);
     if (ack->newly_lost_bytes != 0U) {
         s->loss_in_round = 1U;
     }
