@@ -20,6 +20,7 @@ static struct tcp_shift_bbr3_congestion_ack ack_defaults(void)
     ack.delivery_rate_bytes_per_sec = 1000U;
     ack.max_bw_bytes_per_sec = 10000U;
     ack.newly_delivered_bytes = 1000U;
+    ack.rate_sample_delivered_bytes = 1000U;
     ack.tx_inflight_bytes = 10000U;
     ack.cwnd_bytes = 10000U;
     ack.target_inflight_bytes = 12000U;
@@ -74,6 +75,7 @@ static int check_loss_round_and_undo(void)
     ack.loss_round_end = 0U;
     ack.delivery_rate_bytes_per_sec = 6700U;
     ack.newly_delivered_bytes = 5800U;
+    ack.rate_sample_delivered_bytes = 5800U;
     ack.newly_lost_bytes = 100U;
     CHECK(tcp_shift_bbr3_congestion_on_ack(&s, &ack) == 0);
     ack.newly_lost_bytes = 0U;
@@ -202,9 +204,17 @@ static int check_delivered_floor_and_input_validation(void)
     ack.newly_lost_bytes = 1U;
     ack.delivery_rate_bytes_per_sec = 9000U;
     ack.newly_delivered_bytes = 9000U;
+    ack.rate_sample_delivered_bytes = 9000U;
     ack.loss_round_end = 1U;
     CHECK(tcp_shift_bbr3_congestion_on_ack(&s, &ack) == 0);
     CHECK(s.bw_shortterm_bytes_per_sec == 9000U);
+    CHECK(s.inflight_shortterm_bytes == 9000U);
+
+    /* RS.delivered can be much larger than bytes newly ACKed by this ACK. */
+    tcp_shift_bbr3_congestion_init(&s);
+    ack.newly_delivered_bytes = 1000U;
+    ack.rate_sample_delivered_bytes = 9000U;
+    CHECK(tcp_shift_bbr3_congestion_on_ack(&s, &ack) == 0);
     CHECK(s.inflight_shortterm_bytes == 9000U);
 
     ack.newly_ce_bytes = ack.newly_delivered_bytes + 1U;
