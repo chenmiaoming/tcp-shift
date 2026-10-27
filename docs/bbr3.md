@@ -1,6 +1,6 @@
 # BBRv3 implementation track
 
-Status: **independent model and ProbeBW scheduling in progress; not selectable for production**.
+Status: **independent model, ProbeBW and controller policy under qualification; not selectable for production**.
 
 ## User-visible controller names
 
@@ -102,6 +102,37 @@ congestion timing with the ProbeBW ACK-phase machine, full ProbeRTT and
 ACK aggregation, and differential testing against a pinned Linux BBRv3
 revision. In particular this module does not inspect kernel `TCP_INFO` or
 infer public-path retransmission counts from an application socket.
+
+## Fourth increment: independent controller orchestration
+
+`src/cc/bbr3_controller.h` / `.c` now compose the isolated
+delivery/RTT model, ProbeBW scheduler and congestion bounds in a pure-C
+controller. The input requires a validated public-leg SACK/RACK rate sample
+and separately qualified loss/CE counters; the output describes an intended
+cwnd, pacing rate, send quantum and app-limited marker. No lwIP PCB or
+transport timer is passed into the CC core.
+
+- Startup → Drain → ProbeBW scheduling, including the three-round Drain
+  fallback once the bandwidth/RTT model is populated.
+- A ten-packet-round ACK-aggregation maximum filter (one round in Startup).
+  The aggregation episode restarts when delivery drops below expectation,
+  rather than inflating the allowance indefinitely.
+- ProbeRTT is triggered by the independent 5-second probe-RTT filter expiry,
+  using a 0.5 BDP target, a four-MSS floor, at least 200ms spent below the
+  target, **and** a completed packet-timed round. Exiting restores cwnd and
+  returns to ProbeBW_CRUISE or Startup as appropriate.
+- BBRv3 pacing gain with a 1% margin, slow increase before filling the pipe,
+  inflight based on gain × BDP plus ACK aggregation, and an adaptive
+  1ms/2-MSS–64KiB send-quantum policy. These are policy outputs only.
+- `scripts/bbr3-controller-contract.sh` exercises the resulting phase
+  machine, aggregation, ProbeRTT and validated-loss rejection independently
+  of the existing `bbr` controller.
+
+**Not production-ready:** the final lwIP adapter still needs loss recovery
+conservation, explicit transport pacing, long-flow/netns fault testing,
+idle/transmit handling, and differential reference tests. In particular,
+the current `cc = "bbr"` remains completely separate and the `bbr3`
+selector stays disabled.
 
 ## Required before exposing `bbr3`
 
