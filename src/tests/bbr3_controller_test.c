@@ -158,11 +158,44 @@ static int check_qualified_loss_and_fail_closed(void)
     return 0;
 }
 
+static int check_high_bdp_and_limits(void)
+{
+    struct tcp_shift_bbr3_controller c;
+    struct tcp_shift_bbr3_controller_ack a = {0};
+    struct tcp_shift_bbr3_controller_policy p;
+
+    CHECK(tcp_shift_bbr3_controller_init(
+              &c, 14600U, 1460U, 5U, 1U) == 0);
+    c.model.phase = TCP_SHIFT_BBR3_DRAIN;
+    c.model.has_min_rtt = 1U;
+    c.model.min_rtt_ns = UINT64_C(200000000);
+    c.model.max_bw_bytes_per_sec = UINT64_C(125000000);
+    c.model.max_bw_filter[0] = UINT64_C(125000000);
+    c.model.full_bw_reached = 1U;
+    c.drain_start_round = 1U;
+    sample(&a, 2U, 0U, 1460U, UINT64_C(125000000),
+           1460U, UINT64_C(200000000));
+    a.inflight_bytes = 30000000U;
+    CHECK(tcp_shift_bbr3_controller_on_ack(&c, &a, &p) == 0);
+    CHECK(p.phase == TCP_SHIFT_BBR3_DRAIN);
+    /* 1Gbit/s x 200ms -> 25MB BDP, 2x cwnd gain -> 50MB. */
+    CHECK(p.max_inflight_bytes >= UINT64_C(50000000));
+    CHECK(p.send_quantum_bytes >= 2920U);
+    CHECK(p.send_quantum_bytes <= 65536U);
+
+    CHECK(tcp_shift_bbr3_controller_init(
+              &c, 10000U, UINT32_MAX, 5U, 1U) < 0);
+    CHECK(tcp_shift_bbr3_controller_init(
+              &c, 10000U, 1000U, 0U, 1U) < 0);
+    return 0;
+}
+
 int main(void)
 {
     CHECK(check_startup_aggregation_and_probe() == 0);
     CHECK(check_probe_rtt_lifecycle() == 0);
     CHECK(check_qualified_loss_and_fail_closed() == 0);
+    CHECK(check_high_bdp_and_limits() == 0);
     puts("bbr3_controller_contract=ok startup_drain=ok "
          "probe_bw=ok ack_aggregation=ok probe_rtt_200ms_round=ok "
          "loss_evidence_gate=ok separate_v1=ok");
