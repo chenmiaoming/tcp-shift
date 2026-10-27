@@ -82,7 +82,7 @@ static int test_full_cycle_and_feedback_aging(void)
     CHECK(model.cycle_count == 0U);
 
     sample = rate(1000U, 1200U, 10000U, valid);
-    ack = feedback(&sample, now + 2U, 1000U, 1100U);
+    ack = feedback(&sample, now + 2U, 1000U, 1300U);
     CHECK(tcp_shift_bbr3_probe_on_ack(&probe, &model, &ack) == 0);
     CHECK(model.phase == TCP_SHIFT_BBR3_PROBE_BW_CRUISE);
     /* Entering DOWN from Startup does not finish a ProbeBW filter cycle. */
