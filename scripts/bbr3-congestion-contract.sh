@@ -8,6 +8,7 @@ mkdir -p "$BUILD"
 ${CC:-cc} -std=c11 -Wall -Wextra -Wpedantic -Werror \
     -ffreestanding -fno-builtin -I"$ROOT/src" \
     "$ROOT/src/cc/bbr3_model.c" \
+    "$ROOT/src/cc/bbr3_probe.c" \
     "$ROOT/src/cc/bbr3_congestion.c" \
     "$ROOT/src/tests/bbr3_congestion_test.c" \
     -o "$BUILD/bbr3-congestion-contract"
