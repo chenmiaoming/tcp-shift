@@ -39,6 +39,7 @@ struct tcp_shift_bbr3_probe {
     uint8_t previous_probe_too_high;
     uint8_t previous_probe_precautionary;
     uint8_t probe_bw_sample;
+    uint8_t pending_probe_feedback;
 };
 
 /* Input is from the *current* ACK. The transport is responsible for correct
