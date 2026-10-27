@@ -82,6 +82,9 @@ and CE bytes **only after ECN negotiation and transport eligibility**.
 - Short-term `bw_shortterm` / `inflight_shortterm` loss adaptation occurs
   at most once per completed loss round, and never while probing bandwidth.
   The update preserves the highest delivery demonstrated in that round.
+  `inflight_latest` uses **RS.delivered over the sampled flight**, not just
+  the bytes newly ACKed by one ACK; the latter is separately tracked for CE
+  and ACK accounting.
 - Explicit independent `inflight_longterm` upper-bound tracking rejects
   unqualified, repeated, or app-limited shrinkage; safe ProbeBW_UP feedback
   may raise an established bound conservatively with an increasing slope.
