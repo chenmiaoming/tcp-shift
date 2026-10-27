@@ -122,6 +122,10 @@ int tcp_shift_bbr3_congestion_undo_spurious(
         max_u64(s->inflight_longterm_bytes, s->undo_inflight_longterm);
     s->loss_in_round = 0U;
     s->ecn_in_round = 0U;
+    s->ecn_round_delivered_bytes = 0U;
+    s->ecn_round_ce_bytes = 0U;
+    s->bw_latest_bytes_per_sec = 0U;
+    s->inflight_latest_bytes = 0U;
     s->undo_valid = 0U;
     return 0;
 }
