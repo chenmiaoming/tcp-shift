@@ -22,6 +22,7 @@ add_library(tcp_shift_cc STATIC
     bbr_controller.c
     bbr3_model.c
     bbr3_probe.c
+    bbr3_congestion.c
     cubic.c
     cubic_hystart.c
     cubic_controller.c
@@ -30,6 +31,16 @@ target_include_directories(tcp_shift_cc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_options(tcp_shift_cc PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 if(TCP_SHIFT_CC_STANDALONE)
+    add_executable(tcp-shift-bbr3-congestion-contract
+        ../tests/bbr3_congestion_test.c
+    )
+    target_compile_options(tcp-shift-bbr3-congestion-contract PRIVATE
+        -Wall -Wextra -Wpedantic -Werror
+    )
+    target_link_libraries(tcp-shift-bbr3-congestion-contract PRIVATE
+        tcp_shift_cc
+    )
+
     add_executable(tcp-shift-bbr3-probe-contract
         ../tests/bbr3_probe_test.c
     )
