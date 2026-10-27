@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cc/bbr3_congestion.h"
+#include "cc/bbr3_probe.h"
 
 #define CHECK(expr) do { \
     if (!(expr)) { \
@@ -222,12 +223,84 @@ static int check_delivered_floor_and_input_validation(void)
     return 0;
 }
 
+/* Integrate the independent signal classifier with the phase-2 scheduler.
+ * This test explicitly wires qualified congestion to the scheduler; no
+ * production lwIP event has been connected yet. */
+static int check_qualified_signal_to_probe_scheduler(void)
+{
+    struct tcp_shift_bbr3_model model;
+    struct tcp_shift_bbr3_probe probe;
+    struct tcp_shift_bbr3_congestion congestion;
+    struct tcp_shift_bbr3_congestion_ack signal_ack = ack_defaults();
+    struct tcp_shift_cc_rate_sample rate_sample;
+    struct tcp_shift_bbr3_probe_ack phase_ack;
+    uint64_t time_ns;
+
+    tcp_shift_bbr3_model_init(&model);
+    model.full_bw_reached = 1U;
+    model.has_min_rtt = 1U;
+    model.min_rtt_ns = 100000000U;
+    model.max_bw_bytes_per_sec = 10000U;
+    memset(&probe, 0, sizeof(probe));
+    tcp_shift_bbr3_congestion_init(&congestion);
+    CHECK(tcp_shift_bbr3_probe_enter(&probe, &model, 100U,
+                                     1000U, 37U) == 0);
+
+    memset(&rate_sample, 0, sizeof(rate_sample));
+    rate_sample.flags = TCP_SHIFT_CC_RATE_SAMPLE_VALID;
+    rate_sample.delivery_rate_bytes_per_sec = 10000U;
+    rate_sample.prior_delivered_bytes = 1000U;
+    rate_sample.delivered_total_bytes = 1100U;
+
+    memset(&phase_ack, 0, sizeof(phase_ack));
+    phase_ack.rate = &rate_sample;
+    phase_ack.mss_bytes = 1000U;
+    phase_ack.cwnd_bytes = 10000U;
+    phase_ack.inflight_bytes = 3000U;
+    phase_ack.inflight_longterm_bytes = UINT64_MAX;
+    phase_ack.now_ns = 100U + probe.wait_ns + 1U;
+    CHECK(tcp_shift_bbr3_probe_on_ack(&probe, &model,
+                                      &phase_ack) == 0);
+    CHECK(model.phase == TCP_SHIFT_BBR3_PROBE_BW_REFILL);
+
+    rate_sample.prior_delivered_bytes = 1100U;
+    rate_sample.delivered_total_bytes = 1200U;
+    phase_ack.now_ns++;
+    CHECK(tcp_shift_bbr3_probe_on_ack(&probe, &model,
+                                      &phase_ack) == 0);
+    CHECK(model.phase == TCP_SHIFT_BBR3_PROBE_BW_UP);
+
+    tcp_shift_bbr3_congestion_begin_probe(&congestion);
+    signal_ack.probing_bandwidth = 1U;
+    signal_ack.probe_sample = 1U;
+    signal_ack.probe_up = 1U;
+    signal_ack.newly_lost_bytes = 300U; /* 3% > 2% threshold */
+    CHECK(tcp_shift_bbr3_congestion_on_ack(&congestion, &signal_ack) ==
+          TCP_SHIFT_BBR3_SIGNAL_EXCESS_LOSS);
+    CHECK(congestion.inflight_longterm_bytes == 10000U);
+
+    rate_sample.prior_delivered_bytes = 1200U;
+    rate_sample.delivered_total_bytes = 1300U;
+    time_ns = phase_ack.now_ns + 1U;
+    phase_ack.now_ns = time_ns;
+    phase_ack.qualified_loss_too_high = 1U;
+    phase_ack.inflight_longterm_bytes =
+        congestion.inflight_longterm_bytes;
+    CHECK(tcp_shift_bbr3_probe_on_ack(&probe, &model,
+                                      &phase_ack) == 0);
+    CHECK(model.phase == TCP_SHIFT_BBR3_PROBE_BW_DOWN);
+    CHECK(probe.previous_probe_too_high == 1U);
+    CHECK(congestion.probe_feedback_consumed == 1U);
+    return 0;
+}
+
 int main(void)
 {
     CHECK(check_loss_round_and_undo() == 0);
     CHECK(check_loss_threshold_and_probe_bound() == 0);
     CHECK(check_ecn_gating_and_lower_bound() == 0);
     CHECK(check_delivered_floor_and_input_validation() == 0);
+    CHECK(check_qualified_signal_to_probe_scheduler() == 0);
     puts("bbr3_congestion_contract=ok loss_round_once=ok "
          "loss_thresh=2pct ecn_eligible_only=ok "
          "app_limited_upper_guard=ok undo=ok cwnd_caps=ok");
