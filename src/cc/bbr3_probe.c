@@ -296,6 +296,7 @@ int tcp_shift_bbr3_probe_on_ack(struct tcp_shift_bbr3_probe *probe,
             probe->up_stagnant_rounds = 0U;
         } else if (up_plateau(probe, ack, new_round)) {
             probe->previous_probe_too_high = 0U;
+            probe->pending_probe_feedback = 1U;
             enter_down(probe, model, ack->now_ns,
                        ack->rate->delivered_total_bytes);
         }
