@@ -165,6 +165,37 @@ negotiated), recovery state and cwnd-limited/ProbeBW transmit provenance;
 then add an internal, opt-in BBRv3 adapter binding with real pacing and
 conservation tests. The current `cc="bbr"` path remains unchanged.
 
+## Sixth increment (part A): RACK-validated per-transmission loss evidence
+
+`src/lwip/bbr3_rack_evidence.{h,c}` adds a small, **per-transmission**
+qualification state record that consumes the existing RFC 8985
+`tcp_shift_rack_loss_remaining()` verdict. Unlike coarse
+`on_loss(lost_bytes)`, it associates first-time RACK-confirmed loss
+with the original send-time `tx_ns`, inflight snapshot, sequence range,
+retransmission generation, app-limited flag and ProbeBW transmission
+provenance. Partial SACK-delivered payload is subtracted, and later
+cumulative ACKs cannot count those same bytes as another loss.
+
+Repeated RACK timer callbacks for one transmit generation produce zero
+new loss, but a *new* lost retransmission can be classified independently.
+A separately proven DSACK/spurious-loss event may revoke the corresponding
+generation once. The RFC 8985 RTO special rule and an unqualified TLP
+event are explicitly **not** treated as RACK-verified BBRv3 evidence.
+
+The deterministic contract calls the **actual** `rack_tlp.c` implementation
+and tests immature/mature timing, SACK/ACK deduplication, retransmitted
+attempts, sequence wrap, repeated callbacks and spurious-loss undo.
+See `scripts/bbr3-rack-evidence-contract.sh`.
+
+**Integration still required:** wire this state into the existing P5
+delivery slots without duplicating the segment queue, generate and
+validate per-ACK loss rounds, and feed the correct loss/inflight pair to
+the separate BBRv3 controller. For now the module is qualification-only:
+it is not registered as a live CC hook, and does not change cwnd,
+pacing, Reno/CUBIC, or compact BBR. In particular the pending loss
+model must not infer a sample-wide loss ratio by summing unrelated
+per-segment denominators.
+
 ## Required before exposing `bbr3`
 
 1. Complete BBRv3 ProbeBW integration: bind per-flow observations to the
