@@ -231,6 +231,19 @@ struct tcp_shift_lwip_cc_adapter {
     unsigned sack_delivery_policy;
 };
 
+struct tcp_shift_bbr3_rack_loss;
+
+/* Qualification only: inspect a current P5 delivery slot with real RACK
+ * timing evidence, returning one per-send event without modifying TCP cwnd,
+ * pacing, retransmission scheduling, or CC selector. Output is unchanged
+ * unless return is 1. Unknown ProbeBW transmission provenance stays false.
+ * Not invoked by the live hook table. */
+int tcp_shift_lwip_cc_bbr3_observe_rack_loss(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const void *segment,
+    uint64_t now_ns,
+    struct tcp_shift_bbr3_rack_loss *out);
+
 int tcp_shift_lwip_cc_adapter_bind(struct tcp_shift_lwip_cc_adapter *adapter,
                                    struct tcp_pcb *pcb,
                                    struct tcp_shift_lwip_cc_stats *stats);
