@@ -2018,10 +2018,13 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
         adapter->delivered_mstamp_ns = now_ns;
     }
 
-    prior_inflight = tcp_shift_delivery_outstanding_payload(adapter);
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
         uint64_t previous_tx_ns = slot->tx_ns;
+
+        /* A retransmission needs a fresh outstanding ledger snapshot,
+         * but ordinary first sends must not pay for another O(slots) scan. */
+        prior_inflight = tcp_shift_delivery_outstanding_payload(adapter);
 
         /* Delivery-rate sampling is keyed to the packet's last transmission,
          * not only its original transmission. A retransmission therefore
