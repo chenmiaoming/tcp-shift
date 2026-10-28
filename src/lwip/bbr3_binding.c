@@ -23,7 +23,7 @@ int tcp_shift_lwip_bbr3_binding_init(
     if (b == NULL || adapter == NULL || pcb == NULL ||
         b->initialized != 0U || adapter->bound == 0U ||
         adapter->pcb != pcb || adapter->sack_delivery_policy == 0U ||
-        pcb->mss == 0U || pcb->mss > UINT32_MAX / 4U ||
+        pcb->mss == 0U ||
         pcb->cwnd < (uint32_t)pcb->mss * 4U ||
         now_ns == 0U || flow_seed == 0U) {
         return -1;
