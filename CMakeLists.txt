@@ -821,6 +821,20 @@ target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_m
 
 # BBRv3 ACK bridge is built against the *real pinned lwIP headers*, but is
 # not included in the runtime adapter or exposed by the CC selector.
+# RACK maturity is verified using the existing RFC 8985 implementation.
+# No BBRv3 loss observer is attached to the production send path yet.
+add_executable(tcp-shift-bbr3-rack-evidence-contract
+    src/lwip/rack_tlp.c
+    src/lwip/bbr3_rack_evidence.c
+    src/tests/bbr3_rack_evidence_test.c
+)
+target_include_directories(tcp-shift-bbr3-rack-evidence-contract PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_options(tcp-shift-bbr3-rack-evidence-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin
+)
+
 add_executable(tcp-shift-bbr3-lwip-binding-contract
     src/tests/bbr3_lwip_binding_test.c
     src/lwip/bbr3_binding.c
