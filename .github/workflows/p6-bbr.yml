@@ -24,6 +24,9 @@ on:
       - 'scripts/bbr3-congestion-contract.sh'
       - 'scripts/bbr3-controller-contract.sh'
       - 'src/tests/bbr3_controller_test.c'
+      - 'src/lwip/bbr3_binding.h'
+      - 'src/lwip/bbr3_binding.c'
+      - 'src/tests/bbr3_lwip_binding_test.c'
       - 'src/tests/bbr3_congestion_test.c'
       - 'src/tests/bbr3_probe_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
@@ -209,8 +212,10 @@ jobs:
           cmake -S . -B .build-bbr-default -DCMAKE_BUILD_TYPE=Release
           cmake --build .build-bbr-default \
             --target tcp-shift-p2 tcp-shift-bbr-exposure-selector-contract \
+              tcp-shift-bbr3-lwip-binding-contract \
             --parallel
           ./.build-bbr-default/tcp-shift-bbr-exposure-selector-contract
+          ./.build-bbr-default/tcp-shift-bbr3-lwip-binding-contract
 
       - name: Reject incomplete BBR profile
         run: |

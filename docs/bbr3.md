@@ -134,6 +134,37 @@ idle/transmit handling, and differential reference tests. In particular,
 the current `cc = "bbr"` remains completely separate and the `bbr3`
 selector stays disabled.
 
+## Fifth increment: pinned-lwIP ACK observation bridge (qualification only)
+
+The new `src/lwip/bbr3_binding.{h,c}` uses the *actual pinned lwIP*
+`struct tcp_pcb` and the existing P5 SACK-aware
+`tcp_shift_cc_ack` / `tcp_shift_cc_rate_sample` interfaces to generate
+BBRv3 controller **policy candidates**. It is built and tested in the
+default-build P6 exposure job, but is **not part of the runtime adapter
+library or production selection path**.
+
+The binding checks PCB/adapter identity and lifetime, MSS, monotonic ACK
+timestamps and delivery counters, SACK-aware newly delivered payload,
+valid interval and send-time inflight evidence. It explicitly preserves
+the distinction between `RS.delivered` (sampling-flight volume) and
+this ACK's uniquely delivered bytes; a SACK-only delivery cannot be
+counted again on cumulative ACK. Invalid snapshots do not reach the
+controller or advance its delivery model. The computed policy is never
+written to `pcb->cwnd`, `pcb->ssthresh`, or the actual pacer.
+
+The currently available generic lwIP hook ABI only delivers a coarse
+`on_loss(lost_bytes)` event and a boolean `on_ecn()` event. These lack
+the necessary per-packet send-time loss context, ECN-qualified CE *bytes*,
+and delivery-ledger loss-round boundaries. The bridge therefore always
+passes zero for loss/CE and marks their provenance unavailable. It does
+**not** fabricate these values from `iperf3` or backend Linux TCP_INFO.
+
+Before enabling real BBRv3 sends, extend the transport evidence path
+with qualified RACK loss provenance, per-ACK CE volume (only if
+negotiated), recovery state and cwnd-limited/ProbeBW transmit provenance;
+then add an internal, opt-in BBRv3 adapter binding with real pacing and
+conservation tests. The current `cc="bbr"` path remains unchanged.
+
 ## Required before exposing `bbr3`
 
 1. Complete BBRv3 ProbeBW integration: bind per-flow observations to the

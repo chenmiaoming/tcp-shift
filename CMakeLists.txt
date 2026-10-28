@@ -819,6 +819,23 @@ target_compile_options(tcp-shift-tcp-memory-contract PRIVATE
 target_link_libraries(tcp-shift-tcp-memory-contract PRIVATE tcp_shift_lwip_tcp_memory)
 
 
+# BBRv3 ACK bridge is built against the *real pinned lwIP headers*, but is
+# not included in the runtime adapter or exposed by the CC selector.
+add_executable(tcp-shift-bbr3-lwip-binding-contract
+    src/tests/bbr3_lwip_binding_test.c
+    src/lwip/bbr3_binding.c
+)
+target_include_directories(tcp-shift-bbr3-lwip-binding-contract PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-bbr3-lwip-binding-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-bbr3-lwip-binding-contract PRIVATE
+    tcp_shift_cc
+    tcp_shift_lwip
+)
+
 add_executable(tcp-shift-bbr-exposure-selector-contract
     src/tests/bbr_exposure_selector_test.c
     src/platform.c
