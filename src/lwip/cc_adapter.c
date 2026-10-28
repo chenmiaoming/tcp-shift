@@ -47,7 +47,6 @@ struct tcp_shift_delivery_slot {
     uint64_t delivered_mstamp_at_send_ns;
     uint32_t seq_start;
     uint32_t prior_inflight_bytes;
-    uint32_t bbr3_tx_generation;
     uint16_t payload_bytes;
     uint16_t acked_payload_bytes;
     uint8_t app_limited;
@@ -2022,6 +2021,8 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     prior_inflight = tcp_shift_delivery_outstanding_payload(adapter);
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
+        uint64_t previous_tx_ns = slot->tx_ns;
+
         /* Delivery-rate sampling is keyed to the packet's last transmission,
          * not only its original transmission. A retransmission therefore
          * refreshes the delivery/send snapshot and last-tx timestamp. Karn
@@ -2046,15 +2047,14 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                 slot->payload_bytes - slot->acked_payload_bytes);
         }
         slot->prior_inflight_bytes = prior_inflight;
-        adapter->bbr3_next_tx_generation++;
-        if (adapter->bbr3_next_tx_generation == 0U) {
-            adapter->bbr3_next_tx_generation++;
-        }
-        slot->bbr3_tx_generation = adapter->bbr3_next_tx_generation;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         slot->rack_delivered = 0U;
-        slot->rack_lost = 0U;
+        /* Same-nanosecond retransmission does not establish a distinct
+         * transmit-time identity for BBRv3 loss accounting. */
+        if (now_ns > previous_tx_ns) {
+            slot->rack_lost = 0U;
+        }
 #endif
         if (adapter->stats != NULL) {
             adapter->stats->delivery_retransmit_events++;
@@ -2091,11 +2091,6 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                                            : now_ns;
     slot->seq_start = seq_start;
     slot->prior_inflight_bytes = prior_inflight;
-    adapter->bbr3_next_tx_generation++;
-    if (adapter->bbr3_next_tx_generation == 0U) {
-        adapter->bbr3_next_tx_generation++;
-    }
-    slot->bbr3_tx_generation = adapter->bbr3_next_tx_generation;
     slot->payload_bytes = payload_bytes;
     slot->app_limited = adapter->app_limited_until_bytes != 0U;
     if (adapter->stats != NULL) {
@@ -2134,8 +2129,7 @@ int tcp_shift_lwip_cc_bbr3_observe_rack_loss(
         slot->acked_payload_bytes >= slot->payload_bytes) {
         return 0;
     }
-    if (slot->tx_ns == 0U || now_ns < slot->tx_ns ||
-        slot->bbr3_tx_generation == 0U) {
+    if (slot->tx_ns == 0U || now_ns < slot->tx_ns) {
         return -1;
     }
     tcp_shift_rack_slot_view(slot, &view);
@@ -2148,7 +2142,9 @@ int tcp_shift_lwip_cc_bbr3_observe_rack_loss(
     }
     outstanding = (uint16_t)(
         slot->payload_bytes - slot->acked_payload_bytes);
-    out->generation = slot->bbr3_tx_generation;
+    /* TX timestamp identifies this slot's send attempt. Repeated loss
+     * classification is guarded by rack_lost, without more slot memory. */
+    out->generation = slot->tx_ns;
     out->tx_ns = slot->tx_ns;
     out->delivered_at_tx = slot->delivered_at_send;
     out->seq_start = slot->seq_start;
