@@ -2020,7 +2020,9 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
 
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         uint64_t previous_tx_ns = slot->tx_ns;
+#endif
 
         /* A retransmission needs a fresh outstanding ledger snapshot,
          * but ordinary first sends must not pay for another O(slots) scan. */
