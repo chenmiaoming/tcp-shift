@@ -128,10 +128,13 @@ int main(void)
     pcb->unacked = NULL;
     tcp_shift_lwip_cc_hook_segment_tx(pcb, &segment3, seq, payload);
     CHECK(stats.delivery_retransmit_events == 1U);
+    /* RTO retransmit must reflect its *latest* outstanding delivery ledger,
+     * not the original send-time snapshot and not an extra copy of payload. */
     pcb->snd_nxt = seq + payload;
     pcb->lastack = seq + payload;
     CHECK(tcp_shift_lwip_cc_hook_ack(pcb, payload) != 0);
     CHECK(stats.rate_snapshot_samples == 3U);
+    CHECK(stats.rate_last_prior_inflight_bytes == payload);
     CHECK(stats.rate_retransmitted_samples == 1U);
     CHECK(stats.rate_last_send_interval_ns == 0U);
     CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U);
@@ -197,6 +200,10 @@ int main(void)
     CHECK(stats.rate_last_prior_delivered_bytes == (uint64_t)payload * 5U);
     CHECK(stats.rate_last_delivered_total_bytes == (uint64_t)payload * 6U);
     CHECK(stats.rate_last_delivered_bytes == payload);
+    /* After the partial ACK only segment 6 remains undelivered. Before this
+     * fix, its last rate sample incorrectly retained its first-send inflight
+     * even though the P5 ledger had advanced by two MSS. */
+    CHECK(stats.rate_last_prior_inflight_bytes == payload);
     CHECK(stats.rate_last_send_interval_ns > 0U);
     CHECK(stats.rate_last_send_interval_ns <= stats.rate_last_interval_ns);
     CHECK((stats.rate_last_flags & TCP_SHIFT_CC_RATE_SAMPLE_RETRANSMITTED) != 0U);
