@@ -68,8 +68,8 @@ int tcp_shift_lwip_bbr3_binding_on_ack(
         rate->delivered_total_bytes <= b->last_delivered_bytes ||
         rate->delivered_total_bytes != b->adapter->delivered_bytes ||
         rate->prior_inflight_bytes == 0U ||
-        (rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
-            rate->rtt_ns == 0U) {
+        ((rate->flags & TCP_SHIFT_CC_RATE_SAMPLE_RTT_VALID) != 0U &&
+         rate->rtt_ns == 0U)) {
         b->rejected_samples++;
         return -1;
     }
