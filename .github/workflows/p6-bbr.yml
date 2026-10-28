@@ -30,6 +30,11 @@ on:
       - 'src/lwip/bbr3_rack_evidence.c'
       - 'src/lwip/bbr3_rack_evidence.h'
       - 'src/tests/bbr3_rack_evidence_test.c'
+      - 'src/tests/bbr3_p5_loss_observation_test.c'
+      - 'src/lwip/bbr3_loss_round.h'
+      - 'src/lwip/bbr3_loss_round.c'
+      - 'src/tests/bbr3_loss_round_test.c'
+      - 'scripts/bbr3-loss-round-contract.sh'
       - 'scripts/bbr3-rack-evidence-contract.sh'
       - 'src/tests/bbr3_congestion_test.c'
       - 'src/tests/bbr3_probe_test.c'
@@ -90,6 +95,7 @@ jobs:
           sh -n scripts/bbr3-congestion-contract.sh
           sh -n scripts/bbr3-controller-contract.sh
           sh -n scripts/bbr3-rack-evidence-contract.sh
+          sh -n scripts/bbr3-loss-round-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -112,6 +118,9 @@ jobs:
 
       - name: Qualify BBRv3 RACK loss provenance without PCB mutation
         run: sh scripts/bbr3-rack-evidence-contract.sh
+
+      - name: Qualify BBRv3 loss-round aggregation and mixed-flight guard
+        run: sh scripts/bbr3-loss-round-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -140,6 +149,7 @@ jobs:
             .build/bbr3-congestion
             .build/bbr3-controller
             .build/bbr3-rack-loss
+            .build/bbr3-loss-round
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract
@@ -181,6 +191,13 @@ jobs:
       - name: Qualify internal BBR lwIP ACK binding
         run: sh scripts/p6-bbr-lwip-binding-contract.sh
 
+      - name: Qualify BBRv3 RACK loss observations against real P5 slots
+        run: |
+          cmake --build .build \
+            --target tcp-shift-bbr3-p5-loss-observation-contract --parallel
+          ./.build/tcp-shift-bbr3-p5-loss-observation-contract \
+            | tee .build/bbr3-p5-loss-observation-summary.txt
+
       - name: Upload P6c snapshot diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,6 +206,7 @@ jobs:
           path: |
             .build/p6-delivery-snapshot-summary.txt
             .build/p6-bbr-lwip-binding-summary.txt
+            .build/bbr3-p5-loss-observation-summary.txt
           if-no-files-found: warn
 
 

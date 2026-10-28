@@ -196,6 +196,53 @@ pacing, Reno/CUBIC, or compact BBR. In particular the pending loss
 model must not infer a sample-wide loss ratio by summing unrelated
 per-segment denominators.
 
+## Sixth increment (part B): real P5 delivery-slot observation
+
+The existing P5 segment sidecar now refreshes `prior_inflight_bytes` on
+**every retransmission** using its unique outstanding payload ledger;
+a retransmitted range is not counted as newly transmitted payload again.
+The existing per-slot TX timestamp and RACK once-only bit identify the
+current attempt without adding any field or allocation to the 56-byte
+P5 delivery slot. A same-nanosecond retransmission conservatively retains
+the previous loss verdict rather than fabricating a second attempt.
+This avoids treating the original send's inflight as the
+retransmission's measurement.
+
+`tcp_shift_lwip_cc_bbr3_observe_rack_loss()` is an **explicit, opt-in
+qualification interface** over those exact P5 slots. It requires the
+real connection's SACK negotiation, its active SACK-aware delivery
+policy, a valid pinned RACK timestamp and a mature RFC 8985 verdict.
+It returns the loss bytes not already SACK/ACK-delivered and a send-time
+snapshot, deduplicated by slot attempt; no second segment allocation
+or new send queue is required. On a retransmission with a distinct TX timestamp the once-only gate
+resets. Sequence range plus timestamp distinguishes contemporaneous
+segments when accounting for a loss round. Without known ProbeBW
+send-time provenance, `probe_sample` is always false — no inference.
+
+The new `tcp-shift-bbr3-p5-loss-observation-contract` uses actual
+pinned-lwIP send/SACK/ACK hooks and checks that first-send loss,
+partially delivered retransmissions and repeated RACK polling preserve
+inflight, SACK deduplication and immutable live cwnd. The existing
+P6 delivery-snapshot contract separately asserts that RTO and
+partial-ACK retransmission rate samples use the **current** inflight.
+
+The standalone `src/lwip/bbr3_loss_round.{h,c}` contract can group
+several **once-only** RACK events and finish only when the caller
+explicitly supplies a completed packet-timed loss round. It reports
+loss counts for telemetry, but computes a meaningful loss denominator
+only if all observed events share the same send-time delivery and inflight
+snapshot. With mixed snapshots the loss fraction is invalid and cannot
+trigger BBRv3 congestion response. Even a compatible snapshot cannot
+produce a probe-loss signal until *all* events have verified probe-send
+provenance. The P5 integration contract verifies both restrictions.
+
+**Still excluded:** this observer is not invoked by the live TCP hook
+table, has no CE or real ProbeBW send-phase provenance, and does not yet
+publish a packet-timed loss round to the independent BBRv3 controller.
+Loss records from different TX inflight denominators must not be
+naively summed into a fabricated loss ratio. The next integration
+gate is a validated loss-round event ledger and recovery lifecycle.
+
 ## Required before exposing `bbr3`
 
 1. Complete BBRv3 ProbeBW integration: bind per-flow observations to the
