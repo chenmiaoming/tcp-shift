@@ -2103,6 +2103,72 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
     }
 }
 
+/*
+ * Qualification-only BBRv3 loss observer. This is intentionally not wired
+ * into the live hook table. It borrows the existing P5 delivery slot and
+ * RFC 8985 RACK evidence, without creating a second per-segment queue.
+ * RACK loss is classified exactly once per transmission generation. An
+ * RTO/TLP or the coarse on_loss() callback alone never calls this method.
+ */
+int tcp_shift_lwip_cc_bbr3_observe_rack_loss(
+    struct tcp_shift_lwip_cc_adapter *adapter,
+    const void *segment,
+    uint64_t now_ns,
+    struct tcp_shift_bbr3_rack_loss *out)
+{
+#if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
+    struct tcp_shift_delivery_slot *slot;
+    struct tcp_shift_rack_segment view;
+    uint64_t remaining_ns = 0U;
+    uint16_t outstanding;
+    unsigned in_recovery;
+
+    if (adapter == NULL || adapter->bound == 0U || adapter->pcb == NULL ||
+        adapter->sack_delivery_policy == 0U ||
+        segment == NULL || out == NULL || now_ns == 0U) {
+        return -1;
+    }
+    slot = tcp_shift_delivery_find(adapter, segment);
+    if (slot == NULL || slot->rack_lost != 0U ||
+        slot->acked_payload_bytes >= slot->payload_bytes) {
+        return 0;
+    }
+    if (slot->tx_ns == 0U || now_ns < slot->tx_ns ||
+        slot->bbr3_tx_generation == 0U) {
+        return -1;
+    }
+    tcp_shift_rack_slot_view(slot, &view);
+    in_recovery =
+        tcp_shift_lwip_cc_hook_recovery_is_active(&adapter->hook);
+    if (!tcp_shift_rack_loss_remaining(
+            &adapter->rack_tlp, &view, now_ns, in_recovery,
+            &remaining_ns)) {
+        return 0;
+    }
+    outstanding = (uint16_t)(
+        slot->payload_bytes - slot->acked_payload_bytes);
+    out->generation = slot->bbr3_tx_generation;
+    out->tx_ns = slot->tx_ns;
+    out->delivered_at_tx = slot->delivered_at_send;
+    out->seq_start = slot->seq_start;
+    out->tx_inflight_bytes = slot->prior_inflight_bytes;
+    out->newly_lost_bytes = outstanding;
+    out->retransmitted = slot->retransmitted;
+    out->app_limited = slot->app_limited;
+    /* The real ProbeBW transmit phase is not yet captured by the P5 ABI.
+     * Never label an unknown transmission as a BBRv3 probe. */
+    out->probe_sample = 0U;
+    slot->rack_lost = 1U;
+    return 1;
+#else
+    (void)adapter;
+    (void)segment;
+    (void)now_ns;
+    (void)out;
+    return -1;
+#endif
+}
+
 static void tcp_shift_lwip_cc_on_segment_acked(void *arg,
                                                 struct tcp_pcb *pcb,
                                                 const void *segment,
