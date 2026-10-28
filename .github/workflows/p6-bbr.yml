@@ -34,6 +34,7 @@ on:
       - 'src/lwip/bbr3_loss_round.h'
       - 'src/lwip/bbr3_loss_round.c'
       - 'src/tests/bbr3_loss_round_test.c'
+      - 'scripts/bbr3-loss-round-contract.sh'
       - 'scripts/bbr3-rack-evidence-contract.sh'
       - 'src/tests/bbr3_congestion_test.c'
       - 'src/tests/bbr3_probe_test.c'
@@ -94,6 +95,7 @@ jobs:
           sh -n scripts/bbr3-congestion-contract.sh
           sh -n scripts/bbr3-controller-contract.sh
           sh -n scripts/bbr3-rack-evidence-contract.sh
+          sh -n scripts/bbr3-loss-round-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -118,12 +120,7 @@ jobs:
         run: sh scripts/bbr3-rack-evidence-contract.sh
 
       - name: Qualify BBRv3 loss-round aggregation and mixed-flight guard
-        run: |
-          cmake -S . -B .build-bbr3-loss-round -DCMAKE_BUILD_TYPE=Release
-          cmake --build .build-bbr3-loss-round \
-            --target tcp-shift-bbr3-loss-round-contract --parallel
-          ./.build-bbr3-loss-round/tcp-shift-bbr3-loss-round-contract \
-            | tee .build/bbr3-loss-round-summary.txt
+        run: sh scripts/bbr3-loss-round-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -152,7 +149,7 @@ jobs:
             .build/bbr3-congestion
             .build/bbr3-controller
             .build/bbr3-rack-loss
-            .build/bbr3-loss-round-summary.txt
+            .build/bbr3-loss-round
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract
