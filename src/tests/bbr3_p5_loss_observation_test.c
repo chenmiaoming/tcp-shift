@@ -8,6 +8,7 @@
 #include "lwip/priv/tcp_priv.h"
 #include "lwip/cc_adapter.h"
 #include "lwip/bbr3_rack_evidence.h"
+#include "lwip/bbr3_loss_round.h"
 
 #define CHECK(cond) do { \
     if (!(cond)) { \
@@ -40,6 +41,8 @@ int main(void)
     struct tcp_shift_lwip_cc_stats stats;
     struct tcp_shift_lwip_sack_range sack;
     struct tcp_shift_bbr3_rack_loss evidence;
+    struct tcp_shift_bbr3_loss_round round = {0};
+    struct tcp_shift_bbr3_loss_round_result result = {0};
     struct tcp_pcb *pcb;
     unsigned char first_seg;
     unsigned char second_seg;
@@ -92,6 +95,8 @@ int main(void)
     CHECK(adapter.rack_tlp.rack_xmit_ts_ns != 0U);
     CHECK(adapter.delivered_bytes == mss);
     delivered_before = adapter.delivered_bytes;
+    CHECK(tcp_shift_bbr3_loss_round_start(
+              &round, delivered_before) == 0);
     cwnd_before = pcb->cwnd;
     witness_ns = adapter.rack_tlp.rack_xmit_ts_ns +
                  UINT64_C(2000000000);
@@ -99,6 +104,7 @@ int main(void)
               &adapter, &first_seg, witness_ns, &evidence) == 1);
     CHECK(evidence.seq_start == seq);
     CHECK(evidence.newly_lost_bytes == mss);
+    CHECK(tcp_shift_bbr3_loss_round_add(&round, &evidence) == 0);
     CHECK(evidence.tx_inflight_bytes == mss);
     CHECK(evidence.probe_sample == 0U); /* unknown provenance */
     CHECK(evidence.retransmitted == 0U);
@@ -141,6 +147,7 @@ int main(void)
               &adapter, &first_seg, witness_ns, &evidence) == 1);
     CHECK(evidence.generation > generation);
     CHECK(evidence.newly_lost_bytes == (uint16_t)(mss - mss / 2U));
+    CHECK(tcp_shift_bbr3_loss_round_add(&round, &evidence) == 0);
     CHECK(evidence.tx_inflight_bytes == mss);
     CHECK(evidence.retransmitted == 1U);
     CHECK(evidence.probe_sample == 0U);
@@ -149,6 +156,18 @@ int main(void)
               &adapter, &first_seg, witness_ns, &evidence) == 0);
     CHECK(tcp_shift_lwip_cc_bbr3_observe_rack_loss(
               &adapter, &third_seg, witness_ns, &evidence) == 0);
+
+    /* The test marks the packet-timed boundary explicitly; the live lwIP
+     * callback does NOT yet supply this boundary to the controller. These
+     * losses came from different send snapshots and cannot share a ratio. */
+    CHECK(tcp_shift_bbr3_loss_round_finish(
+              &round, adapter.delivered_bytes, 0U, &result) < 0);
+    CHECK(tcp_shift_bbr3_loss_round_finish(
+              &round, adapter.delivered_bytes, 1U, &result) == 0);
+    CHECK(result.events == 2U);
+    CHECK(result.same_send_snapshot == 0U);
+    CHECK(result.loss_fraction_valid == 0U);
+    CHECK(result.qualified_probe_excess_loss == 0U);
 
     /* No observer can be invoked on stale segment state after unbind. */
     tcp_shift_lwip_cc_adapter_unbind(&adapter);
