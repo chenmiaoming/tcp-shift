@@ -27,6 +27,10 @@ on:
       - 'src/lwip/bbr3_binding.h'
       - 'src/lwip/bbr3_binding.c'
       - 'src/tests/bbr3_lwip_binding_test.c'
+      - 'src/lwip/bbr3_rack_evidence.c'
+      - 'src/lwip/bbr3_rack_evidence.h'
+      - 'src/tests/bbr3_rack_evidence_test.c'
+      - 'scripts/bbr3-rack-evidence-contract.sh'
       - 'src/tests/bbr3_congestion_test.c'
       - 'src/tests/bbr3_probe_test.c'
       - 'src/tests/bbr_startup_policy_test.c'
@@ -85,6 +89,7 @@ jobs:
           sh -n scripts/bbr3-probe-contract.sh
           sh -n scripts/bbr3-congestion-contract.sh
           sh -n scripts/bbr3-controller-contract.sh
+          sh -n scripts/bbr3-rack-evidence-contract.sh
           sh -n scripts/p6-bbr-startup-policy-contract.sh
           sh -n scripts/p6-bbr-drain-policy-contract.sh
           sh -n scripts/p6-bbr-probe-policy-contract.sh
@@ -104,6 +109,9 @@ jobs:
 
       - name: Qualify isolated BBRv3 controller and ProbeRTT
         run: sh scripts/bbr3-controller-contract.sh
+
+      - name: Qualify BBRv3 RACK loss provenance without PCB mutation
+        run: sh scripts/bbr3-rack-evidence-contract.sh
 
       - name: Qualify compact BBR Startup policy
         run: sh scripts/p6-bbr-startup-policy-contract.sh
@@ -131,6 +139,7 @@ jobs:
             .build/bbr3-probe
             .build/bbr3-congestion
             .build/bbr3-controller
+            .build/bbr3-rack-loss
             .build/p6-bbr-startup-policy-contract
             .build/p6-bbr-drain-policy-contract
             .build/p6-bbr-probe-policy-contract
