@@ -835,6 +835,22 @@ target_compile_options(tcp-shift-bbr3-rack-evidence-contract PRIVATE
     -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin
 )
 
+# Exercise the qualification-only RACK observer through real lwIP
+# segment-TX, SACK and ACK hooks; production selector remains unchanged.
+add_executable(tcp-shift-bbr3-p5-loss-observation-contract
+    src/tests/bbr3_p5_loss_observation_test.c
+    src/platform.c
+)
+target_include_directories(tcp-shift-bbr3-p5-loss-observation-contract PRIVATE
+    ${LWIP_INCLUDE_DIRS}
+)
+target_compile_options(tcp-shift-bbr3-p5-loss-observation-contract PRIVATE
+    -Wall -Wextra -Wpedantic -Werror
+)
+target_link_libraries(tcp-shift-bbr3-p5-loss-observation-contract PRIVATE
+    tcp_shift_lwip_cc_adapter
+)
+
 add_executable(tcp-shift-bbr3-lwip-binding-contract
     src/tests/bbr3_lwip_binding_test.c
     src/lwip/bbr3_binding.c
