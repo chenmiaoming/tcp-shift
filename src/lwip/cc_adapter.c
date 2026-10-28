@@ -2125,6 +2125,7 @@ int tcp_shift_lwip_cc_bbr3_observe_rack_loss(
 
     if (adapter == NULL || adapter->bound == 0U || adapter->pcb == NULL ||
         adapter->sack_delivery_policy == 0U ||
+        (adapter->pcb->flags & TF_SACK) == 0U ||
         segment == NULL || out == NULL || now_ns == 0U) {
         return -1;
     }
