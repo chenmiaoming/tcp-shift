@@ -226,6 +226,16 @@ inflight, SACK deduplication and immutable live cwnd. The existing
 P6 delivery-snapshot contract separately asserts that RTO and
 partial-ACK retransmission rate samples use the **current** inflight.
 
+The standalone `src/lwip/bbr3_loss_round.{h,c}` contract can group
+several **once-only** RACK events and finish only when the caller
+explicitly supplies a completed packet-timed loss round. It reports
+loss counts for telemetry, but computes a meaningful loss denominator
+only if all observed events share the same send-time delivery and inflight
+snapshot. With mixed snapshots the loss fraction is invalid and cannot
+trigger BBRv3 congestion response. Even a compatible snapshot cannot
+produce a probe-loss signal until *all* events have verified probe-send
+provenance. The P5 integration contract verifies both restrictions.
+
 **Still excluded:** this observer is not invoked by the live TCP hook
 table, has no CE or real ProbeBW send-phase provenance, and does not yet
 publish a packet-timed loss round to the independent BBRv3 controller.
