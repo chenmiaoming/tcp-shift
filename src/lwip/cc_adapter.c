@@ -1,4 +1,5 @@
 #include "lwip/cc_adapter.h"
+#include "lwip/bbr3_rack_evidence.h"
 #include "lwip/priv/tcp_priv.h"
 #include "runtime/pacer.h"
 
@@ -46,6 +47,7 @@ struct tcp_shift_delivery_slot {
     uint64_t delivered_mstamp_at_send_ns;
     uint32_t seq_start;
     uint32_t prior_inflight_bytes;
+    uint32_t bbr3_tx_generation;
     uint16_t payload_bytes;
     uint16_t acked_payload_bytes;
     uint8_t app_limited;
@@ -2017,6 +2019,7 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
         adapter->delivered_mstamp_ns = now_ns;
     }
 
+    prior_inflight = tcp_shift_delivery_outstanding_payload(adapter);
     slot = tcp_shift_delivery_find(adapter, segment);
     if (slot != NULL) {
         /* Delivery-rate sampling is keyed to the packet's last transmission,
@@ -2033,6 +2036,21 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
         slot->delivered_mstamp_at_send_ns =
             adapter->delivered_mstamp_ns != 0U ? adapter->delivered_mstamp_ns
                                                : now_ns;
+        /* Retransmission of an already-accounted payload must not add
+         * that payload a second time. Use unique outstanding delivery
+         * ledger bytes (including this segment's undelivered remainder),
+         * not the first send's stale SND.NXT/SND.UNA snapshot. */
+        if (prior_inflight < (uint32_t)(
+                slot->payload_bytes - slot->acked_payload_bytes)) {
+            prior_inflight = (uint32_t)(
+                slot->payload_bytes - slot->acked_payload_bytes);
+        }
+        slot->prior_inflight_bytes = prior_inflight;
+        adapter->bbr3_next_tx_generation++;
+        if (adapter->bbr3_next_tx_generation == 0U) {
+            adapter->bbr3_next_tx_generation++;
+        }
+        slot->bbr3_tx_generation = adapter->bbr3_next_tx_generation;
         slot->app_limited = adapter->app_limited_until_bytes != 0U;
 #if defined(TCP_SHIFT_EXPERIMENTAL_RACK_TLP) && TCP_SHIFT_EXPERIMENTAL_RACK_TLP
         slot->rack_delivered = 0U;
@@ -2073,6 +2091,11 @@ static void tcp_shift_lwip_cc_on_segment_tx(void *arg,
                                            : now_ns;
     slot->seq_start = seq_start;
     slot->prior_inflight_bytes = prior_inflight;
+    adapter->bbr3_next_tx_generation++;
+    if (adapter->bbr3_next_tx_generation == 0U) {
+        adapter->bbr3_next_tx_generation++;
+    }
+    slot->bbr3_tx_generation = adapter->bbr3_next_tx_generation;
     slot->payload_bytes = payload_bytes;
     slot->app_limited = adapter->app_limited_until_bytes != 0U;
     if (adapter->stats != NULL) {
