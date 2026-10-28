@@ -21,6 +21,7 @@ struct tcp_shift_bbr3_loss_round {
     uint64_t newly_lost_bytes;
     uint64_t snapshot_delivered_at_tx;
     uint64_t last_generation;
+    uint32_t last_seq_start;
     uint32_t snapshot_tx_inflight_bytes;
     uint32_t event_count;
     uint8_t active;
