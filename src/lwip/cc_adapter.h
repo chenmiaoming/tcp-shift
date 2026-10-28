@@ -203,7 +203,6 @@ struct tcp_shift_lwip_cc_adapter {
     uint64_t delivery_last_clock_read_ns;
     uint64_t rate_first_tx_mstamp_ns;
     uint64_t app_limited_until_bytes;
-    uint32_t bbr3_next_tx_generation; /* per-send identifier; no new queue */
     uint64_t pacing_rate_bytes_per_sec;
     uint64_t pacing_next_send_ns;
     uint64_t pacing_flow_id;
