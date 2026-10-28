@@ -13,6 +13,7 @@ int tcp_shift_bbr3_loss_round_start(
     round->newly_lost_bytes = 0U;
     round->snapshot_delivered_at_tx = 0U;
     round->last_generation = 0U;
+    round->last_seq_start = 0U;
     round->snapshot_tx_inflight_bytes = 0U;
     round->event_count = 0U;
     round->context_consistent = 1U;
@@ -29,7 +30,8 @@ int tcp_shift_bbr3_loss_round_add(
         event->generation == 0U || event->newly_lost_bytes == 0U ||
         event->tx_ns == 0U ||
         event->tx_inflight_bytes < event->newly_lost_bytes ||
-        event->generation == round->last_generation ||
+        (event->generation == round->last_generation &&
+         event->seq_start == round->last_seq_start) ||
         round->event_count == UINT32_MAX ||
         UINT64_MAX - round->newly_lost_bytes < event->newly_lost_bytes) {
         return -1;
@@ -46,6 +48,7 @@ int tcp_shift_bbr3_loss_round_add(
         round->all_probe_samples = 0U;
     }
     round->last_generation = event->generation;
+    round->last_seq_start = event->seq_start;
     round->event_count++;
     round->newly_lost_bytes += event->newly_lost_bytes;
     return 0;
@@ -73,12 +76,14 @@ int tcp_shift_bbr3_loss_round_finish(
     result->events = round->event_count;
     result->tx_inflight_bytes =
         ratio_valid != 0U ? round->snapshot_tx_inflight_bytes : 0U;
-    result->same_send_snapshot = round->context_consistent;
+    result->same_send_snapshot =
+        round->event_count != 0U && round->context_consistent != 0U;
     result->loss_fraction_valid = ratio_valid;
     result->qualified_probe_excess_loss =
         ratio_valid != 0U && round->all_probe_samples != 0U &&
-        round->newly_lost_bytes * UINT64_C(100) >
-            (uint64_t)round->snapshot_tx_inflight_bytes * 2U
+        (round->newly_lost_bytes > UINT32_MAX ||
+         round->newly_lost_bytes * UINT64_C(100) >
+             (uint64_t)round->snapshot_tx_inflight_bytes * 2U)
             ? 1U : 0U;
     round->active = 0U;
     return 0;
