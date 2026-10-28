@@ -201,9 +201,12 @@ per-segment denominators.
 The existing P5 segment sidecar now refreshes `prior_inflight_bytes` on
 **every retransmission** using its unique outstanding payload ledger;
 a retransmitted range is not counted as newly transmitted payload again.
-Each slot and adapter also carry a small monotonically advancing
-per-transmission ID. This avoids treating the original transmission's
-send-time inflight as the retransmission's measurement.
+The existing per-slot TX timestamp and RACK once-only bit identify the
+current attempt without adding any field or allocation to the 56-byte
+P5 delivery slot. A same-nanosecond retransmission conservatively retains
+the previous loss verdict rather than fabricating a second attempt.
+This avoids treating the original send's inflight as the
+retransmission's measurement.
 
 `tcp_shift_lwip_cc_bbr3_observe_rack_loss()` is an **explicit, opt-in
 qualification interface** over those exact P5 slots. It requires the
@@ -211,8 +214,9 @@ real connection's SACK negotiation, its active SACK-aware delivery
 policy, a valid pinned RACK timestamp and a mature RFC 8985 verdict.
 It returns the loss bytes not already SACK/ACK-delivered and a send-time
 snapshot, deduplicated by slot attempt; no second segment allocation
-or new send queue is required. On retransmission the slot gets a fresh
-transmission ID and the once-only gate resets. Without known ProbeBW
+or new send queue is required. On a retransmission with a distinct TX timestamp the once-only gate
+resets. Sequence range plus timestamp distinguishes contemporaneous
+segments when accounting for a loss round. Without known ProbeBW
 send-time provenance, `probe_sample` is always false — no inference.
 
 The new `tcp-shift-bbr3-p5-loss-observation-contract` uses actual
